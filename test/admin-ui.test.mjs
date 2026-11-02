@@ -805,4 +805,30 @@ describe('household feature controls', () => {
     assert.equal(app.checked, false);
     assert.equal(tv.checked, true);
   });
+
+  it('shows the TV switch locked while TV_ADDON_HOUSEHOLDS decides it, and keeps it locked after an app switch save', async () => {
+    const group = { id: 'grove', name: 'Grove', userIds: [], appEnabled: true, tvAddonEnabled: true, tvAddonLockedBy: ['TV_ADDON_HOUSEHOLDS'] };
+    const writes = [];
+    const page = adminPage((path, init) => {
+      if (path === '/v1/groups') return { status: 200, body: { groups: [group] } };
+      if (path === '/v1/groups/grove/features') {
+        writes.push(JSON.parse(init.body));
+        return { status: 200, body: { group: { ...group, ...writes.at(-1) } } };
+      }
+      return DATA[path];
+    });
+    await page.settle();
+    const app = page.document.querySelector('input[aria-label="Mobile app access"]');
+    const tv = page.document.querySelector('input[aria-label="TV add-on injection"]');
+    assert.equal(tv.checked, true);
+    assert.equal(tv.disabled, true);
+    assert.equal(app.disabled, false);
+    assert.match(tv.closest('label').textContent, /Set in the environment \(TV_ADDON_HOUSEHOLDS\), which wins over this switch\./);
+    app.checked = false;
+    app.dispatchEvent(new page.window.Event('change'));
+    await page.settle();
+    assert.deepEqual(writes, [{ appEnabled: false }]);
+    assert.equal(tv.disabled, true, 'still locked after a save');
+    assert.equal(app.disabled, false);
+  });
 });

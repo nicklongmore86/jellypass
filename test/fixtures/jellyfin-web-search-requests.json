@@ -1,0 +1,38 @@
+{
+  "jellyfinWeb": "12.3.0",
+  "sdk": "1.0.1",
+  "axios": "1.18.1",
+  "axiosAdapters": [
+    "xhr",
+    "http",
+    "fetch"
+  ],
+  "source": "src/apps/legacy/features/search/api/*.ts",
+  "xhrOpen": {
+    "items": [
+      "GET",
+      "https://jelly-grove.example.test/Items?userId=u1&isMissing=false&limit=800&recursive=true&searchTerm=the&fields=PrimaryImageAspectRatio&fields=CanDelete&fields=MediaSourceCount&includeItemTypes=Movie&includeItemTypes=Series&includeItemTypes=Episode&includeItemTypes=Playlist&includeItemTypes=MusicAlbum&includeItemTypes=Audio&includeItemTypes=TvChannel&includeItemTypes=PhotoAlbum&includeItemTypes=Photo&includeItemTypes=AudioBook&includeItemTypes=Book&includeItemTypes=BoxSet&imageTypeLimit=1&enableTotalRecordCount=false",
+      true
+    ],
+    "people": [
+      "GET",
+      "https://jelly-grove.example.test/Persons?limit=100&searchTerm=the&fields=PrimaryImageAspectRatio&fields=CanDelete&fields=MediaSourceCount&imageTypeLimit=1&excludePersonTypes=Artist&excludePersonTypes=AlbumArtist&userId=u1",
+      true
+    ],
+    "studios": [
+      "GET",
+      "https://jelly-grove.example.test/Studios?limit=100&searchTerm=the&fields=PrimaryImageAspectRatio&fields=CanDelete&fields=MediaSourceCount&imageTypeLimit=1&userId=u1&enableTotalRecordCount=false",
+      true
+    ],
+    "artists": [
+      "GET",
+      "https://jelly-grove.example.test/Artists?limit=100&searchTerm=the&fields=PrimaryImageAspectRatio&fields=CanDelete&fields=MediaSourceCount&imageTypeLimit=1&userId=u1&enableTotalRecordCount=false",
+      true
+    ],
+    "videos": [
+      "GET",
+      "https://jelly-grove.example.test/Items?userId=u1&limit=100&recursive=true&searchTerm=the&fields=PrimaryImageAspectRatio&fields=CanDelete&fields=MediaSourceCount&excludeItemTypes=Movie&excludeItemTypes=Episode&excludeItemTypes=TvChannel&mediaTypes=Video&imageTypeLimit=1&enableTotalRecordCount=false",
+      true
+    ]
+  }
+}

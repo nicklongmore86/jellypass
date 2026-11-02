@@ -30,9 +30,58 @@ changes are always listed at the top of the release notes.
   internet, says what `TRUSTED_PROXIES` must be, and how to check it with the
   deployment self-check; a table of common failures (`421 unknown_host`,
   `400 invalid_host`, shared sign-in limits, WebSockets) closes the page.
+
+## [4.1.0] - 2026-11-02
+
+This is a minor release. It adds a first-run setup wizard, per-household
+mobile app and TV add-on switches in the admin site, an address editor, and a
+cap on Jellyfin web's search on TVs. **An existing install upgrades without any
+change to its configuration:** every setting keeps working, environment
+variables still win over anything stored, an install configured only by
+environment variables never sees the wizard, and every household keeps the
+app and TV access it had. The administrator API and the household app API
+(`v1`, now `apiVersion` 4) only gain endpoints and one refusal that an
+administrator has to turn on; webhook payloads are unchanged. It is a minor
+release, not a major one, because nothing has to change before upgrading;
+what cannot go back to 4.0.0 unaided is the state file. Read these before
+upgrading:
+
+- **The state file migrates to schema 9 on the first start, and 4.0.0 refuses
+  to start on the result.** Schema 9 stores each household's app and TV
+  switches. Before saving it, JellyPass writes a backup of the old file next
+  to it, `<state-file>.v8.bak` (`.v7.bak` from a 3.x file), or a timestamped
+  backup whose path it logs (see "Upgrade from 4.0.0"). 4.0.0 stops at
+  startup with `unsupported state schema version` on a schema 9 file and
+  leaves the file unchanged; 4.0.0 reads the backup. See "Rollback to 4.0.0".
+- **`TV_ADDON_HOUSEHOLDS` is deprecated.** While it is set (and
+  `TV_ADDON_ENABLED=true`), it works exactly as in 4.0.0: it is read on every
+  start, `*` gives the TV add-on to every household (ones created later
+  included), and an edited list takes effect at the next restart. It wins
+  over the admin site's new per-household TV switches, which follow it and
+  are shown locked ("Set in the environment"); `PUT /v1/groups/{id}/features`
+  refuses to change a TV switch with `409` (`code: tv_addon_environment`).
+  JellyPass stores what the variable selects, so once you remove it and
+  restart, the switches take over with the same households on and can be
+  changed; a household created after that starts with TV off. To migrate,
+  check the switches match what you want, remove `TV_ADDON_HOUSEHOLDS`, and
+  restart. JellyPass logs one warning per process while the variable is set.
+  `TV_ADDON_ENABLED` stays the global switch.
+- **The TV add-on's script has a new name,** `jellypass-tv.67293bf711ee.js`
+  (it was `jellypass-tv.a0dc50641ac6.js` in 4.0.0); the stylesheet keeps
+  `jellypass-tv.9f2a2886ec7c.css`. The `/web/` page and the Samsung app's
+  manifest are sent `no-store`, so no CDN purge is needed.
+- **`compose.yaml` marks its `.env` file `required: false`,** which needs
+  Docker Compose 2.24 or newer. With no configuration at all, JellyPass now
+  starts its setup wizard on the admin listener instead of stopping.
+- **The iPhone, iPad and Android app ships separately;** its changes are in
+  `mobile/CHANGELOG.md`.
+
+### Added
+
 - Warn admins about HTTP household addresses in the address editor, household
   cards, and setup guidance: the JellyPass mobile app requires HTTPS. HTTP
   addresses remain accepted.
+
 - **First-run setup wizard** at `/admin/setup/` on the admin listener. With no
   configuration, `docker compose up` now starts JellyPass in setup mode instead
   of stopping: the wizard signs in to Jellyfin once to create JellyPass's own
@@ -41,14 +90,15 @@ changes are always listed at the top of the release notes.
   key, sets the request backfill cutoff to the install date, and can turn on
   household addresses and the household app. Every call needs the admin token
   as a bearer token: `ADMIN_TOKEN`, or the setup token written to
-  `admin-token` next to the state file (mode `0600`, never logged). Steps are
+  `admin-token` next to `settings.json` (mode `0600`, never logged). Steps are
   stored as they are made, so a wizard left half done resumes (in setup mode:
   nothing starts until Finish); finishing starts JellyPass in place. A variable
   set in the environment locks only its own field (for example `JELLYFIN_URL`
   without `JELLYFIN_API_KEY`). Without `ADMIN_TOKEN`, the setup token remains
   the admin token after setup; delete `admin-token` and restart to rotate it.
-  Settings live in `settings.json` next to the state file (`SETTINGS_FILE`,
-  mode `0600`), not in the state file. Environment variables keep winning over stored settings, and the
+  Settings live in `settings.json`, by default next to the state file
+  (`SETTINGS_FILE` moves it, and `admin-token` with it; mode `0600`), not in
+  the state file. Environment variables keep winning over stored settings, and the
   wizard shows them as locked: an install configured only by environment
   variables works unchanged and never sees the wizard.
 - **Address editor** in the admin site: Groups → **Addresses** sets a
@@ -58,30 +108,77 @@ changes are always listed at the top of the release notes.
 - `compose.yaml` no longer needs a `.env` file (`required: false`, Docker
   Compose 2.24 or newer).
 - Admin household cards now have independent mobile app access and TV add-on injection switches. New households
-  default to app on, TV off. App API revision 4 returns `403 {"error":"app_access_disabled"}` to authenticated members
+  default to app on, TV off (TV on when the deprecated `TV_ADDON_HOUSEHOLDS` is `*` or names them). App API revision 4 returns `403 {"error":"app_access_disabled"}` to authenticated members
   when app access is off; mobile screens explain how to contact the administrator.
 - TV discovery never caches 403 refusals, so the next fetch can recover immediately when app access is restored.
 - Household feature updates accept only the changed boolean flag, preserving concurrent changes from other tabs.
 
 ### Fixed
 
+- **A broad search no longer closes Jellyfin on low-memory TVs.** Jellyfin
+  web's Search page asks for up to 800 items and 100 each of people, studios
+  and artists and draws every card at once; on a 2019 Samsung (Tizen 5.0,
+  about 1.2 GB) searching "the" drew 1,038 cards and the TV's low-memory
+  killer closed the app. On a TV (Samsung, LG and others, by Jellyfin web's
+  own TV rule), the TV add-on now lowers those requests to at most 100 items
+  and 24 people, studios or artists. Only Jellyfin web's search requests
+  change; desktop and phone browsers (Tizen and webOS phones and watches
+  included) are unchanged, and the JellyPass
+  Discover row on the Search page works as before. The add-on's script is
+  named for a hash of its content, so its name changes in this release (the
+  stylesheet's does not); the `/web/` page and the Samsung app's manifest are
+  sent `no-store`, so no CDN purge is needed. See
+  [docs/tv-addon.md](docs/tv-addon.md), "The search cap".
 - Pre-v9 backup cleanup failures no longer block migration or mask backup errors. Unsupported directory fsync
   is tolerated, while file fsync remains required; timestamped backup names use compact UTC without colons.
 
-### Upgrade
+### Upgrade from 4.0.0
 
 - State schema v8 (and v7) migrates forward to v9, preserving existing fields. Back up the state before upgrading;
   older server builds cannot read v9. Migration sets app access on and seeds TV switches from `TV_ADDON_HOUSEHOLDS`
-  (comma-separated household IDs or `*`); without it TV switches start off. After migration the stored switches are
-  authoritative: changing the environment list has no effect. Remove the deprecated variable after upgrading;
-  its presence emits one warning per process without logging its value. `TV_ADDON_ENABLED` remains the global gate.
+  (comma-separated household IDs or `*`); without it TV switches start off. While the variable stays set it remains
+  authoritative, as in 4.0.0: it is read at every start (`*` covers households created later, a list edit applies
+  at the next restart), the stored TV switches follow it and the admin site shows them locked. Once it is removed
+  (and JellyPass restarted), the stored switches decide. Its presence emits one warning per process without logging
+  its value. `TV_ADDON_ENABLED` remains the global gate.
 - Before the first v9 write, JellyPass writes and fsyncs a private temporary backup, then publishes it atomically as
   `<state-file>.v8.bak` (or `.v7.bak`), without overwriting an existing file. An identical backup is reused; a partial
   or different backup causes a fresh timestamped `<state-file>.v8.<UTC timestamp YYYYMMDDTHHMMSSZ>.<unique ID>.bak` (or `.v7.…`) to be
   created and its path logged. Backup errors stop migration before v9 is saved. To roll back to 4.0.0, stop JellyPass
   and restore the **latest backup for that upgrade**, using the logged timestamped path when present. Older backups
   may be stale after a rollback and re-upgrade. Changes made after the selected backup are not included.
-- `*` seeds only households present during migration; it no longer covers households created later, which default TV off.
+- To move to the per-household switches: check each household's TV switch in Groups (they show what
+  `TV_ADDON_HOUSEHOLDS` gives now), remove the variable from the environment, and restart. Households created after
+  that default TV off.
+- The setup token file `admin-token` is written next to `settings.json`: by default the state file's directory, or the
+  directory of `SETTINGS_FILE` when that is set.
+
+### Rollback to 4.0.0
+
+4.0.0 cannot read a schema 9 state file: it stops at startup with
+`unsupported state schema version` (exit code 1) and does not change the
+file. Stop 4.1.0 first, then either:
+
+- restore the latest backup the upgrade wrote (`<state-file>.v8.bak`, or the
+  timestamped path it logged), losing changes made since the upgrade; or
+- downgrade the file in place, which drops only the app and TV switches:
+
+```sh
+node -e "const f=process.argv[1],fs=require('fs'),s=JSON.parse(fs.readFileSync(f,'utf8'));if(s.version!==9)throw new Error('not schema 9');s.version=8;for(const g of Object.values(s.groups)){delete g.appEnabled;delete g.tvAddonEnabled}fs.writeFileSync(f,JSON.stringify(s,null,2)+'\n')" data/grants.json
+```
+
+On 4.0.0 every household has app access again, and the TV add-on follows
+`TV_ADDON_HOUSEHOLDS` only (the switches are gone): if you kept it set on
+4.1.0, TV access is the same; if you removed it, with `TV_ADDON_ENABLED=true`
+4.0.0 does not start until it is set again, to `*` or the households whose TV
+switch was on. 4.0.0 reads settings only from the
+environment: it ignores `settings.json` and the `admin-token` file (next to
+`settings.json`), so an
+install set up with the wizard needs its settings (`JELLYFIN_URL`,
+`JELLYFIN_API_KEY`, `SEERR_URL`, `SEERR_API_KEY`, `WEBHOOK_TOKEN`,
+`ADMIN_TOKEN` and any others it set) in `.env`, and the 4.0.0 Compose file
+needs that `.env` to exist. Then set `JELLYPASS_IMAGE` to
+`ghcr.io/nicklongmore86/jellypass:4.0.0` and recreate the container.
 
 ## [4.0.0] - 2026-10-31
 
@@ -3641,7 +3738,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.1.0...HEAD
+[4.1.0]: https://github.com/nicklongmore86/jellypass/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/nicklongmore86/jellypass/compare/v3.10.0...v4.0.0
 [3.10.0]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/nicklongmore86/jellypass/compare/v3.8.1...v3.9.0

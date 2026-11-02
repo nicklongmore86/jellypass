@@ -3,7 +3,7 @@ import type { HouseholdAddressEntry } from './household-addresses.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
 import { RECENT_REQUESTS_LIMIT, SeerrError, type SeerrClient } from './seerr.js';
-import { normalizeId, UNKNOWN_REQUESTER, type GrantMove, type GrantRemainder, type GrantStore, type HiddenTitle, type HideTitleResult } from './store.js';
+import { normalizeId, TV_ADDON_LOCKED, UNKNOWN_REQUESTER, type GrantMove, type GrantRemainder, type GrantStore, type HiddenTitle, type HideTitleResult } from './store.js';
 import type {
   AccessGroup,
   AccessRemovals,
@@ -202,7 +202,16 @@ export class AccessService {
     return { appEnabled: group?.appEnabled === true, tvAddonEnabled: group?.tvAddonEnabled === true };
   }
 
+  /** True while the deprecated TV_ADDON_HOUSEHOLDS decides every household's TV switch (see GrantStore). */
+  public get tvAddonFromEnvironment(): boolean {
+    return this.#store.tvAddonFromEnvironment;
+  }
+
   public setHouseholdFeatures(groupId: string, features: { appEnabled?: boolean; tvAddonEnabled?: boolean }) {
+    const group = this.#store.getGroup(groupId);
+    if (group && this.#store.tvAddonFromEnvironment && features.tvAddonEnabled !== undefined && features.tvAddonEnabled !== group.tvAddonEnabled) {
+      throw new ConflictError(TV_ADDON_LOCKED, 'tv_addon_environment');
+    }
     return this.#store.setHouseholdFeatures(groupId, features);
   }
 

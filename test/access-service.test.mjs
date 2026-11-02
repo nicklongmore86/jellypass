@@ -198,6 +198,42 @@ describe('state migration', () => {
     });
   }
 
+  it('lets a set TV_ADDON_HOUSEHOLDS decide and store the TV switches on every start after the v9 migration', async (t) => {
+    const before = process.env.TV_ADDON_HOUSEHOLDS;
+    t.after(() => { if (before === undefined) delete process.env.TV_ADDON_HOUSEHOLDS; else process.env.TV_ADDON_HOUSEHOLDS = before; });
+    process.env.TV_ADDON_HOUSEHOLDS = '*';
+    const file = await stateFile(t);
+    const groups = Object.fromEntries(['grove', 'mill'].map((id) => [id, { id, name: id, userIds: [], createdAt: 'old', updatedAt: 'old' }]));
+    await writeFile(file, JSON.stringify({ version: 8, grants: {}, groups, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] }));
+    const tv = (store) => Object.fromEntries(store.listGroups().map((group) => [group.id, group.tvAddonEnabled]));
+    const stored = async () => Object.fromEntries(Object.values(JSON.parse(await readFile(file, 'utf8')).groups).map((group) => [group.id, group.tvAddonEnabled]));
+
+    // `*`: households created after the migration get the add-on too.
+    const all = new GrantStore(file, { tvAddonHouseholds: 'all' });
+    await all.load();
+    assert.equal(all.tvAddonFromEnvironment, true);
+    assert.equal((await all.upsertGroup({ id: 'heath', name: 'Heath', userIds: [] })).tvAddonEnabled, true);
+    assert.deepEqual(tv(all), { grove: true, mill: true, heath: true });
+    await assert.rejects(all.setHouseholdFeatures('mill', { tvAddonEnabled: false }), /TV_ADDON_HOUSEHOLDS/);
+    assert.equal((await all.setHouseholdFeatures('mill', { appEnabled: false, tvAddonEnabled: true })).appEnabled, false);
+
+    // A named list edited before the next start replaces the selection, and is stored.
+    const listed = new GrantStore(file, { tvAddonHouseholds: ['Mill', 'unmatched'] });
+    await listed.load();
+    assert.deepEqual(tv(listed), { grove: false, mill: true, heath: false });
+    assert.deepEqual(await stored(), { grove: false, mill: true, heath: false });
+    assert.equal((await listed.upsertGroup({ id: 'grove', name: 'Edited', userIds: [] })).tvAddonEnabled, false);
+
+    // Unset: the stored switches (what the list last gave) decide and can be changed; new households start off.
+    const unset = new GrantStore(file);
+    await unset.load();
+    assert.equal(unset.tvAddonFromEnvironment, false);
+    assert.deepEqual(tv(unset), { grove: false, mill: true, heath: false });
+    assert.equal((await unset.setHouseholdFeatures('grove', { tvAddonEnabled: true })).tvAddonEnabled, true);
+    assert.equal((await unset.upsertGroup({ id: 'fen', name: 'Fen', userIds: [] })).tvAddonEnabled, false);
+    assert.equal(unset.getGroup('mill').appEnabled, false, 'app switches are untouched by the list');
+  });
+
   for (const version of [7, 8]) {
     it(`reuses an identical v${version} backup and logs only seed counts for a normalized env list`, async (t) => {
       const before = process.env.TV_ADDON_HOUSEHOLDS;

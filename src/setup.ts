@@ -3,6 +3,7 @@ import { parseTrustedProxies } from './client-ip.js';
 import { loadConfig, parseBackfillSince } from './config.js';
 import { generateSecret, mergedEnvironment, missingRequired, setInEnvironment, type SettingsChange, type SettingsStore, type StoredSettings } from './settings.js';
 import { isTmdbCredential, TmdbClient, TmdbError } from './tmdb.js';
+import { JELLYPASS_VERSION } from './version.js';
 
 /**
  * The first-run setup wizard (docs/server-reference.md, "Setup wizard"): each step checks what it is given against the
@@ -591,7 +592,7 @@ async function limitedText(service: string, response: Response): Promise<string>
 }
 
 function jellyfinAuthorization(deviceId: string, token?: string): string {
-  const parameters = [['Client', 'JellyPass'], ['Device', 'Setup'], ['DeviceId', deviceId], ['Version', '4.0.0'], ...(token ? [['Token', token]] : [])];
+  const parameters = [['Client', 'JellyPass'], ['Device', 'Setup'], ['DeviceId', deviceId], ['Version', JELLYPASS_VERSION], ...(token ? [['Token', token]] : [])];
   return `MediaBrowser ${parameters.map(([name, value]) => `${name}="${encodeURIComponent(value as string)}"`).join(', ')}`;
 }
 
