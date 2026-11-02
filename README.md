@@ -118,8 +118,9 @@ webhook goes to the admin listener, for example
 Upgrading to 4.0 from 3.9.x or later 3.x changes the admin port, the health
 check, the Seerr webhook URL and the state file (schema 8, which 3.x cannot
 read): follow the [4.0.0 upgrade steps](CHANGELOG.md#400---2026-10-31) before
-pulling it. Current builds additionally migrate to schema 9 for [household app and TV switches](docs/household-access.md#household-app-and-tv-switches);
-back up state and remove `TV_ADDON_HOUSEHOLDS` after migration.
+pulling it. 4.1.0 migrates the state file to schema 9 for [household app and TV switches](docs/household-access.md#household-app-and-tv-switches)
+(4.0.0 cannot read it): back up state, and remove `TV_ADDON_HOUSEHOLDS` after
+migration; see the [4.1.0 notes](CHANGELOG.md#410---2026-11-02).
 
 To build from source instead, run these inside a clone of this repository
 (the container runs as UID 1000, so it needs a data directory it can write):
