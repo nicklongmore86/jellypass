@@ -72,6 +72,8 @@ Deployment requirements:
   never route a household hostname to the admin listener.
 - Set `TRUSTED_PROXIES` to the proxy (required) and add JellyPass to Jellyfin's
   known proxies; see [Running behind a reverse proxy](server-reference.md#running-behind-a-reverse-proxy).
+- Ready-made Caddy, Cloudflare Tunnel, Nginx Proxy Manager and Traefik
+  setups: [Reverse proxy recipes](reverse-proxy.md).
 - Keep a separate normal Jellyfin administrator/recovery origin.
 
 Signing in on a household address (`POST /Users/AuthenticateByName`, from

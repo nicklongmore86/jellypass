@@ -1,0 +1,46 @@
+# JellyPass behind Caddy, certificates by DNS-01 through Cloudflare's DNS API.
+# One site block per household address. Each address must also be mapped to its household in JellyPass
+# (admin site: Groups → Addresses, or PUT /v1/groups/<id>/addresses). See docs/reverse-proxy.md.
+{
+	email {$ACME_EMAIL}
+	# DNS-01: Caddy proves each name through a DNS record, so ports 80/443 need not be reachable from the internet
+	# for certificates. Token: a Cloudflare API token with two permissions, Zone → Zone → Read and
+	# Zone → DNS → Edit, limited (Zone Resources) to the zone the household names are in.
+	acme_dns cloudflare {$CLOUDFLARE_API_TOKEN}
+}
+
+# Every household address goes to the member listener (:8787), never to the admin listener (:8788).
+# Caddy's defaults are what JellyPass needs, so there is nothing to add:
+# - the client's Host goes upstream unchanged (JellyPass picks the household from it);
+# - X-Forwarded-For is set to the client's address and X-Forwarded-Proto to https, replacing whatever the
+#   client sent (no `trusted_proxies` here, so nobody's forwarding headers are believed);
+# - WebSocket upgrades (/socket) pass through, and responses are streamed, not buffered.
+# No `encode`: JellyPass compresses its HTML pages itself and marks them no-transform. If you add `encode`,
+# it leaves responses that already have a Content-Encoding alone.
+(jellypass_member) {
+	reverse_proxy jellypass:8787
+}
+
+grove.example.com {
+	import jellypass_member
+}
+
+heath.example.com {
+	import jellypass_member
+}
+
+# Optional: Jellyfin's own address, for administrators and the Jellyfin dashboard (household addresses refuse
+# administration). Remove it to keep Jellyfin off the internet. Members must not be given this address, and it must
+# not be one of the household addresses; list it in JELLYFIN_PUBLIC_URLS so the self-check reports it.
+# jellyfin.example.com {
+# 	reverse_proxy jellyfin:8096
+# }
+
+# Optional: the admin site over HTTPS, from private addresses only (your LAN or VPN). The admin listener is not
+# gated by itself; anything that can reach this block can try to sign in. Leave it out to use
+# http://127.0.0.1:8788/admin/ on the Docker host (or an SSH tunnel) instead.
+# admin.example.com {
+# 	@outside not remote_ip private_ranges
+# 	respond @outside 403
+# 	reverse_proxy jellypass:8788
+# }

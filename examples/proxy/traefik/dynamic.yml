@@ -1,0 +1,27 @@
+# Traefik dynamic configuration (file provider). One router per household address, all to the member listener.
+# Every address must also be mapped to its household in JellyPass.
+# Traefik's defaults are what JellyPass needs: the client's Host is passed on (passHostHeader), X-Forwarded-For and
+# X-Forwarded-Proto are set, and WebSocket upgrades and streamed responses pass through. Leave out the `compress`
+# middleware: JellyPass compresses its own HTML pages.
+http:
+  routers:
+    jellypass-grove:
+      rule: Host(`grove.example.com`)
+      entryPoints: [websecure]
+      service: jellypass-member
+      tls:
+        certResolver: letsencrypt
+    jellypass-heath:
+      rule: Host(`heath.example.com`)
+      entryPoints: [websecure]
+      service: jellypass-member
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    jellypass-member:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          # The member listener, never the admin one (8788).
+          - url: http://jellypass:8787
