@@ -32,6 +32,23 @@ const RELAYED = 'jellyfin web page';
 const CI_ON = { pull_request: {}, push: { branches: 'main' } };
 const RELEASE_ON = { push: { tags: 'v*.*.*' } };
 
+describe('JellyPass client version', () => {
+  it('uses the shared version in server authorization headers after a version change', async (t) => {
+    // Load the built client with a different shared version: a matching hard-coded release must still fail.
+    const shared = 'data:text/javascript,' + encodeURIComponent("export const JELLYPASS_VERSION = '99.0.0-version-test';");
+    const source = (await readFile(new URL('../dist/jellyfin.js', import.meta.url), 'utf8'))
+      .replace(/(['"])\.\/version\.js\1/g, JSON.stringify(shared));
+    const { JellyfinClient: VersionedClient } = await import('data:text/javascript,' + encodeURIComponent(source));
+    let authorization;
+    t.mock.method(globalThis, 'fetch', async (_url, init) => {
+      authorization = init.headers.Authorization;
+      return Response.json({ Version: '12.4.0' });
+    });
+    await new VersionedClient('http://jellyfin.example.test', 'test-key').getServerVersion();
+    assert.ok(authorization.includes('Version="99.0.0-version-test"'), authorization);
+  });
+});
+
 describe('supported Jellyfin versions', () => {
   it('supports every 10.11.x and every 12.x, and nothing else', () => {
     assert.deepEqual(SUPPORTED_JELLYFIN_RELEASES, ['10.11', '12']);
