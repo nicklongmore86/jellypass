@@ -206,11 +206,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:4.0.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:4.1.0
 ```
 
-Each release is published as a semantic-version image tag, such as `4.0.0`,
-plus floating `4.0` and `4` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `4.1.0`,
+plus floating `4.1` and `4` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](../CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -807,8 +807,8 @@ docker compose up -d
 curl http://127.0.0.1:8788/health
 ```
 
-Current builds migrate state v7/v8 to v9 for the [household switches](household-access.md#household-app-and-tv-switches).
-Back up state first; older builds cannot read v9. `TV_ADDON_HOUSEHOLDS` seeds TV switches only during migration.
+4.1.0 migrates state v7/v8 to v9 for the [household switches](household-access.md#household-app-and-tv-switches).
+Back up state first; 4.0.0 and older cannot read v9 (see [Rollback to 4.0.0](../CHANGELOG.md#rollback-to-400)). `TV_ADDON_HOUSEHOLDS` seeds TV switches only during migration.
 
 Back up the state file first. **4.0.0 is a breaking release:** the admin site,
 API, metrics, health and the Seerr webhook move to their own listener
@@ -910,6 +910,11 @@ site, API, metrics, health and the Seerr webhook to the admin listener
 cannot read it), takes the Seerr webhook token from the `Authorization: Bearer`
 header only, and refuses household requests on an unconfirmed Jellyfin
 version; follow the [4.0.0 upgrade steps](../CHANGELOG.md#400---2026-10-31).
+Upgrading from 4.0.0 to 4.1.0 changes no setting and needs no CDN purge: it
+migrates the state file to schema 9 (4.0.0 cannot read it; the upgrade writes a
+backup first), copies `TV_ADDON_HOUSEHOLDS` into the new per-household TV
+switches once, and renames the TV add-on's script; see the
+[4.1.0 notes](../CHANGELOG.md#410---2026-11-02).
 If you build from source with `compose.example.yaml`, its service is now named
 `jellypass` instead of `access-bridge`: run
 `docker compose -f compose.example.yaml up --build -d --remove-orphans` once

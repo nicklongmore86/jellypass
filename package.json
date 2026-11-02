@@ -1,6 +1,6 @@
 {
   "name": "jellypass",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "private": false,
   "description": "Personalized library access for Jellyfin.",
   "keywords": [
