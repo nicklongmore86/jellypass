@@ -115,6 +115,10 @@ upgrading:
 
 ### Fixed
 
+- Setup discovers existing Seerr webhooks, requires confirmation before URL or
+  authorization replacement, labels environment settings, and reviews service
+  restarts before applying changes.
+
 - **A broad search no longer closes Jellyfin on low-memory TVs.** Jellyfin
   web's Search page asks for up to 800 items and 100 each of people, studios
   and artists and draws every card at once; on a 2019 Samsung (Tizen 5.0,

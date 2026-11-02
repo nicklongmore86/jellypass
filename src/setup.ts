@@ -66,6 +66,7 @@ export class SetupWizard {
   readonly #now: () => number;
   readonly #log: NonNullable<SetupWizardOptions['log']>;
   readonly #bootRevision: number;
+  readonly #bootSettings: string;
   #steps: Promise<unknown> = Promise.resolve();
   #applying = false;
   /** When a Seerr webhook test last reached the setup-mode listener (see recordWebhookTest). */
@@ -81,6 +82,7 @@ export class SetupWizard {
     this.#now = options.now ?? Date.now;
     this.#log = options.log ?? ((message, fields = {}) => console.log(JSON.stringify({ level: 'info', message, ...fields })));
     this.#bootRevision = options.settings.revision;
+    this.#bootSettings = JSON.stringify(options.settings.current ?? {});
   }
 
   /** The webhook token Seerr must send: the environment's, else the stored one (setup mode answers Seerr's test with it). */
@@ -108,6 +110,9 @@ export class SetupWizard {
       missing: missingRequired(merged).map(describeRequired),
       restartNeeded: this.#mode === 'running' && this.#settings.revision !== this.#bootRevision,
       adminToken: this.#adminTokenSource,
+      changedSettings: Object.keys({ ...JSON.parse(this.#bootSettings), ...stored })
+        .filter((key) => !['version', 'createdAt', 'setupCompletedAt'].includes(key)
+          && JSON.stringify(JSON.parse(this.#bootSettings)[key]) !== JSON.stringify(stored?.[key as keyof StoredSettings])),
       steps: {
         jellyfin: {
           url: merged.JELLYFIN_URL?.trim() || null,
@@ -161,6 +166,25 @@ export class SetupWizard {
         },
       },
     };
+  }
+
+  /** Read Seerr rather than trusting wizard history; failure disables configuration in the UI. */
+  public async liveStatus(): Promise<Record<string, unknown>> {
+    const status = this.status();
+    const steps = status.steps as Record<string, Record<string, unknown>>;
+    const merged = this.#merged();
+    if (merged.SEERR_URL?.trim() && merged.SEERR_API_KEY?.trim()) {
+      try {
+        const current = await seerrWebhookSettings(merged.SEERR_URL.trim(), merged.SEERR_API_KEY.trim());
+        const url = typeof current.options?.webhookUrl === 'string' ? current.options.webhookUrl.trim() : '';
+        steps.seerr!.webhook = url ? { ...(this.#settings.current?.seerrWebhook?.url === url ? this.#settings.current.seerrWebhook : {}), url: publicWebhookUrl(url), enabled: current.enabled === true, existing: true } : null;
+        steps.seerr!.webhookChecked = true;
+      } catch {
+        steps.seerr!.webhook = null;
+        steps.seerr!.webhookChecked = false;
+      }
+    }
+    return status;
   }
 
   /**
@@ -268,9 +292,12 @@ export class SetupWizard {
       const current = await seerrWebhookSettings(seerrUrl, seerrKey);
       const currentUrl = typeof current.options?.webhookUrl === 'string' ? current.options.webhookUrl : '';
       // Seerr has one webhook: one that calls somewhere else, on or off, is someone's, and is replaced only when asked.
-      if (currentUrl.trim() && currentUrl !== webhookUrl && body.replace !== true) {
+      if (currentUrl.trim() && (currentUrl !== webhookUrl || current.options?.authHeader !== `Bearer ${token}`) && body.replace !== true) {
         const enabled = current.enabled === true;
-        throw new SetupError(409, 'seerr_webhook_in_use', `Seerr's webhook is ${enabled ? 'on' : 'off'} and set to call another address. Replace it?`, { currentHost: hostOf(currentUrl), currentEnabled: enabled });
+        throw new SetupError(409, 'seerr_webhook_in_use', `Seerr's webhook is ${enabled ? 'on' : 'off'} and set to call another address. Replace it?`, { currentHost: hostOf(currentUrl), currentUrl: publicWebhookUrl(currentUrl), newUrl: webhookUrl, currentEnabled: enabled });
+      }
+      if (current.enabled === true && currentUrl === webhookUrl && current.options?.authHeader === `Bearer ${token}`) {
+        return { status: 'kept', url: webhookUrl };
       }
       const settings = {
         enabled: true,
@@ -527,6 +554,17 @@ function serviceUrl(input: unknown, service: string, name = 'url'): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }
 
+function publicWebhookUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch { return '(invalid webhook URL)'; }
+}
+
 function hostOf(value: string): string | null {
   return URL.parse(value)?.host || null;
 }
@@ -679,9 +717,9 @@ async function seerrCall(url: string, apiKey: string, pathname: string, method: 
 }
 
 /** Seerr's webhook settings; reading them needs an administrator's key, so this also checks the key. */
-async function seerrWebhookSettings(url: string, apiKey: string): Promise<{ enabled?: unknown; options?: { webhookUrl?: unknown; customHeaders?: unknown } }> {
+async function seerrWebhookSettings(url: string, apiKey: string): Promise<{ enabled?: unknown; options?: { webhookUrl?: unknown; authHeader?: unknown; customHeaders?: unknown } }> {
   const result = await seerrCall(url, apiKey, '/api/v1/settings/notifications/webhook', 'GET');
   const body = result.body;
   if (!body || typeof body !== 'object') throw new SetupError(502, 'seerr_not_found', `${url} does not answer as Seerr.`);
-  return body as { enabled?: unknown; options?: { webhookUrl?: unknown; customHeaders?: unknown } };
+  return body as { enabled?: unknown; options?: { webhookUrl?: unknown; authHeader?: unknown; customHeaders?: unknown } };
 }

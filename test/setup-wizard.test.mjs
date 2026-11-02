@@ -416,6 +416,35 @@ describe('setup wizard: steps', () => {
     assertNoSecret(urlOnly.answers.join('\n') + keyOnly.answers.join('\n'));
   });
 
+  it('discovers environment-configured webhooks and guards same-URL auth replacement', async (t) => {
+    const seerr = await createSetupSeerr();
+    t.after(() => seerr.close());
+    const { call, base } = await setupMode(t, { mode: 'running', environment: {
+      SEERR_URL: seerr.url, SEERR_API_KEY: SECRETS.seerrKey,
+      WEBHOOK_TOKEN: 'synthetic-webhook-token', TMDB_API_KEY: SECRETS.tmdbKey,
+      REQUEST_BACKFILL_ENABLED: 'false',
+    } });
+    const url = base + '/webhooks/seerr';
+    seerr.state.webhook = { enabled: true, options: { webhookUrl: url, authHeader: 'Bearer different', jsonPayload: '{}' } };
+    const status = (await call('/v1/setup', { method: 'GET' })).body;
+    assert.equal(status.steps.seerr.webhook.url, url);
+    assert.equal(status.steps.seerr.webhookChecked, true);
+    assert.equal(status.steps.seerr.source, 'environment');
+    assert.equal(status.steps.seerr.locked, true);
+    assert.equal(status.steps.tmdb.source, 'environment');
+    assert.equal(status.steps.tmdb.locked, true);
+    assert.equal(status.steps.backfill.locked, true);
+    assert.equal(status.steps.secrets.source, 'environment');
+    const refused = await call('/v1/setup/webhook', { body: { jellypassUrl: base } });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.currentUrl, url);
+    assert.equal(seerr.requests.filter((r) => r.method === 'POST').length, 0);
+    assert.equal((await call('/v1/setup/webhook', { body: { jellypassUrl: base, replace: true } })).status, 200);
+    const writes = seerr.requests.filter((r) => r.method === 'POST').length;
+    assert.equal((await call('/v1/setup/webhook', { body: { jellypassUrl: base } })).body.status, 'kept');
+    assert.equal(seerr.requests.filter((r) => r.method === 'POST').length, writes);
+  });
+
   it('asks before replacing a Seerr webhook that is off but set to call another address', async (t) => {
     const other = await createSetupSeerr({ webhook: { enabled: false, types: 8, options: { webhookUrl: 'https://hooks.example.net/kept', jsonPayload: '{}', customHeaders: [] } } });
     t.after(() => other.close());
@@ -583,6 +612,7 @@ describe('setup wizard on a running JellyPass', () => {
 describe('setup wizard page', () => {
   function setupPage(answer) {
     const { window, document } = parseHTML(SETUP_HTML);
+    window.location = { origin: 'http://setup.example:8788' };
     const requests = [];
     const storage = [];
     const context = {
@@ -617,6 +647,30 @@ describe('setup wizard page', () => {
       household: { gatewayEnabled: false, appEnabled: false, trustedProxies: [], locked: { gatewayEnabled: false, appEnabled: false, trustedProxies: false }, lockedBy: [] },
     },
   };
+
+  it('reviews webhook replacement and running-mode restart before sending writes', async () => {
+    const current = { ...STATUS, mode: 'running', changedSettings: ['trustedProxies'],
+      steps: { ...STATUS.steps, seerr: { ...STATUS.steps.seerr, apiKey: 'set', webhookChecked: true,
+        webhook: { url: 'http://access-bridge:8788/webhooks/seerr', enabled: true } } } };
+    const page = setupPage(() => ({ status: 200, body: current }));
+    const byId = (id) => page.document.getElementById(id);
+    byId('setup-token').value = SECRETS.adminToken;
+    await page.submit('setup-token-form');
+    assert.equal(byId('webhook-base').value, 'http://access-bridge:8788');
+    assert.match(page.document.querySelector('[data-state="webhook"]').textContent, /Already configured/);
+    byId('webhook-base').value = 'http://new-bridge:8788';
+    await page.submit('webhook-form');
+    assert.equal(page.requests.length, 1);
+    assert.equal(byId('webhook-review').hidden, false);
+    assert.match(byId('webhook-change').textContent, /access-bridge.*→.*new-bridge/);
+    byId('webhook-confirm').checked = true;
+    await page.submit('webhook-form');
+    assert.equal(JSON.parse(page.requests[1].init.body).replace, true);
+    await page.submit('finish-form');
+    assert.equal(page.requests.length, 2);
+    assert.equal(byId('finish-review').hidden, false);
+    assert.match(byId('finish-changes').textContent, /restarts JellyPass.*trustedProxies/);
+  });
 
   it('keeps the token in memory only, sends it as a bearer token, clears the password once sent, and greys out locked steps', async () => {
     const page = setupPage((pathname, init) => {

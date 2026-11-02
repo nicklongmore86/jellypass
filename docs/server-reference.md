@@ -310,6 +310,24 @@ and the Seerr webhook's test notification, and answers everything else
 `503 setup_required`. There is no member listener, so no household address is
 served, until setup has finished.
 
+The wizard reads Seerr's current webhook before offering configuration, including
+on installations configured entirely by environment variables. Existing URLs are
+shown even when disabled (credentials, query strings and fragments are omitted); a failed read disables the webhook form. The suggested
+admin address uses that existing webhook URL (without `/webhooks/seerr`), otherwise
+the browser's current origin (request Host and scheme). Verify that Seerr can
+reach it; reverse proxy addresses may differ from container addresses.
+
+Replacing a webhook requires an in-page review of the old and new URLs.
+`POST /v1/setup/webhook` retains its `replace: true` contract and 409
+`seerr_webhook_in_use` response; the guard now also covers changing authorization
+at the same URL. Error details add `currentUrl` and `newUrl` while retaining
+`currentHost` and `currentEnabled`. An enabled webhook with matching URL and
+authorization returns `status: "kept"` without writing to Seerr.
+Setup status adds `webhookChecked` on the Seerr step and `changedSettings`
+(setting names only, never values). Environment-controlled fields are labeled
+“Set by environment”. Applying in running mode requires an in-page confirmation
+listing saved settings changes and explaining the service restart and admin sign-out.
+
 Each step checks what it is given and stores the result at once, so a wizard
 left half done resumes where it stopped and a step can be run again. Nothing
 starts until **Finish**: a restart part way through comes back in setup mode

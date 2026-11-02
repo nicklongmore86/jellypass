@@ -636,7 +636,7 @@ async function setupRoute(request: IncomingMessage, response: ServerResponse, ur
       return true;
     }
     if (request.method === 'GET' && url.pathname === '/v1/setup') {
-      json(response, 200, setup.status());
+      json(response, 200, await setup.liveStatus());
       return true;
     }
     const step = url.pathname.slice('/v1/setup/'.length);
@@ -644,7 +644,7 @@ async function setupRoute(request: IncomingMessage, response: ServerResponse, ur
       const body = await optionalBody(request);
       const run = setup[step as 'jellyfin'] as (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
       const result = await run.call(setup, body);
-      json(response, 200, { ...result, setup: setup.status() });
+      json(response, 200, { ...result, setup: step === 'finish' ? setup.status() : await setup.liveStatus() });
       return true;
     }
     json(response, 404, { error: 'not_found' });
