@@ -583,6 +583,12 @@ export const ADMIN_APP_JS = `
         input.setAttribute('role', 'switch');
         input.setAttribute('aria-label', label);
         input.checked = group[key] === true;
+        // Set in the environment (the deprecated TV_ADDON_HOUSEHOLDS), which wins over the switch until it is removed.
+        const lockedBy = key === 'tvAddonEnabled' && group.tvAddonLockedBy && group.tvAddonLockedBy.length ? group.tvAddonLockedBy : null;
+        const lockedText = lockedBy ? 'Set in the environment (' + lockedBy.join(', ') + '), which wins over this switch.' : '';
+        input.dataset.locked = lockedBy ? 'true' : '';
+        input.disabled = Boolean(lockedBy);
+        if (lockedBy) input.title = lockedText;
         input.addEventListener('change', async () => {
           switches.querySelectorAll('input').forEach((control) => { control.disabled = true; });
           try {
@@ -591,9 +597,9 @@ export const ADMIN_APP_JS = `
             Object.assign(group, result.group);
             switches.querySelectorAll('input').forEach((control) => { control.checked = group[control.dataset.feature] === true; });
           } catch (error) { input.checked = group[key] === true; toast(error.message); }
-          finally { switches.querySelectorAll('input').forEach((control) => { control.disabled = false; }); }
+          finally { switches.querySelectorAll('input').forEach((control) => { control.disabled = control.dataset.locked === 'true'; }); }
         });
-        switches.append(node('label', {}, [input, node('span', { text: label })]));
+        switches.append(node('label', lockedBy ? { title: lockedText } : {}, [input, node('span', { text: label })].concat(lockedBy ? [node('small', { class: 'meta', text: lockedText })] : [])));
       });
       list.append(node('article', { class: 'group-card' }, [node('div', { class: 'mono', text: group.id }), node('h3', { text: group.name }), node('p', { text: group.userIds.map(userName).join(', ') || 'No users in this group' }), route, switches, node('footer', {}, [node('span', { text: group.userIds.length + ' member' + (group.userIds.length === 1 ? '' : 's') }), node('div', { class: 'card-actions' }, [addUser, editAddresses, edit, remove])])]));
     });

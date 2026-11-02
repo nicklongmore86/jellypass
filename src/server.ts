@@ -185,6 +185,9 @@ export function makeServers(
     }
     return addressBook;
   };
+  // While the deprecated TV_ADDON_HOUSEHOLDS is set it decides the TV switches, so the admin site shows them locked
+  // the way the setup wizard shows a setting the environment wins over (`lockedBy`).
+  const tvAddonLock = () => (service.tvAddonFromEnvironment ? { tvAddonLockedBy: ['TV_ADDON_HOUSEHOLDS'] } : {});
   // Address changes are checked against the map and stored one at a time, so two never pass the check together.
   let addressWrites: Promise<unknown> = Promise.resolve();
   const writeAddresses = <T>(write: () => Promise<T>): Promise<T> => {
@@ -375,6 +378,7 @@ export function makeServers(
           const householdUrl = householdGateway ? book.householdUrl(group.id) : undefined;
           return {
             ...group,
+            ...tvAddonLock(),
             ...(householdUrl ? { householdUrl } : {}),
             // Every address that selects the household, the canonical one first (shown where householdUrl is).
             ...(householdGateway ? { householdAddresses: [origin, ...aliases, legacy].filter((address) => address !== undefined) } : {}),
@@ -385,7 +389,7 @@ export function makeServers(
         const body = recordBody(await readJson(request));
         if (!Object.keys(body).length || Object.entries(body).some(([key, value]) => (key !== 'appEnabled' && key !== 'tvAddonEnabled') || typeof value !== 'boolean')) throw new Error('body must contain appEnabled and/or tvAddonEnabled booleans');
         const group = await service.setHouseholdFeatures(validId(segments[2], 'groupId'), { ...(typeof body.appEnabled === 'boolean' ? { appEnabled: body.appEnabled } : {}), ...(typeof body.tvAddonEnabled === 'boolean' ? { tvAddonEnabled: body.tvAddonEnabled } : {}) });
-        return json(response, 200, { status: 'saved', group });
+        return json(response, 200, { status: 'saved', group: { ...group, ...tvAddonLock() } });
       }
       if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'groups' && segments[3] === 'addresses') {
         if (request.method === 'GET') {

@@ -168,13 +168,16 @@ Turning app access off refuses authenticated household members' API requests wit
 This does not disable ordinary Jellyfin playback or revoke an in-flight request.
 
 Admin automation can `PUT /v1/groups/{id}/features` with one or both boolean fields `appEnabled` and `tvAddonEnabled` (send only the changed flag).
-`GET /v1/groups` includes both fields. These routes require admin authentication on the admin listener;
+`GET /v1/groups` includes both fields, and `tvAddonLockedBy: ["TV_ADDON_HOUSEHOLDS"]` while that variable decides TV access (a change to `tvAddonEnabled` is then refused with `409` and `code: tv_addon_environment`). These routes require admin authentication on the admin listener;
 household hosts refuse them. Membership edits preserve both switches.
 
 State schema v9 stores the switches. On upgrade from v8 or v7, app access starts on and TV injection is seeded from
-`TV_ADDON_HOUSEHOLDS` if present (`*` or comma-separated household IDs), otherwise off. This happens only once.
-Remove that deprecated variable after upgrade; stored switches are authoritative and a remaining variable produces
-one warning per process. Back up state before upgrading; older builds cannot read schema v9.
+`TV_ADDON_HOUSEHOLDS` if present (`*` or comma-separated household IDs), otherwise off.
+While that deprecated variable stays set (with `TV_ADDON_ENABLED=true`) it keeps its 4.0.0 meaning: it is read at
+every start, `*` covers households created later, a list edit applies at the next restart, and it wins over the TV
+switches, which follow it (stored, so nothing changes when it goes) and are shown locked, the way an environment
+setting wins over the setup wizard. Remove it and restart to manage TV access with the switches. A set variable
+produces one warning per process. Back up state before upgrading; older builds cannot read schema v9.
 
 Before its first v9 save, migration writes and fsyncs a private temporary copy, then publishes it atomically as
 `<state-file>.v8.bak` (or `.v7.bak`) without replacing an existing file. An identical backup is reused. If an existing

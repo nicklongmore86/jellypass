@@ -54,6 +54,28 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 4.1.0 without its heading, up to the 4.0.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '4.1.0');
+    assertSection(notes, {
+      version: '4.1.0',
+      nextVersion: '4.0.0',
+      subheadings: ['Added', 'Fixed', 'Upgrade from 4\\.0\\.0', 'Rollback to 4\\.0\\.0'],
+    });
+    assert.match(notes, /^This is a minor release\./);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*An existing install upgrades without any change to its configuration:\*\*/);
+    assert.match(flat, /4\.0\.0 refuses to start on the result/);
+    assert.match(flat, /`unsupported state schema version`/);
+    assert.match(flat, /`jellypass-tv\.[0-9a-f]{12}\.js`/);
+    assert.match(flat, /`mobile\/CHANGELOG\.md`/);
+    const added = notes.indexOf('### Added');
+    for (const note of ['**The state file migrates to schema 9', '**`TV_ADDON_HOUSEHOLDS` is deprecated.**', '**The TV add-on\'s script has a new name,**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `${note} is summarised first`);
+    }
+    assert.ok(notes.indexOf('### Upgrade from 4.0.0') < notes.indexOf('### Rollback to 4.0.0'));
+    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|starrgroup|TU7000|sdb\b/i, 'no server-specific details');
+  });
+
   it('extracts 4.0.0 without its heading, up to the 3.10.0 section', () => {
     const notes = changelogSection(CHANGELOG, '4.0.0');
     assertSection(notes, {

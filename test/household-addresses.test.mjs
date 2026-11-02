@@ -552,4 +552,46 @@ describe('household feature switches', () => {
     assert.equal((await put(app.adminPort, ADMIN_HOST, features(true, false))).status, 200);
     assert.equal((await app.get('/jellypass/app/v1/me')).status, 200);
   });
+
+  it('lets a set TV_ADDON_HOUSEHOLDS decide TV access as in 4.0.0, locks its switches, and hands over once removed', async (t) => {
+    const route = (id) => `/v1/groups/${id}/features`;
+    const put = (app, id, body) => get(app.adminPort, route(id), { Host: ADMIN_HOST, 'Content-Type': 'application/json', ...BEARER }, { method: 'PUT', body: JSON.stringify(body) });
+    const groups = async (app) => JSON.parse((await get(app.adminPort, '/v1/groups', { Host: ADMIN_HOST, ...BEARER })).body).groups;
+    const injected = async (app, host) => /data-jellypass-tv/.test((await app.get('/web/index.html', { host, user: null })).text);
+    const HOST_NEW = 'jelly-heath.example.test';
+
+    // `*`: every household, one created after the v9 migration included.
+    const all = await startApp(t, Object.assign(world(), { webPage: {} }), { tvAddon: true, tvEnvHouseholds: 'all' });
+    await all.store.upsertGroup({ id: 'heath', name: 'Heath', userIds: [] });
+    assert.deepEqual(all.store.listGroups().map((group) => [group.id, group.tvAddonEnabled]).sort(), [['grove', true], ['heath', true], ['mill', true]]);
+    for (const host of [HOST_A, HOST_B, HOST_NEW]) assert.equal(await injected(all, host), true, host);
+    for (const group of await groups(all)) assert.deepEqual(group.tvAddonLockedBy, ['TV_ADDON_HOUSEHOLDS'], group.id);
+    // The TV switch is locked; the app switch is not, and saving the TV switch's current value is no change.
+    const refused = await put(all, 'mill', { tvAddonEnabled: false });
+    assert.equal(refused.status, 409);
+    assert.equal(JSON.parse(refused.body).code, 'tv_addon_environment');
+    assert.match(JSON.parse(refused.body).error, /TV_ADDON_HOUSEHOLDS/);
+    assert.equal(all.store.getGroup('mill').tvAddonEnabled, true);
+    const saved = await put(all, 'mill', { appEnabled: false, tvAddonEnabled: true });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(JSON.parse(saved.body).group.tvAddonLockedBy, ['TV_ADDON_HOUSEHOLDS']);
+    assert.deepEqual(all.service.getHouseholdFeatures('mill'), { appEnabled: false, tvAddonEnabled: true });
+    await put(all, 'mill', { appEnabled: true });
+
+    // A named list, edited between starts, takes effect on the next start.
+    const stateFile = JSON.parse(await readFile(all.stateFile, 'utf8'));
+    const listed = await startApp(t, Object.assign(world(), { webPage: {} }), { tvAddon: true, tvEnvHouseholds: ['mill'], stateFile });
+    assert.deepEqual(listed.store.listGroups().map((group) => [group.id, group.tvAddonEnabled]).sort(), [['grove', false], ['heath', false], ['mill', true]]);
+    assert.deepEqual([await injected(listed, HOST_A), await injected(listed, HOST_B), await injected(listed, HOST_NEW)], [false, true, false]);
+    assert.deepEqual(JSON.parse(await readFile(listed.stateFile, 'utf8')).groups.mill.tvAddonEnabled, true, 'stored, so removing the list keeps it');
+
+    // Removed: the stored switches (what the list last gave) decide, and they can be changed.
+    const unset = await startApp(t, Object.assign(world(), { webPage: {} }), { tvAddon: true, tvHouseholds: null, stateFile: JSON.parse(await readFile(listed.stateFile, 'utf8')) });
+    assert.deepEqual(unset.store.listGroups().map((group) => [group.id, group.tvAddonEnabled]).sort(), [['grove', false], ['heath', false], ['mill', true]]);
+    for (const group of await groups(unset)) assert.equal(group.tvAddonLockedBy, undefined, group.id);
+    assert.equal((await put(unset, 'grove', { tvAddonEnabled: true })).status, 200);
+    assert.deepEqual([await injected(unset, HOST_A), await injected(unset, HOST_B), await injected(unset, HOST_NEW)], [true, true, false]);
+    const created = await unset.store.upsertGroup({ id: 'fen', name: 'Fen', userIds: [] });
+    assert.equal(created.tvAddonEnabled, false, 'a household created without the list starts with TV off');
+  });
 });
