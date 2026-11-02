@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { parseTrustedProxies } from './client-ip.js';
 import { loadConfig, parseBackfillSince } from './config.js';
 import { generateSecret, mergedEnvironment, missingRequired, setInEnvironment, type SettingsChange, type SettingsStore, type StoredSettings } from './settings.js';
@@ -66,6 +66,8 @@ export class SetupWizard {
   readonly #now: () => number;
   readonly #log: NonNullable<SetupWizardOptions['log']>;
   readonly #bootRevision: number;
+  readonly #bootSettings: string;
+  readonly #reviewKey = randomUUID();
   #steps: Promise<unknown> = Promise.resolve();
   #applying = false;
   /** When a Seerr webhook test last reached the setup-mode listener (see recordWebhookTest). */
@@ -81,6 +83,7 @@ export class SetupWizard {
     this.#now = options.now ?? Date.now;
     this.#log = options.log ?? ((message, fields = {}) => console.log(JSON.stringify({ level: 'info', message, ...fields })));
     this.#bootRevision = options.settings.revision;
+    this.#bootSettings = JSON.stringify(options.settings.current ?? {});
   }
 
   /** The webhook token Seerr must send: the environment's, else the stored one (setup mode answers Seerr's test with it). */
@@ -108,6 +111,9 @@ export class SetupWizard {
       missing: missingRequired(merged).map(describeRequired),
       restartNeeded: this.#mode === 'running' && this.#settings.revision !== this.#bootRevision,
       adminToken: this.#adminTokenSource,
+      changedSettings: Object.keys({ ...JSON.parse(this.#bootSettings), ...stored })
+        .filter((key) => !['version', 'createdAt', 'setupCompletedAt'].includes(key)
+          && JSON.stringify(JSON.parse(this.#bootSettings)[key]) !== JSON.stringify(stored?.[key as keyof StoredSettings])),
       steps: {
         jellyfin: {
           url: merged.JELLYFIN_URL?.trim() || null,
@@ -161,6 +167,32 @@ export class SetupWizard {
         },
       },
     };
+  }
+
+  #webhookState(current: unknown): string {
+    return createHmac('sha256', this.#reviewKey).update(JSON.stringify([this.#merged().SEERR_URL, current])).digest('hex');
+  }
+
+  /** Read Seerr rather than trusting wizard history; failure disables configuration in the UI. */
+  public async liveStatus(): Promise<Record<string, unknown>> {
+    const status = this.status();
+    const steps = status.steps as Record<string, Record<string, unknown>>;
+    const merged = this.#merged();
+    if (merged.SEERR_URL?.trim() && merged.SEERR_API_KEY?.trim()) {
+      try {
+        const current = await seerrWebhookSettings(merged.SEERR_URL.trim(), merged.SEERR_API_KEY.trim());
+        const url = typeof current.options?.webhookUrl === 'string' ? current.options.webhookUrl.trim() : '';
+        steps.seerr!.webhook = url ? { ...(this.#settings.current?.seerrWebhook?.url === url ? this.#settings.current.seerrWebhook : {}), url: publicWebhookUrl(url), enabled: current.enabled === true, existing: true,
+          currentState: this.#webhookState(current),
+          matches: webhookMatches(current, url, this.webhookToken()),
+        } : null;
+        steps.seerr!.webhookChecked = true;
+      } catch {
+        steps.seerr!.webhook = null;
+        steps.seerr!.webhookChecked = false;
+      }
+    }
+    return status;
   }
 
   /**
@@ -251,11 +283,11 @@ export class SetupWizard {
   /**
    * Points Seerr's webhook at JellyPass: Request Available only, the payload JellyPass reads, and the webhook token as
    * a bearer token. Seerr has a single webhook; one that is on and calls somewhere else is replaced only with
-   * `replace: true`. Then asks Seerr to send its test notification and reports whether it reached JellyPass.
+   * `replace: true` and a review bound to the current settings and target. Then asks Seerr to send its test notification and reports whether it reached JellyPass.
    */
   public webhook(body: Body): Promise<Record<string, unknown>> {
     return this.#step(async () => {
-      only(body, ['jellypassUrl', 'replace']);
+      only(body, ['jellypassUrl', 'replace', 'expectedCurrentUrl', 'expectedState', 'expectedTargetUrl']);
       const merged = this.#merged();
       const seerrUrl = merged.SEERR_URL?.trim();
       const seerrKey = merged.SEERR_API_KEY?.trim();
@@ -263,15 +295,28 @@ export class SetupWizard {
       const base = serviceUrl(body.jellypassUrl, 'JellyPass', 'jellypassUrl');
       const webhookUrl = `${base}/webhooks/seerr`;
       if (body.replace !== undefined && typeof body.replace !== 'boolean') throw new SetupError(400, 'invalid_request', 'replace must be a boolean');
+      if (body.replace === true && ['expectedState', 'expectedCurrentUrl', 'expectedTargetUrl']
+        .some((field) => typeof body[field] !== 'string' || !body[field])) {
+        throw new SetupError(400, 'review_required', 'Review the current webhook and target first; replacement requires expectedState, expectedCurrentUrl and expectedTargetUrl.');
+      }
       await this.#ensureWebhookToken();
       const token = this.webhookToken() as string;
       const current = await seerrWebhookSettings(seerrUrl, seerrKey);
       const currentUrl = typeof current.options?.webhookUrl === 'string' ? current.options.webhookUrl : '';
-      // Seerr has one webhook: one that calls somewhere else, on or off, is someone's, and is replaced only when asked.
-      if (currentUrl.trim() && currentUrl !== webhookUrl && body.replace !== true) {
-        const enabled = current.enabled === true;
-        throw new SetupError(409, 'seerr_webhook_in_use', `Seerr's webhook is ${enabled ? 'on' : 'off'} and set to call another address. Replace it?`, { currentHost: hostOf(currentUrl), currentEnabled: enabled });
+      const matches = webhookMatches(current, webhookUrl, token);
+      const currentState = this.#webhookState(current);
+      const details = { currentHost: hostOf(currentUrl), currentUrl: currentUrl.trim() ? publicWebhookUrl(currentUrl) : null,
+        newUrl: webhookUrl, currentEnabled: current.enabled === true, currentState };
+      if (body.replace === true && (body.expectedState !== currentState
+        || body.expectedCurrentUrl !== publicWebhookUrl(currentUrl) || body.expectedTargetUrl !== webhookUrl)) {
+        throw new SetupError(409, 'seerr_webhook_in_use', 'Seerr’s webhook or the target changed. Review the current settings again.', details);
       }
+      if (currentUrl.trim() && !matches && body.replace !== true) {
+        const difference = currentUrl !== webhookUrl ? 'a different address'
+          : current.options?.authHeader !== `Bearer ${token}` ? 'different authorization' : 'different notification settings';
+        throw new SetupError(409, 'seerr_webhook_in_use', `Seerr’s webhook has ${difference}. Review it before replacing.`, details);
+      }
+      if (matches && body.replace !== true) return { status: 'kept', url: webhookUrl };
       const settings = {
         enabled: true,
         embedPoster: false,
@@ -527,6 +572,26 @@ function serviceUrl(input: unknown, service: string, name = 'url'): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }
 
+function webhookMatches(current: Awaited<ReturnType<typeof seerrWebhookSettings>>, url: string, token: string | undefined): boolean {
+  return current.enabled === true && Boolean(token) && current.options?.webhookUrl === url
+    && current.options?.authHeader === `Bearer ${token}` && current.types === SEERR_MEDIA_AVAILABLE
+    && current.embedPoster === false && current.options?.jsonPayload === SEERR_WEBHOOK_TEMPLATE
+    && current.options?.supportVariables === false;
+}
+
+function publicWebhookUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    if (!/^https?:$/.test(url.protocol)) return '(invalid webhook URL)';
+    if (!url.pathname.endsWith('/webhooks/seerr')) return url.origin + '/[masked]';
+    return url.toString();
+  } catch { return '(invalid webhook URL)'; }
+}
+
 function hostOf(value: string): string | null {
   return URL.parse(value)?.host || null;
 }
@@ -679,9 +744,9 @@ async function seerrCall(url: string, apiKey: string, pathname: string, method: 
 }
 
 /** Seerr's webhook settings; reading them needs an administrator's key, so this also checks the key. */
-async function seerrWebhookSettings(url: string, apiKey: string): Promise<{ enabled?: unknown; options?: { webhookUrl?: unknown; customHeaders?: unknown } }> {
+async function seerrWebhookSettings(url: string, apiKey: string): Promise<{ enabled?: unknown; embedPoster?: unknown; types?: unknown; options?: { webhookUrl?: unknown; authHeader?: unknown; customHeaders?: unknown; jsonPayload?: unknown; supportVariables?: unknown } }> {
   const result = await seerrCall(url, apiKey, '/api/v1/settings/notifications/webhook', 'GET');
   const body = result.body;
   if (!body || typeof body !== 'object') throw new SetupError(502, 'seerr_not_found', `${url} does not answer as Seerr.`);
-  return body as { enabled?: unknown; options?: { webhookUrl?: unknown; customHeaders?: unknown } };
+  return body as { enabled?: unknown; embedPoster?: unknown; types?: unknown; options?: { webhookUrl?: unknown; authHeader?: unknown; customHeaders?: unknown; jsonPayload?: unknown; supportVariables?: unknown } };
 }
