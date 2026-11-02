@@ -781,6 +781,16 @@ export const ADMIN_APP_JS = `
     await busy(apply);
   }
 
+  // A preview answers for the form the administrator submitted. Each previewing dialog has a generation, bumped when it
+  // opens, closes (Cancel, ×, Escape) or one of its inputs changes; previewFor(dialogId) captures it and answers a check
+  // that is false once the dialog is closed or its generation moved on, so a late preview opens no plan.
+  const generations = new Map();
+  function invalidatePreview(dialogId) { generations.set(dialogId, (generations.get(dialogId) || 0) + 1); }
+  function previewFor(dialogId) {
+    const generation = generations.get(dialogId) || 0;
+    return () => byId(dialogId).open && generations.get(dialogId) === generation;
+  }
+
   function summary(label, value) { return node('article', {}, [node('span', { text: label }), node('strong', { text: String(value) })]); }
 
   async function showGrantPlan(grant) {
@@ -834,6 +844,7 @@ export const ADMIN_APP_JS = `
     options.replaceChildren();
     state.groups.forEach((group) => options.append(checkOption('grant-group', group.id, group.name, group.userIds.length + ' members', selected.has(group.id))));
     if (!state.groups.length) options.append(node('p', { class: 'hint', text: 'Create a group first, then attach it to this title.' }));
+    invalidatePreview('access-dialog');
     byId('access-dialog').showModal();
   }
 
@@ -848,6 +859,7 @@ export const ADMIN_APP_JS = `
       revoke.addEventListener('click', () => revokeRequest(grant, requestId, userId));
       list.append(node('div', { class: 'request-row' }, [node('div', {}, [node('strong', { text: userName(userId) }), node('small', { text: 'Request ' + requestId + ' · ' + userId })]), revoke]));
     });
+    invalidatePreview('requests-dialog');
     byId('requests-dialog').showModal();
   }
 
@@ -914,6 +926,7 @@ export const ADMIN_APP_JS = `
     groupOptions.replaceChildren();
     state.groups.forEach((group) => groupOptions.append(checkOption('bulk-group', group.id, group.name, group.userIds.length + ' members', selectedGroups.has(group.id))));
     if (!state.groups.length) groupOptions.append(node('p', { class: 'hint', text: 'No access groups exist yet.' }));
+    invalidatePreview('bulk-dialog');
     byId('bulk-dialog').showModal();
   }
 
@@ -929,9 +942,12 @@ export const ADMIN_APP_JS = `
       return;
     }
     const titles = body.itemIds.length + ' selected title' + (body.itemIds.length === 1 ? '' : 's');
+    const current = previewFor('bulk-dialog');
+    const sameSelection = () => state.selectedItems.size === body.itemIds.length && body.itemIds.every((id) => state.selectedItems.has(id));
     await previewThenApply(async (live) => {
       const preview = await api('/v1/library/access?dryRun=true', { method: 'PUT', body: JSON.stringify(body) });
       live();
+      if (!current() || !sameSelection()) return undefined;
       byId('bulk-dialog').close();
       return { title: 'Bulk library access plan', plans: preview.result.plans, confirmation: { question: 'Apply this audience to ' + titles + '?', confirm: 'Apply to ' + titles } };
     }, async (live) => {
@@ -960,6 +976,7 @@ export const ADMIN_APP_JS = `
     byId('move-search').value = '';
     byId('move-error').textContent = '';
     showMoveTargets([], 'Type at least 2 characters of the new item’s title, or paste its Jellyfin item ID.');
+    invalidatePreview('move-dialog');
     byId('move-dialog').showModal();
     byId('move-search').focus();
   }
@@ -999,6 +1016,7 @@ export const ADMIN_APP_JS = `
 
   function showMoveTargets(items, status) {
     move.target = null;
+    invalidatePreview('move-dialog');
     byId('move-preview').disabled = true;
     byId('move-status').textContent = status;
     byId('move-results').replaceChildren(...items.map((item) => {
@@ -1026,6 +1044,7 @@ export const ADMIN_APP_JS = `
     const toItemId = target.id;
     const path = '/v1/grants/' + encodeURIComponent(grant.itemId) + '/remap';
     const body = JSON.stringify({ toItemId });
+    const current = previewFor('move-dialog');
     // The sentence for a refused move; a source that reappeared was granted anyway, so the grants are read again.
     const refusal = async (error, live) => {
       if (error.stale) throw error;
@@ -1043,6 +1062,7 @@ export const ADMIN_APP_JS = `
       try {
         const preview = await api(path + '?dryRun=true', { method: 'POST', body });
         live();
+        if (!current()) return undefined;
         byId('move-dialog').close();
         return {
           title: 'Move plan',
@@ -1050,6 +1070,9 @@ export const ADMIN_APP_JS = `
           confirmation: { question: 'Move this grant from ' + grant.itemId + ' to ' + target.name + ' (' + toItemId + ')?', confirm: 'Move grant', danger: true },
         };
       } catch (error) {
+        if (error.stale) throw error;
+        // A refusal for a form that was closed or changed meanwhile is not shown.
+        if (!current()) return undefined;
         // Shown in the dialog, which stays open: another item can be chosen.
         byId('move-error').textContent = await refusal(error, live);
         return undefined;
@@ -1070,9 +1093,11 @@ export const ADMIN_APP_JS = `
 
   async function revokeRequest(grant, requestId, userId) {
     const path = '/v1/grants/' + encodeURIComponent(grant.itemId) + '/requests/' + encodeURIComponent(requestId);
+    const current = previewFor('requests-dialog');
     await previewThenApply(async (live) => {
       const preview = await api(path + '?dryRun=true', { method: 'DELETE' });
       live();
+      if (!current()) return undefined;
       byId('requests-dialog').close();
       return { title: 'Revocation plan', plans: preview.result.plan, confirmation: { question: 'Revoke the grant from Seerr request ' + requestId + ' for ' + userName(userId) + '?', confirm: 'Revoke', danger: true } };
     }, async (live) => {
@@ -1167,9 +1192,11 @@ export const ADMIN_APP_JS = `
     event.preventDefault();
     const itemId = byId('access-item-id').value;
     const groupIds = checkedValues('grant-group');
+    const current = previewFor('access-dialog');
     await previewThenApply(async (live) => {
       const preview = await api('/v1/grants/' + encodeURIComponent(itemId) + '/groups?dryRun=true', { method: 'PUT', body: JSON.stringify({ groupIds }) });
       live();
+      if (!current()) return undefined;
       byId('access-dialog').close();
       return { title: 'Shared access plan', plans: preview.result.plan, confirmation: { question: 'Apply this shared-access change now?', confirm: 'Apply changes' } };
     }, async (live) => {
@@ -1410,6 +1437,11 @@ export const ADMIN_APP_JS = `
   byId('access-form').addEventListener('submit', previewAccess);
   byId('move-form').addEventListener('submit', submitMove);
   byId('move-search').addEventListener('input', scheduleMoveSearch);
+  // A pending preview is dropped when its dialog closes (Cancel, ×, Escape) or its form changes (target, groups, users).
+  ['access-dialog', 'bulk-dialog', 'move-dialog', 'requests-dialog'].forEach((id) => {
+    const invalidate = () => invalidatePreview(id);
+    ['cancel', 'close', 'input', 'change'].forEach((type) => byId(id).addEventListener(type, invalidate));
+  });
   // The confirmations' Apply/confirm buttons submit their form; any other close (Cancel, ×, Escape) is a no.
   const accepted = (dialogId) => (event) => {
     event.preventDefault();
@@ -1418,8 +1450,8 @@ export const ADMIN_APP_JS = `
   };
   byId('plan-form').addEventListener('submit', accepted('plan-dialog'));
   byId('confirm-form').addEventListener('submit', accepted('confirm-dialog'));
-  byId('plan-dialog').addEventListener('close', () => answer('plan-dialog', false));
-  byId('confirm-dialog').addEventListener('close', () => answer('confirm-dialog', false));
+  // close is queued: by the time it fires the dialog may already be asking again, and that newer answer is not a no.
+  ['plan-dialog', 'confirm-dialog'].forEach((id) => byId(id).addEventListener('close', () => { if (!byId(id).open) answer(id, false); }));
   byId('request-action-form').addEventListener('submit', confirmRequestAction);
   byId('release-form').addEventListener('submit', confirmRelease);
   byId('refresh-requests').addEventListener('click', loadRequests);

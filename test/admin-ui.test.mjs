@@ -67,13 +67,19 @@ function adminPage(answer) {
     clearTimeout: (id) => { timers.delete(id); },
   };
   window.scrollTo = () => {};
-  // linkedom has no <dialog> methods: close() fires "close" as a browser's does.
+  // linkedom has no <dialog> methods: as in a browser, close() shuts the dialog at once and queues its "close" event.
   window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
   window.HTMLElement.prototype.close = function close() {
     if (!this.hasAttribute('open')) return;
     this.removeAttribute('open');
-    this.dispatchEvent(new window.Event('close'));
+    setImmediate(() => this.dispatchEvent(new window.Event('close')));
   };
+  // linkedom has no `open` property either (the grant card's <details> sets it).
+  Object.defineProperty(window.HTMLElement.prototype, 'open', {
+    configurable: true,
+    get() { return this.hasAttribute('open'); },
+    set(value) { this.toggleAttribute('open', Boolean(value)); },
+  });
   runInNewContext(ADMIN_APP_JS, context);
   const byId = (id) => document.getElementById(id);
   const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -110,6 +116,11 @@ function adminPage(answer) {
     toast: () => byId('toast').querySelector('.toast-text')?.textContent ?? '',
     toastDetail: () => byId('toast').querySelector('.toast-detail')?.textContent ?? '',
     click: (id) => byId(id).dispatchEvent(new window.Event('click')),
+    /** Escape on an open dialog: "cancel" fires at once, then the dialog closes (its "close" event queued). */
+    escape(id) {
+      const dialog = byId(id);
+      if (dialog.dispatchEvent(new window.Event('cancel', { cancelable: true }))) dialog.close();
+    },
     /** Whether the dialog is open. */
     open: (id) => byId(id).hasAttribute('open'),
     /** Submits the form of an open in-page confirmation (confirm-dialog, or the plan dialog's Apply step). */
@@ -1153,7 +1164,7 @@ describe('admin UI grants and in-page confirmations', () => {
     function pick(page, id) {
       const input = page.document.querySelector('#move-results input[value="' + id + '"]');
       input.checked = true;
-      input.dispatchEvent(new page.window.Event('change'));
+      input.dispatchEvent(new page.window.Event('change', { bubbles: true }));
     }
 
     it('picks the new item from a Jellyfin search, previews the move, and moves it once applied', async () => {
@@ -1201,6 +1212,167 @@ describe('admin UI grants and in-page confirmations', () => {
       assert.match(byId('move-error').textContent, /^Not moved: 2222.* still exists in Jellyfin/);
       assert.equal(page.open('plan-dialog'), false);
       assert.equal(sent.length, 1);
+    });
+  });
+
+  describe('previews that answer after their dialog was closed or changed', () => {
+    const OTHER_ID = '55550000555500005555000055550000';
+    const REMAP = '/v1/grants/' + GRANT_ID + '/remap';
+    const ACCESS = '/v1/grants/' + GRANT_ID + '/groups';
+    const REVOKE = '/v1/grants/' + GRANT_ID + '/requests/7380001';
+    const OK = (body) => ({ status: 200, body });
+    const GROUPS = OK({ groups: [{ id: 'grove', name: 'Grove', userIds: [] }, { id: 'heath', name: 'Heath', userIds: [] }] });
+    /** Every dry run held back until the test answers it: `calls[n].resolve(reply)`. */
+    function held() {
+      const calls = [];
+      return { calls, answer: () => { const call = deferred(); calls.push(call); return call.promise; } };
+    }
+    // Ways to shut a dialog while its preview is pending; `queued` resolves the preview before the queued "close" fires.
+    const SHUT = {
+      'closed with ×': (page, id) => page.document.querySelector('#' + id + ' .dialog-head .dialog-close').dispatchEvent(new page.window.Event('click')),
+      'closed with Escape': (page, id) => page.escape(id),
+    };
+    const ORDERINGS = { 'after its close event': true, 'before its close event fires': false };
+    const submit = (page, formId) => page.document.getElementById(formId).dispatchEvent(new page.window.Event('submit'));
+    const check = (page, selector) => {
+      const input = page.document.querySelector(selector);
+      // linkedom's :checked reads the attribute, and its checked property is not reflected to it.
+      const next = !input.hasAttribute('checked');
+      input.toggleAttribute('checked', next);
+      input.checked = next;
+      input.dispatchEvent(new page.window.Event('change', { bubbles: true }));
+    };
+    function assertNoPlan(page, sent, writes) {
+      assert.equal(page.open('plan-dialog'), false, 'no plan opens');
+      assert.deepEqual(sent.map(([method, path]) => method + ' ' + path), writes, 'nothing is applied');
+    }
+
+    const FLOWS = {
+      Move: {
+        dialog: 'move-dialog',
+        dryRun: 'POST ' + REMAP + '?dryRun=true',
+        async start(answers) {
+          const context = await grantsPage({
+            'GET /v1/library/search?q=zeb': OK({ items: [{ id: NEW_ID, name: 'Zebra Film', mediaType: 'movie' }, { id: OTHER_ID, name: 'Zebra Film II', mediaType: 'movie' }] }),
+            ['POST ' + REMAP]: OK({}),
+            ...answers,
+          });
+          const { page } = context;
+          cardButton(page, 'Zebra Film', 'Move to another item…').dispatchEvent(new page.window.Event('click'));
+          page.document.getElementById('move-search').value = 'zeb';
+          page.document.getElementById('move-search').dispatchEvent(new page.window.Event('input', { bubbles: true }));
+          await page.advance(250);
+          check(page, '#move-results input[value="' + NEW_ID + '"]');
+          submit(page, 'move-form');
+          await page.settle();
+          return context;
+        },
+        change: (page) => check(page, '#move-results input[value="' + OTHER_ID + '"]'),
+        reply: OK({ result: { sourcePlan: PLAN(GRANT_ID), plan: PLAN(NEW_ID) } }),
+        applied: ['POST', REMAP, { toItemId: OTHER_ID }],
+        form: 'move-form',
+      },
+      'Shared access': {
+        dialog: 'access-dialog',
+        dryRun: 'PUT ' + ACCESS + '?dryRun=true',
+        async start(answers) {
+          const context = await grantsPage({ 'GET /v1/groups': GROUPS, ['PUT ' + ACCESS]: OK({}), ...answers });
+          cardButton(context.page, 'Zebra Film', 'Access').dispatchEvent(new context.page.window.Event('click'));
+          submit(context.page, 'access-form');
+          await context.page.settle();
+          return context;
+        },
+        change: (page) => check(page, '#group-options input[value="heath"]'),
+        reply: OK({ result: { plan: PLAN(GRANT_ID) } }),
+        applied: ['PUT', ACCESS, { groupIds: ['heath'] }],
+        form: 'access-form',
+      },
+      'Bulk access': {
+        dialog: 'bulk-dialog',
+        dryRun: 'PUT /v1/library/access?dryRun=true',
+        async start(answers) {
+          const context = await grantsPage({ 'GET /v1/groups': GROUPS, 'PUT /v1/library/access': OK({}), ...answers });
+          const { page } = context;
+          page.document.querySelector('.tabs button[data-tab="library"]').dispatchEvent(new page.window.Event('click'));
+          const row = [...page.document.querySelectorAll('#catalog-list .catalog-row')].find((entry) => entry.textContent.includes('Zebra Film'));
+          const box = row.querySelector('.catalog-check');
+          box.checked = true;
+          box.dispatchEvent(new page.window.Event('change'));
+          page.click('bulk-access');
+          page.document.querySelector('#bulk-group-options input[value="grove"]').toggleAttribute('checked', true);
+          submit(page, 'bulk-form');
+          await page.settle();
+          return context;
+        },
+        change: (page) => check(page, '#bulk-group-options input[value="heath"]'),
+        reply: OK({ result: { plans: [PLAN(GRANT_ID)] } }),
+        applied: ['PUT', '/v1/library/access', { itemIds: [GRANT_ID], userIds: [], groupIds: ['grove', 'heath'] }],
+        form: 'bulk-form',
+      },
+      'Request grant revocation': {
+        dialog: 'requests-dialog',
+        dryRun: 'DELETE ' + REVOKE + '?dryRun=true',
+        async start(answers) {
+          const context = await grantsPage({ ['DELETE ' + REVOKE]: OK({}), ...answers });
+          cardButton(context.page, 'Zebra Film', 'Request grants').dispatchEvent(new context.page.window.Event('click'));
+          context.page.document.querySelector('#requests-list button').dispatchEvent(new context.page.window.Event('click'));
+          await context.page.settle();
+          return context;
+        },
+        reply: OK({ result: { plan: PLAN(GRANT_ID) } }),
+      },
+    };
+
+    for (const [name, flow] of Object.entries(FLOWS)) {
+      for (const [way, shut] of Object.entries(SHUT)) {
+        for (const [ordering, settleFirst] of Object.entries(ORDERINGS)) {
+          it(name + ': a preview that answers after the dialog was ' + way + ' (' + ordering + ') opens no plan', async () => {
+            const dry = held();
+            const { page, sent } = await flow.start({ [flow.dryRun]: dry.answer });
+            assert.equal(dry.calls.length, 1, 'the preview is pending');
+            assert.equal(page.open(flow.dialog), true);
+            shut(page, flow.dialog);
+            if (settleFirst) await page.settle();
+            dry.calls[0].resolve(flow.reply);
+            await page.settle();
+            assert.equal(page.open(flow.dialog), false);
+            assertNoPlan(page, sent, [flow.dryRun]);
+          });
+        }
+      }
+      if (!flow.change) continue;
+      it(name + ': a preview for input changed while it was pending is dropped, and Apply sends what the shown plan previewed', async () => {
+        const dry = held();
+        const { page, sent } = await flow.start({ [flow.dryRun]: dry.answer });
+        flow.change(page);
+        dry.calls[0].resolve(flow.reply);
+        await page.settle();
+        assertNoPlan(page, sent, [flow.dryRun]);
+        assert.equal(page.open(flow.dialog), true, 'the changed form stays open');
+        submit(page, flow.form);
+        await page.settle();
+        assert.equal(dry.calls.length, 2);
+        dry.calls[1].resolve(flow.reply);
+        await page.settle();
+        assert.equal(page.open(flow.dialog), false);
+        assert.equal(page.open('plan-dialog'), true);
+        assert.deepEqual(sent[1].slice(2), [flow.applied[2]], 'the second preview is for the changed input');
+        await page.accept('plan-dialog');
+        assert.deepEqual(sent.at(-1), flow.applied);
+      });
+    }
+
+    it('Move: a refusal that answers after the dialog was closed is not shown in the reopened dialog', async () => {
+      const dry = held();
+      const { page } = await FLOWS.Move.start({ [FLOWS.Move.dryRun]: dry.answer });
+      page.escape('move-dialog');
+      await page.settle();
+      cardButton(page, 'Zebra Film', 'Move to another item…').dispatchEvent(new page.window.Event('click'));
+      dry.calls[0].resolve({ status: 409, body: { error: 'source exists', code: 'source_item_exists' } });
+      await page.settle();
+      assert.equal(page.open('move-dialog'), true);
+      assert.equal(page.document.getElementById('move-error').textContent, '');
+      assert.equal(page.open('plan-dialog'), false);
     });
   });
 });

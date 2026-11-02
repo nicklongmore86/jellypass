@@ -39,6 +39,9 @@ changes are always listed at the top of the release notes.
   group, removing a household's addresses and allowing an untested Jellyfin
   version ask in the page's own dialog, instead of the browser's
   `confirm()`.
+  A preview that answers after its dialog was closed (Cancel, ×, Escape) or
+  its input changed (Move target, groups, users) is dropped, so Apply only
+  ever sends the change the shown plan previewed.
 - **Admin site: Move picks the new item from a Jellyfin search** (or a pasted
   item ID) and previews the move, instead of asking for a raw item ID. It is
   under **More** on each grant card.
