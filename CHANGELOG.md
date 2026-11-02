@@ -56,6 +56,20 @@ changes are always listed at the top of the release notes.
 
 ### Fixed
 
+- **A broad search no longer closes Jellyfin on low-memory TVs.** Jellyfin
+  web's Search page asks for up to 800 items and 100 each of people, studios
+  and artists and draws every card at once; on a 2019 Samsung (Tizen 5.0,
+  about 1.2 GB) searching "the" drew 1,038 cards and the TV's low-memory
+  killer closed the app. On a TV (Samsung, LG and others, by Jellyfin web's
+  own TV rule), the TV add-on now lowers those requests to at most 100 items
+  and 24 people, studios or artists. Only Jellyfin web's search requests
+  change; desktop and phone browsers (Tizen and webOS phones and watches
+  included) are unchanged, and the JellyPass
+  Discover row on the Search page works as before. The add-on's script is
+  named for a hash of its content, so its name changes in this release (the
+  stylesheet's does not); the `/web/` page and the Samsung app's manifest are
+  sent `no-store`, so no CDN purge is needed. See
+  [docs/tv-addon.md](docs/tv-addon.md), "The search cap".
 - Pre-v9 backup cleanup failures no longer block migration or mask backup errors. Unsupported directory fsync
   is tolerated, while file fsync remains required; timestamped backup names use compact UTC without colons.
 
