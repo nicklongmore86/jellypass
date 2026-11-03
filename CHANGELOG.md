@@ -21,6 +21,12 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Use the shared JellyPass version for the server Jellyfin client as well as
+  the setup wizard, and correct the version test-file comment. The client
+  version remains unchanged.
+
 ## [4.2.0] - 2026-11-02
 
 This is a minor release. It reworks the admin site (confirmations in the

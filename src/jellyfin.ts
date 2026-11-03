@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { JELLYPASS_VERSION } from './version.js';
 import type { JellyfinItem, JellyfinItemQueryResult, JellyfinPolicy, JellyfinUser, LibraryCatalogItem, LibraryItemSummary } from './types.js';
 
 interface JellyfinAuthenticationResult {
@@ -356,7 +357,7 @@ function authorizationHeader(device: string, deviceId: string, token?: string): 
     ['Client', 'JellyPass'],
     ['Device', device],
     ['DeviceId', deviceId],
-    ['Version', '4.2.0'],
+    ['Version', JELLYPASS_VERSION],
   ];
   if (token) parameters.push(['Token', token]);
   return mediaBrowserAuthorization(parameters);
