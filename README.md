@@ -34,10 +34,12 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
   any HTTPS hostname such as `https://media.example.com`, whose sign-in list
   shows only its members, with one-tap sign-in for members without a password.
   One-tap sign-in uses an empty Jellyfin password: anyone who can reach that
-  address can pick a visible passwordless member and act as them. It does not
-  establish household membership through an identity provider. Media, byte
-  ranges, HLS and WebSockets are proxied; Quick Connect and cross-user requests
-  are refused.
+  address can pick a visible passwordless member and act as them. Knowing or
+  guessing a hidden member's name is enough to sign in as them the same way, so
+  hiding a profile is no protection for a passwordless account. One-tap sign-in
+  does not establish household membership through an identity provider. Media,
+  byte ranges, HLS and WebSockets are proxied; Quick Connect and cross-user
+  requests are refused.
 - **Apps for members.** An app for iPhone, iPad and Android, an installable web
   app on every household address, and an optional TV add-on for Jellyfin web:
   browse, **Get this** (a Seerr request made as the member) and **My requests**.
@@ -47,7 +49,7 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
 - **Self-healing.** Tags and policies are reconciled after failures and when
   users change. Health and Prometheus metrics endpoints are included.
 
-JellyPass does **not** replace Jellyfin authentication, manage downloads, or
+JellyPass does **not** replace Jellyfin authentication, acquire media, or
 decide whether a Seerr request should be approved. Seerr remains the request
 and acquisition authority; Jellyfin remains the playback authorization
 authority. See [how access enforcement works](docs/server-reference.md#how-access-enforcement-works).
@@ -147,7 +149,10 @@ docker compose -f compose.example.yaml up --build -d
 The [setup wizard](docs/server-reference.md#setup-wizard) stores what it
 configures in `data/settings.json`; environment variables override it. A
 minimal `.env` for households and the apps without the wizard (plus
-`JELLYPASS_IMAGE`):
+`JELLYPASS_IMAGE`). Replace every key and secret with your own, and set
+`TRUSTED_PROXIES` to your own reverse proxy's address. The example does not run
+as written: JellyPass validates `TMDB_API_KEY` and exits at startup with this
+placeholder.
 
 ```dotenv
 JELLYFIN_URL=http://jellyfin:8096
@@ -159,7 +164,7 @@ ADMIN_TOKEN=different-long-random-secret
 HOUSEHOLD_GATEWAY_ENABLED=true
 HOUSEHOLD_APP_ENABLED=true
 TMDB_API_KEY=tmdb-key
-TRUSTED_PROXIES=192.168.1.5
+TRUSTED_PROXIES=192.0.2.10
 ```
 
 Every setting, with its default and validation, is in the
@@ -299,7 +304,7 @@ land here:
 - <a name="administrative-api-examples"></a>[Administrative API examples](docs/server-reference.md#administrative-api-examples)
 - <a name="upgrade"></a>[Upgrade](docs/server-reference.md#upgrade)
 - <a name="troubleshooting"></a>[Troubleshooting](docs/server-reference.md#troubleshooting)
-- <a name="a-new-download-appears-in-library-but-not-grants"></a>[A new download appears in Library but not Grants](docs/server-reference.md#a-new-download-appears-in-library-but-not-grants)
+- <a name="a-new-download-appears-in-library-but-not-grants"></a>[A new title appears in Library but not Grants](docs/server-reference.md#a-new-download-appears-in-library-but-not-grants)
 - <a name="webhooks-never-arrive"></a>[Webhooks never arrive](docs/server-reference.md#webhooks-never-arrive)
 - <a name="webhook-returns-401"></a>[Webhook returns `401`](docs/server-reference.md#webhook-returns-401)
 - <a name="webhook-reports-missing-jellyfin-ids"></a>[Webhook reports missing Jellyfin IDs](docs/server-reference.md#webhook-reports-missing-jellyfin-ids)
