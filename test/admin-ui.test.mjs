@@ -1444,3 +1444,22 @@ describe('admin UI layout', () => {
     assert.equal(heading.querySelector('span').textContent, known);
   });
 });
+
+describe('household one-tap warning', () => {
+  it('shows the security consequence beside the controls before enabling one-tap sign-in', async () => {
+    const page = adminPage((path) => path === '/v1/users'
+      ? { status: 200, body: { users: [{ id: 'member-id', name: 'Member', isAdministrator: false, passwordless: false }] } }
+      : DATA[path]);
+    await page.settle();
+    const byId = (id) => page.document.getElementById(id);
+    byId('new-group').dispatchEvent(new page.window.Event('click'));
+    const options = byId('passwordless-options');
+    assert.ok(byId('group-dialog').open);
+    assert.equal(options.querySelector('input').hasAttribute('checked'), false);
+    const hint = options.previousElementSibling;
+    assert.equal(hint.className, 'hint');
+    assert.equal(hint.hidden, false);
+    assert.ok(hint.textContent.includes("With one-tap sign-in on, anyone who can reach this household's address can sign in as any passwordless member, with no password and no other check. Hiding a profile does not protect it: someone can still type the member's name."));
+    assert.ok(hint.textContent.includes('If a marked user has a password, one-tap sign-in fails until you remove the mark; they can still sign in with their password.'));
+  });
+});
