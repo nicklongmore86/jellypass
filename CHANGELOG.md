@@ -23,6 +23,9 @@ listed at the top of the release notes.
 
 ### Fixed
 
+- Warn in the group and Create user dialogs that anyone who can reach the
+  household address can sign in as any passwordless member, even if hidden.
+
 - Use the shared JellyPass version for the server Jellyfin client as well as
   the setup wizard, and correct the version test-file comment. The client
   version remains unchanged.
