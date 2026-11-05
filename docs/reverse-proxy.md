@@ -70,7 +70,8 @@ publishes it on `127.0.0.1:8788` of the Docker host:
 - From another machine: an SSH tunnel,
   `ssh -L 8788:127.0.0.1:8788 user@docker-host`, then the same URL.
 - From your LAN: publish it on the host's private address instead
-  (`192.168.1.10:8788:8788` in `ports:`), never on a public one.
+  (if that address were `192.0.2.10`, the line is `192.0.2.10:8788:8788` in
+  `ports:`), never on a public one.
 - Over HTTPS: a separate proxy host of its own that only your LAN, VPN or an
   identity-aware gate can reach (the Caddy example has a commented
   `admin.example.com` block limited to private addresses; the Cloudflare Tunnel

@@ -26,6 +26,11 @@ listed at the top of the release notes.
 - Use the shared JellyPass version for the server Jellyfin client as well as
   the setup wizard, and correct the version test-file comment. The client
   version remains unchanged.
+- Correct the documentation: state the risk of one-tap sign-in (an empty
+  Jellyfin password, no identity provider), list every file a backup needs and
+  which hold credentials, mark the TV add-on experimental with a table of what
+  has and has not been tested, link private vulnerability reporting, and stop
+  presenting the legacy `HOUSEHOLD_DOMAIN` as the way to give households addresses.
 
 ## [4.2.0] - 2026-11-02
 

@@ -30,13 +30,18 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
   request backfill) becomes a durable grant: the title is private to the
   requester and every household they belong to. Movies, complete series and
   their local trailers are covered; unrelated tags and blocked tags are kept.
-- **Households.** Reusable groups of Jellyfin users. With `HOUSEHOLD_DOMAIN`
-  set, each gets an address such as `https://jelly-grove.example.com` (the
-  `jelly-` prefix is configurable) whose sign-in list shows only its members,
-  with one-tap sign-in for members without a password. Media, byte ranges, HLS
-  and WebSockets are proxied; Quick Connect and cross-user requests are refused.
-- **Apps for members.** An app for iPhone, iPad and Android, an installable web
-  app on every household address, and an optional TV add-on for Jellyfin web:
+- **Households.** Reusable groups of Jellyfin users. Each gets its own address,
+  any HTTPS hostname such as `https://media.example.com`, whose sign-in list
+  shows only its members, with one-tap sign-in for members without a password.
+  One-tap sign-in uses an empty Jellyfin password: anyone who can reach that
+  address can pick a visible passwordless member and act as them. Knowing or
+  guessing a hidden member's name is enough to sign in as them the same way, so
+  hiding a profile is no protection for a passwordless account. The mark only changes the profile picker: any member with no Jellyfin password can be signed in this way, marked or not, and only a Jellyfin password protects them. One-tap sign-in
+  does not establish household membership through an identity provider. Media,
+  byte ranges, HLS and WebSockets are proxied; Quick Connect and cross-user
+  requests are refused.
+- **Apps for members.** An app for iPhone, iPad and Android (invitation-only for
+  now), an installable web app on every household address, and an optional TV add-on for Jellyfin web:
   browse, **Get this** (a Seerr request made as the member) and **My requests**.
 - **Administrator UI.** Signed in with a Jellyfin administrator account:
   households, grants, bulk access for existing titles (up to 500 at a time),
@@ -44,7 +49,7 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
 - **Self-healing.** Tags and policies are reconciled after failures and when
   users change. Health and Prometheus metrics endpoints are included.
 
-JellyPass does **not** replace Jellyfin authentication, manage downloads, or
+JellyPass does **not** replace Jellyfin authentication, acquire media, or
 decide whether a Seerr request should be approved. Seerr remains the request
 and acquisition authority; Jellyfin remains the playback authorization
 authority. See [how access enforcement works](docs/server-reference.md#how-access-enforcement-works).
@@ -144,7 +149,10 @@ docker compose -f compose.example.yaml up --build -d
 The [setup wizard](docs/server-reference.md#setup-wizard) stores what it
 configures in `data/settings.json`; environment variables override it. A
 minimal `.env` for households and the apps without the wizard (plus
-`JELLYPASS_IMAGE`):
+`JELLYPASS_IMAGE`). Replace every key and secret with your own, and set
+`TRUSTED_PROXIES` to your own reverse proxy's address. The example does not run
+as written: JellyPass validates `TMDB_API_KEY` and exits at startup with this
+placeholder.
 
 ```dotenv
 JELLYFIN_URL=http://jellyfin:8096
@@ -153,10 +161,10 @@ SEERR_URL=http://seerr:5055
 SEERR_API_KEY=seerr-api-key
 WEBHOOK_TOKEN=long-random-secret
 ADMIN_TOKEN=different-long-random-secret
-HOUSEHOLD_DOMAIN=example.com
+HOUSEHOLD_GATEWAY_ENABLED=true
 HOUSEHOLD_APP_ENABLED=true
 TMDB_API_KEY=tmdb-key
-TRUSTED_PROXIES=192.168.1.5
+TRUSTED_PROXIES=192.0.2.10
 ```
 
 Every setting, with its default and validation, is in the
@@ -166,20 +174,33 @@ detail, in the [server reference](docs/server-reference.md#configuration).
 
 ## Apps
 
-All the apps need `HOUSEHOLD_APP_ENABLED=true` (with `HOUSEHOLD_DOMAIN`, Seerr
+All the apps need `HOUSEHOLD_APP_ENABLED=true` (with the household gateway, Seerr
 and `TMDB_API_KEY`). They send sign-ins, searches and requests only to the
 member's household address; artwork (posters, backdrops, logos) loads straight
 from TMDB's image server, `image.tmdb.org`, as the
 [privacy policy](https://jellypass.app/privacy/) explains. See
 [Phone, web and TV apps](https://jellypass.app/docs/apps/).
 
-- **iPhone, iPad and Android** ([`mobile/`](mobile/README.md)): iOS through
-  TestFlight for now, Android as a sideloaded APK. Needs JellyPass 3.2.0 or
+- **iPhone, iPad and Android** ([`mobile/`](mobile/README.md)): invitation-only for
+  now, iOS through TestFlight and Android as a sideloaded APK, with no public
+  App Store or Google Play release yet. Needs JellyPass 3.2.0 or
   later; Cancel request needs 3.5.0 or later.
-- **TV add-on** (`TV_ADDON_ENABLED`, per-household admin switches): Discover rows,
-  title pages and My requests inside Jellyfin web on the listed households'
-  addresses ([design](docs/tv-addon.md)). A Samsung (Tizen) build is in
-  `tv/samsung/` for advanced users.
+- **TV add-on, experimental** (`TV_ADDON_ENABLED`, per-household admin switches):
+  Discover rows, title pages and My requests inside Jellyfin web on the listed
+  households' addresses ([design](docs/tv-addon.md)). A Samsung (Tizen) build is
+  in `tv/samsung/` for advanced users.
+
+> [!WARNING]
+> The TV add-on and the Samsung build are experimental. The
+> [checks for a real TV](docs/tv-addon.md#what-must-be-checked-on-a-real-tv)
+> have not been run on a TV yet, so test on your own TV before you rely on them.
+
+| TV | Status | What is known |
+| --- | --- | --- |
+| Samsung, Tizen 5.0 | Runs, with a known memory problem | A 2019 low-memory TV has had memory crashes. The 4.1.0 search cap mitigates them in search, but is not yet verified on the TV. |
+| Samsung, Tizen 5.5 | Installed | Installed in place over a developer-signed Jellyfin app, keeping its sign-ins. |
+| Samsung, Tizen 6.0 | Installed, not yet verified working | Nothing beyond the install is confirmed. |
+| LG (webOS) | Unverified | Only an operator acceptance checklist exists, with no results yet. Jellyfin's LG app loads Jellyfin web from the server in an iframe, so the add-on is expected to load there. Before you switch it on for a household, run checks 1 and 2 on a real LG TV with one household listed. |
 
 ### Household app (PWA)
 
@@ -207,8 +228,16 @@ drain before rolling back the household app are in
 
 ### Backup and restore
 
-The state file is the only data JellyPass must keep. Stop JellyPass, copy
-`data/grants.json`, and start it again; back up Jellyfin separately. See
+Every install must keep the state file, `data/grants.json`. It holds private
+data (Jellyfin user IDs and media names), so protect it. An install set up with
+the setup wizard must also keep `data/settings.json` and `data/admin-token`
+(both are in the directory of `SETTINGS_FILE` when that is set). These two hold
+credentials: `settings.json` has the Jellyfin API key, the Seerr and TMDB keys
+and the webhook token, and `admin-token` has the admin token. Credentials set as
+environment variables are in your `.env` instead. Keep every copy secret.
+
+Stop JellyPass, copy these files with `cp -p`, and start it again; back up
+Jellyfin separately. See
 [Backup and restore](docs/server-reference.md#backup-and-restore).
 
 ## Documentation
@@ -240,8 +269,9 @@ and against Seerr (`pnpm test:seerr`); see
 
 ## Security
 
-Report vulnerabilities privately through GitHub Security Advisories; see
-[SECURITY.md](SECURITY.md). The admin site is on its own listener, private by
+Report vulnerabilities privately through
+[GitHub private vulnerability reporting](https://github.com/nicklongmore86/jellypass/security/advisories/new);
+see [SECURITY.md](SECURITY.md). The admin site is on its own listener, private by
 default (`127.0.0.1:8788`); it is not otherwise gated, so keep it on the LAN or
 behind an access gate.
 
@@ -275,7 +305,7 @@ land here:
 - <a name="administrative-api-examples"></a>[Administrative API examples](docs/server-reference.md#administrative-api-examples)
 - <a name="upgrade"></a>[Upgrade](docs/server-reference.md#upgrade)
 - <a name="troubleshooting"></a>[Troubleshooting](docs/server-reference.md#troubleshooting)
-- <a name="a-new-download-appears-in-library-but-not-grants"></a>[A new download appears in Library but not Grants](docs/server-reference.md#a-new-download-appears-in-library-but-not-grants)
+- <a name="a-new-download-appears-in-library-but-not-grants"></a>[A new title appears in Library but not Grants](docs/server-reference.md#a-new-download-appears-in-library-but-not-grants)
 - <a name="webhooks-never-arrive"></a>[Webhooks never arrive](docs/server-reference.md#webhooks-never-arrive)
 - <a name="webhook-returns-401"></a>[Webhook returns `401`](docs/server-reference.md#webhook-returns-401)
 - <a name="webhook-reports-missing-jellyfin-ids"></a>[Webhook reports missing Jellyfin IDs](docs/server-reference.md#webhook-reports-missing-jellyfin-ids)
