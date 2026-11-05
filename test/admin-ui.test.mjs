@@ -1457,13 +1457,13 @@ describe('household one-tap warning', () => {
     assert.ok(byId('group-dialog').open);
     const hint = options.previousElementSibling;
     assert.equal(hint.className, 'hint');
-    assert.equal(hint.textContent, "Mark users whose Jellyfin account has no password, so their profile signs in with one tap. The mark only changes the profile picker. With or without it, anyone who can reach this household's address can sign in as any member with no password by typing their name. Hiding a profile does not protect it; only a Jellyfin password does. If a marked user has a password, tapping their profile fails and they are then asked for it.");
+    assert.equal(hint.hidden, false);
+    assert.equal(hint.textContent, "Mark users whose Jellyfin account has no password, so their profile signs in with one tap. The mark only changes the profile picker. With or without it, anyone who can reach this household's address can sign in as any member with no password by typing their name. Hiding a profile does not protect it; give the account a password. If a marked user has a password, tapping their profile fails. The household and mobile apps then ask for it; on Jellyfin's own login page they must use Manual Login.");
   });
-});
 
-
-it('renders the Create user warning about the automatically marked household profile', () => {
-  const { document } = parseHTML(ADMIN_HTML);
-  const hint = document.querySelector('#user-form p.hint');
-  assert.equal(hint.textContent, "Leave both password fields blank to create a passwordless Jellyfin account. Anyone who can reach Jellyfin and knows the username can sign in to it, or pick its automatically marked profile at the household address.");
+  it('renders the Create user warning about the automatically marked household profile', () => {
+    const { document } = parseHTML(ADMIN_HTML);
+    const hint = document.querySelector('#user-form p.hint');
+    assert.equal(hint.textContent, "Leave both password fields blank to create a passwordless Jellyfin account. Anyone who can reach Jellyfin and knows the username can sign in to it. It is also automatically marked, so anyone who can reach this group's household address can pick its profile, with no username.");
+  });
 });
