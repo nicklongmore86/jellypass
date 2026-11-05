@@ -36,7 +36,7 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
   One-tap sign-in uses an empty Jellyfin password: anyone who can reach that
   address can pick a visible passwordless member and act as them. Knowing or
   guessing a hidden member's name is enough to sign in as them the same way, so
-  hiding a profile is no protection for a passwordless account. One-tap sign-in
+  hiding a profile is no protection for a passwordless account. The mark only changes the profile picker: any member with no Jellyfin password can be signed in this way, marked or not, and only a Jellyfin password protects them. One-tap sign-in
   does not establish household membership through an identity provider. Media,
   byte ranges, HLS and WebSockets are proxied; Quick Connect and cross-user
   requests are refused.
