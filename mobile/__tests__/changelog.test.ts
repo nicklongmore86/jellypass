@@ -4,6 +4,9 @@
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 
+import { ERROR_TEXT } from '../src/home/text';
+import { STALLED_TEXT } from '../src/signin/wording';
+
 const ROOT = join(__dirname, '../..');
 
 function releaseNotes(version: string): string {
@@ -14,6 +17,33 @@ function releaseNotes(version: string): string {
 }
 
 describe('mobile release notes', () => {
+  it('extracts 1.4.1 without its heading, up to the 1.4.0 section', () => {
+    const notes = releaseNotes('1.4.1');
+    expect(notes).toMatch(/^A patch release: when a household's administrator has turned off app access,\s+the app now says so/);
+    expect(notes).not.toMatch(/^## /m);
+    expect(notes).toMatch(/^### Fixed$/m);
+    expect(notes).not.toMatch(/^### (?:Added|Changed|Removed|Security)$/m);
+    expect(notes).not.toContain(releaseNotes('1.4.0').split('\n')[0]);
+    expect(notes).not.toMatch(/^\[[^\]]+\]: /m);
+    const flat = notes.replace(/\s+/g, ' ');
+    // The servers it needs come first, before the entries: nothing here changes what the app needs to run.
+    const fixed = flat.indexOf('### Fixed');
+    for (const note of [
+      '**JellyPass server 3.2.0 or later**',
+      'The new message needs **JellyPass server 4.1.0 or later** (`apiVersion` 4)',
+      '**Not interested** needs JellyPass server 4.0.0 or later (`apiVersion` 3)',
+      'Cancel request and the day each title was requested need JellyPass server 3.5.0 or later (`apiVersion` 2)',
+    ]) {
+      expect(flat.indexOf(note)).toBeGreaterThanOrEqual(0);
+      expect(flat.indexOf(note)).toBeLessThan(fixed);
+    }
+    expect(flat).toMatch(/\*\*App access being off has its own message\.\*\*/);
+    expect(flat).toContain(STALLED_TEXT.app_access_disabled);
+    expect(flat).toContain(ERROR_TEXT.app_access_disabled.title);
+    expect(flat).toContain(ERROR_TEXT.app_access_disabled.body);
+    expect(notes).not.toMatch(/download|eas-cli|workflow|\btests?\b|maxWorkers/i);
+  });
+
   it('extracts 1.4.0 without its heading, up to the 1.3.0 section', () => {
     const notes = releaseNotes('1.4.0');
     expect(notes).toMatch(/^A minor release: a member can mark a title \*\*Not interested\*\* to hide it from\s+their own Discover/);
@@ -152,7 +182,7 @@ describe('mobile release notes', () => {
     expect(notes).not.toMatch(/eas-cli|workflow|\btests?\b/i);
   });
 
-  it("passes the release job's tag check for mobile-v<version in package.json> (mobile-v1.4.0 when it was cut)", () => {
+  it("passes the release job's tag check for mobile-v<version in package.json> (mobile-v1.4.1 when it was cut)", () => {
     const { version } = require('../package.json') as { version: string };
     // `node ../scripts/mobile-release-tag.mjs "$GITHUB_REF_NAME" package.json CHANGELOG.md`, from mobile/ (eas-json.test.ts).
     const check = (tag: string) =>
@@ -166,7 +196,7 @@ describe('mobile release notes', () => {
     expect(accepted.status).toBe(0);
     expect(accepted.stdout).toBe(`${version}\n`);
     // An older release's tag is refused once the version has moved on.
-    const old = check('mobile-v1.3.0');
+    const old = check('mobile-v1.4.0');
     expect(old.status).toBe(1);
     expect(old.stderr).toContain(`package.json says ${version}`);
   });

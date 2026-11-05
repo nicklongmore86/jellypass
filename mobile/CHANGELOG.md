@@ -15,6 +15,29 @@ build.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-05
+
+A patch release: when a household's administrator has turned off app access,
+the app now says so, instead of saying something went wrong. It still works
+with **JellyPass server 3.2.0 or later** (app API `v1`), as 1.0.0 to 1.4.0 do.
+The new message needs **JellyPass server 4.1.0 or later** (`apiVersion` 4), the
+first server with that switch; an older server never sends it, and nothing
+changes there. As in 1.4.0, **Not interested** needs JellyPass server 4.0.0 or
+later (`apiVersion` 3), and Cancel request and the day each title was requested
+need JellyPass server 3.5.0 or later (`apiVersion` 2). Members update by
+installing the new TestFlight build, or the new APK over the old one.
+
+### Fixed
+
+- **App access being off has its own message.** A household whose administrator has turned off its app access answers
+  its members with `403 app_access_disabled`, which the app used to show as a failure to try again. Checking the
+  sign-in, at start and just after signing in, now says "App access is off for this household. Contact your
+  administrator for help." The sign-in is kept, with **Try again** and **Sign out** beside the message. Home, See all,
+  a service's or studio's page, Search, a title's page, My requests and Hidden say **App access is off** and "Your
+  administrator has turned off app access for this household. Contact them for help." **Get this**, **Cancel request**,
+  **Not interested** and **Unhide** still show their own message to try again if access is turned off while the app is
+  open.
+
 ## [1.4.0] - 2026-10-31
 
 A minor release: a member can mark a title **Not interested** to hide it from
@@ -283,7 +306,8 @@ is not supported.
 - **iPhone, iPad and Android.** Portrait on phones; iPad and Android tablets
   turn. iOS is distributed through TestFlight and Android as an APK.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.4.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.4.1...HEAD
+[1.4.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.4.1
 [1.4.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.4.0
 [1.3.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.3.0
 [1.2.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.2.1
