@@ -40,8 +40,8 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
   does not establish household membership through an identity provider. Media,
   byte ranges, HLS and WebSockets are proxied; Quick Connect and cross-user
   requests are refused.
-- **Apps for members.** An app for iPhone, iPad and Android, an installable web
-  app on every household address, and an optional TV add-on for Jellyfin web:
+- **Apps for members.** An app for iPhone, iPad and Android (invitation-only for
+  now), an installable web app on every household address, and an optional TV add-on for Jellyfin web:
   browse, **Get this** (a Seerr request made as the member) and **My requests**.
 - **Administrator UI.** Signed in with a Jellyfin administrator account:
   households, grants, bulk access for existing titles (up to 500 at a time),
@@ -181,8 +181,9 @@ from TMDB's image server, `image.tmdb.org`, as the
 [privacy policy](https://jellypass.app/privacy/) explains. See
 [Phone, web and TV apps](https://jellypass.app/docs/apps/).
 
-- **iPhone, iPad and Android** ([`mobile/`](mobile/README.md)): iOS through
-  TestFlight for now, Android as a sideloaded APK. Needs JellyPass 3.2.0 or
+- **iPhone, iPad and Android** ([`mobile/`](mobile/README.md)): invitation-only for
+  now, iOS through TestFlight and Android as a sideloaded APK, with no public
+  App Store or Google Play release yet. Needs JellyPass 3.2.0 or
   later; Cancel request needs 3.5.0 or later.
 - **TV add-on, experimental** (`TV_ADDON_ENABLED`, per-household admin switches):
   Discover rows, title pages and My requests inside Jellyfin web on the listed
