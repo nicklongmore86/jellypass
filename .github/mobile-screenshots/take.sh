@@ -22,14 +22,16 @@ expected="$3"
 shift 3
 here="$(cd "$(dirname "$0")" && pwd)"
 
-# Each flow, and the listing position and name of the screenshot taken after it.
+# Each flow, and the listing position and name of the screenshot taken after it. The flows run in the app's order
+# (sign in comes first); the listing leads with the demo library's own titles, and Home, whose posters come from TMDB,
+# stays late.
 shots=(
   "01-address:06-sign-in"
-  "02-home:01-home"
-  "03-see-all:02-see-all"
-  "04-requests:04-my-requests"
-  "05-search:05-search"
-  "06-title:03-title"
+  "02-home:05-home"
+  "03-search:03-search"
+  "04-title-sintel:01-sintel"
+  "05-title-tears-of-steel:02-tears-of-steel"
+  "06-requests:04-my-requests"
 )
 
 runtime="$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable and .platform == "iOS")] | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')"

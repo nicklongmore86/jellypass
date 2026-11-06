@@ -1,7 +1,8 @@
-# Search for a film the demo household has: Big Buck Bunny shows as In library.
+# Search for a film the demo household has: Sintel is the only result, and it shows as Ready to watch. Each flow is a
+# new Maestro session, and its first tap is sometimes lost, so every tap that moves to another screen is repeated until
+# that screen shows.
 appId: com.rtc-services.jellypass
 ---
-# Taps are repeated until they land (03-see-all.yaml).
 - repeat:
     while:
       notVisible:
@@ -16,11 +17,11 @@ appId: com.rtc-services.jellypass
     id: "search-field"
 - tapOn:
     id: "search-field"
-- inputText: "Big Buck Bunny"
+- inputText: "Sintel"
 # Search sends it, and the field gives up the keyboard.
 - pressKey: Enter
 - extendedWaitUntil:
-    visible: "Big Buck Bunny.*Ready to watch"
+    visible: "Sintel.*Ready to watch"
     timeout: 30000
 - waitForAnimationToEnd:
     timeout: 10000
