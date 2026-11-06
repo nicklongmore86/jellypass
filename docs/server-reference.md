@@ -206,10 +206,10 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:4.2.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:4.2.1
 ```
 
-Each release is published as a semantic-version image tag, such as `4.2.0`,
+Each release is published as a semantic-version image tag, such as `4.2.1`,
 plus floating `4.2` and `4` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](../CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
@@ -970,6 +970,9 @@ Upgrading from 4.1.0 to 4.2.0 changes no setting, keeps the state file at
 schema 9 (4.1.0 can run on it again) and keeps the TV add-on's file names; the
 setup wizard now asks for a review before it replaces an existing Seerr webhook.
 See the [4.2.0 notes](../CHANGELOG.md#420---2026-11-02).
+Upgrading from 4.2.0 to 4.2.1 changes no setting, keeps the state file at
+schema 9 (4.2.0 can run on it again) and keeps the TV add-on's file names; see
+the [4.2.1 notes](../CHANGELOG.md#421---2026-11-06).
 If you build from source with `compose.example.yaml`, its service is now named
 `jellypass` instead of `access-bridge`: run
 `docker compose -f compose.example.yaml up --build -d --remove-orphans` once

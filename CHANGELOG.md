@@ -21,19 +21,49 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-11-06
+
+This is a patch release. It corrects what two admin site dialogs say about
+passwordless accounts, corrects the documentation, and adds nothing. **An
+existing install upgrades without any change to its configuration:** no setting
+is added, removed or renamed, and the state file (schema 9), the app API (`v1`,
+`apiVersion` 4), webhook payloads, the administrator API and the gateway are as
+in 4.2.0. Read these before upgrading:
+
+- **The state file is unchanged** (schema 9, with the same fields as 4.2.0), so
+  4.2.0 reads a state file written by 4.2.1.
+- **No CDN purge is needed.** The TV add-on's script and stylesheet are
+  unchanged and keep their names. The household app changes only in the version
+  number it shows, so some of its script files get new names and its service
+  worker a new cache.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:4.2.0` and recreate the container. No
+  state-file or setting change is needed.
+- **The iPhone, iPad and Android app ships separately;** its changes are
+  described in `mobile/CHANGELOG.md`.
+
 ### Fixed
 
-- Warn in the group and Create user dialogs that anyone who can reach the
-  household address can sign in as any passwordless member, even if hidden.
-
-- Use the shared JellyPass version for the server Jellyfin client as well as
-  the setup wizard, and correct the version test-file comment. The client
-  version remains unchanged.
-- Correct the documentation: state the risk of one-tap sign-in (an empty
+- **Admin site: the group and Create user dialogs warn about passwordless
+  accounts.** The group dialog says that the one-tap mark only changes the
+  profile picker: with or without it, anyone who can reach the household's
+  address can sign in as any member with no password by typing their name, and
+  hiding a profile does not protect it. It also corrects what happens when a
+  marked user has a password: tapping their profile fails, the household and
+  mobile apps then ask for it, and on Jellyfin's own login page they must use
+  Manual Login. The Create user dialog says that a new passwordless account is
+  marked automatically, so anyone who can reach the group's household address
+  can pick its profile with no username.
+- **The server's Jellyfin client takes its version from the shared value** the
+  setup wizard uses, so a release bump cannot leave it behind, and the comment
+  on that value names the test that guards it. The client still reports the
+  release's own version.
+- **Documentation corrections.** State the risk of one-tap sign-in (an empty
   Jellyfin password, no identity provider), list every file a backup needs and
   which hold credentials, mark the TV add-on experimental with a table of what
   has and has not been tested, link private vulnerability reporting, and stop
-  presenting the legacy `HOUSEHOLD_DOMAIN` as the way to give households addresses.
+  presenting the legacy `HOUSEHOLD_DOMAIN` as the way to give households
+  addresses.
 
 ## [4.2.0] - 2026-11-02
 
@@ -3842,7 +3872,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.2.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.2.1...HEAD
+[4.2.1]: https://github.com/nicklongmore86/jellypass/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/nicklongmore86/jellypass/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/nicklongmore86/jellypass/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/nicklongmore86/jellypass/compare/v3.10.0...v4.0.0
