@@ -1,0 +1,38 @@
+# Tears of Steel's title page, the second library title. Its search also lists another film, which is tapped past and
+# not captured. Taps are repeated until they land (03-search.yaml).
+appId: com.rtc-services.jellypass
+---
+- repeat:
+    while:
+      visible: "Back"
+    times: 5
+    commands:
+      - tapOn: "Back"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "search-field"
+- tapOn:
+    id: "search-field"
+# The field still holds the last search.
+- eraseText: 20
+- inputText: "Tears of Steel"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "Tears of Steel.*Ready to watch"
+    timeout: 30000
+- repeat:
+    while:
+      notVisible:
+        id: "detail-facts"
+    times: 5
+    commands:
+      - tapOn: "Tears of Steel.*Ready to watch"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "detail-facts"
+- assertVisible: "Ready to watch"
+- assertVisible: "Play Tears of Steel"
+- waitForAnimationToEnd:
+    timeout: 10000

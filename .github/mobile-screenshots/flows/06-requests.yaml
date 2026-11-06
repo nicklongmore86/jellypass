@@ -1,4 +1,5 @@
-# Back to Home, then the demo member's own requests. Taps are repeated until they land (03-see-all.yaml).
+# Back out of the title page, then the demo member's own requests: public-domain films the library doesn't have. Taps
+# are repeated until they land (03-search.yaml).
 appId: com.rtc-services.jellypass
 ---
 - repeat:
@@ -20,7 +21,12 @@ appId: com.rtc-services.jellypass
       - waitForAnimationToEnd:
           timeout: 5000
 - extendedWaitUntil:
-    visible: "Requested.*"
+    visible: "The General.*"
     timeout: 30000
+# On iPhone the filters push the third sample behind the tab bar; scrolling to the end shows all three. On iPad they
+# already fit, so this does nothing.
+- scroll
+- scroll
+- assertVisible: "Sherlock Jr.*"
 - waitForAnimationToEnd:
     timeout: 10000
