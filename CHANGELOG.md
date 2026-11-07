@@ -21,6 +21,10 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Self-check docs:** `docs/household-access.md` said a missing or unreachable Seerr URL passes the Seerr probe. It always warns, and the docs now also say the direct-origin check has no pass result.
+
 ## [4.2.1] - 2026-11-06
 
 This is a patch release. It corrects what two admin site dialogs say about
