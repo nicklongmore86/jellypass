@@ -15,6 +15,7 @@ import { colors, layout, radii, spacing, typography } from '../theme';
 import { GET_THIS_TEXT } from '../title/text';
 import {
   CANCEL_TEXT,
+  cancelErrorText,
   cancelName,
   type CancelError,
   REQUEST_FILTER_TEXT,
@@ -157,6 +158,7 @@ export function CancelSheet({
   title,
   sending,
   error,
+  retryAfterSeconds,
   onConfirm,
   onKeep,
 }: {
@@ -164,6 +166,8 @@ export function CancelSheet({
   title: RequestTitle | undefined;
   sending: boolean;
   error: CancelError | undefined;
+  /** With `rate_limited`: how long the server asked to wait, in seconds, when it said. */
+  retryAfterSeconds?: number | undefined;
   onConfirm: () => void;
   onKeep: () => void;
 }) {
@@ -175,7 +179,7 @@ export function CancelSheet({
           <Text style={styles.sheetName}>{requestTitleText(title)}</Text>
           <Text style={styles.sheetBody}>{CANCEL_TEXT.body}</Text>
           {error ? (
-            <Text testID="cancel-error" accessibilityRole="alert" accessibilityLiveRegion="polite" style={styles.sheetError}>{CANCEL_TEXT[error]}</Text>
+            <Text testID="cancel-error" accessibilityRole="alert" accessibilityLiveRegion="polite" style={styles.sheetError}>{cancelErrorText(error, retryAfterSeconds)}</Text>
           ) : null}
           <Pressable
             testID="cancel-confirm"

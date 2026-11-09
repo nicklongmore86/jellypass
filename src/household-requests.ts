@@ -22,11 +22,28 @@ import type { AppRequestIntent, AppRequestRecord, AppRequestStatus, AppSafetyTom
  * A series is decided season by season.
  */
 
-/** "Get this" calls allowed per user, per client address and per household in each window of GET_THIS_WINDOW_MS. */
+/**
+ * "Get this" calls (and cancels, which share the budgets) allowed per user, per client address and per household in
+ * each window of GET_THIS_WINDOW_MS, by default. Each can be set with GET_THIS_LIMIT_PER_USER, GET_THIS_LIMIT_PER_IP,
+ * GET_THIS_LIMIT_PER_HOUSEHOLD and GET_THIS_WINDOW_SECONDS (see config.ts).
+ */
 export const GET_THIS_WINDOW_MS = 10 * 60 * 1000;
-export const MAX_GET_THIS_PER_USER = 10;
-export const MAX_GET_THIS_PER_CLIENT = 30;
-export const MAX_GET_THIS_PER_HOUSEHOLD = 30;
+export const MAX_GET_THIS_PER_USER = 30;
+export const MAX_GET_THIS_PER_CLIENT = 60;
+export const MAX_GET_THIS_PER_HOUSEHOLD = 60;
+/** The "Get this" submission budgets in force. */
+export interface GetThisLimits {
+  perUser: number;
+  perClient: number;
+  perHousehold: number;
+  windowMs: number;
+}
+export const DEFAULT_GET_THIS_LIMITS: Readonly<GetThisLimits> = Object.freeze({
+  perUser: MAX_GET_THIS_PER_USER,
+  perClient: MAX_GET_THIS_PER_CLIENT,
+  perHousehold: MAX_GET_THIS_PER_HOUSEHOLD,
+  windowMs: GET_THIS_WINDOW_MS,
+});
 /** How often a record's Seerr request is read again by {@link HouseholdRequests.refresh}, and a joined title's media. */
 export const REFRESH_REQUEST_EVERY_MS = 10 * 60 * 1000;
 export const REFRESH_MEDIA_EVERY_MS = 6 * 60 * 60 * 1000;

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "JellyPass household app API",
-    "version": "4",
+    "version": "5",
     "description": "The household app API, /jellypass/app/v1, on household hosts only. info.version is GET /me's apiVersion. v1 only ever gains fields and endpoints; see docs/app-design.md, \"Native clients (contract)\". Schemas are closed (additionalProperties false) so the server's own test catches an undeclared field; a client decodes leniently and ignores fields it does not know. Every answer is Cache-Control: no-store."
   },
   "servers": [
@@ -1143,7 +1143,17 @@
         }
       },
       "RateLimited": {
-        "description": "429 too_many_requests.",
+        "description": "429 too_many_requests. From the \"Get this\" submission budgets (POST /movie/{tmdbId}/get, /tv/{tmdbId}/get and /requests/{id}/cancel, which share them), it also says how long until the budget that refused the call starts again: the Retry-After header and retryAfterSeconds, the same whole seconds (added in apiVersion 5). Any other 429 carries neither: a client falls back to fixed wording.",
+        "headers": {
+          "Retry-After": {
+            "description": "Whole seconds until the \"Get this\" budget that refused the call starts again; only with retryAfterSeconds.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600
+            }
+          }
+        },
         "content": {
           "application/json": {
             "schema": {
@@ -1253,18 +1263,42 @@
         }
       },
       "TooManyRequestsError": {
-        "description": "429.",
-        "type": "object",
-        "required": [
-          "error"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "error": {
-            "type": "string",
-            "const": "too_many_requests"
+        "description": "429: the fixed code, or (from the \"Get this\" budgets only) the fixed code and how long to wait.",
+        "anyOf": [
+          {
+            "type": "object",
+            "required": [
+              "error"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "error": {
+                "type": "string",
+                "const": "too_many_requests"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "error",
+              "retryAfterSeconds"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "error": {
+                "type": "string",
+                "const": "too_many_requests"
+              },
+              "retryAfterSeconds": {
+                "description": "Whole seconds until the budget that refused the call starts again, as the Retry-After header says. Added in apiVersion 5.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            }
           }
-        }
+        ]
       },
       "HiddenLimitError": {
         "description": "409: hidden_limit_reached, only from POST /hidden/movie/{tmdbId} and /hidden/tv/{tmdbId} for a title the caller has not hidden yet while they already hide 2000. Decided by the caller's own hidden titles alone.",

@@ -87,6 +87,16 @@ export function retryAfterSeconds(header: string | null | undefined, now: number
   return Math.min(Math.max(seconds, 0), MAX_RETRY_AFTER_SECONDS);
 }
 
+/**
+ * A 429 body's `retryAfterSeconds` (the "Get this" budgets send it with the same seconds as `Retry-After`), capped as the
+ * header is; undefined when it has none, as from a server before it.
+ */
+export function retryAfterInBody(body: unknown): number | undefined {
+  const value = typeof body === 'object' && body !== null && Object.hasOwn(body, 'retryAfterSeconds') ? (body as { retryAfterSeconds: unknown }).retryAfterSeconds : undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return undefined;
+  return Math.min(value, MAX_RETRY_AFTER_SECONDS);
+}
+
 /** The error a non-2xx answer stands for. `body` is the parsed answer, or undefined when it was not JSON. */
 export function errorForAnswer(status: number, body: unknown, retryAfter: string | null, now: number): ApiError {
   const kind = kindOfStatus(status);
@@ -94,7 +104,7 @@ export function errorForAnswer(status: number, body: unknown, retryAfter: string
   return new ApiError(status === 403 && code === 'app_access_disabled' ? 'app_access_disabled' : kind, {
     status,
     householdNotFound: kind === 'not_found' && code === 'household_not_found',
-    ...(kind === 'too_many_requests' ? { retryAfterSeconds: retryAfterSeconds(retryAfter, now) } : {}),
+    ...(kind === 'too_many_requests' ? { retryAfterSeconds: retryAfterSeconds(retryAfter, now) ?? retryAfterInBody(body) } : {}),
   });
 }
 

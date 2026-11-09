@@ -21,6 +21,22 @@ export const GET_THIS_TEXT = {
 
 export type GetThisError = 'rate_limited' | 'offline' | 'unavailable';
 
+/**
+ * What a Get this or Cancel refused for too many tries says, as the PWA's rateLimitedText (app/src/render.ts): the wait
+ * the server gave (Retry-After), rounded up to whole minutes ("Too many tries. Try again in 2 minutes."), or `fallback`
+ * (the fixed words) when it gave none, as a server before it does not.
+ */
+export function rateLimitedText(retryAfterSeconds: number | undefined, fallback: string): string {
+  if (retryAfterSeconds === undefined || !Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) return fallback;
+  const minutes = Math.ceil(retryAfterSeconds / 60);
+  return `Too many tries. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`;
+}
+
+/** A Get this failure's words: the fixed ones, with the wait for `rate_limited` when the server said how long. */
+export function getThisErrorText(error: GetThisError, retryAfterSeconds: number | undefined): string {
+  return error === 'rate_limited' ? rateLimitedText(retryAfterSeconds, GET_THIS_TEXT.rate_limited) : GET_THIS_TEXT[error];
+}
+
 /** The fixed message for a Get this that was not accepted (`unauthorized` never gets here: it signs the member out). */
 export function getThisError(kind: ApiErrorKind): GetThisError {
   if (kind === 'too_many_requests') return 'rate_limited';

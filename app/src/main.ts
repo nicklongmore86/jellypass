@@ -9,6 +9,7 @@ import {
   ERROR_TEXT,
   errorState,
   type GetThisHandler,
+  type RateLimitedOutcome,
   type CardActions,
   hiddenItem,
   HIDE_TEXT,
@@ -199,6 +200,14 @@ function setTitle(title?: string): void {
 
 function kindOf(error: unknown): ApiErrorKind {
   return error instanceof ApiError ? error.kind : 'unavailable';
+}
+
+/** A failed Get this or Cancel's outcome: its kind, or, for a 429 that said how long to wait, the wait too. */
+function refusalOf(error: unknown): ApiErrorKind | RateLimitedOutcome {
+  if (error instanceof ApiError && error.kind === 'rate_limited' && error.retryAfterSeconds !== undefined) {
+    return { kind: 'rate_limited', retryAfterSeconds: error.retryAfterSeconds };
+  }
+  return kindOf(error);
 }
 
 /** The fixed chrome's real heights go onto the root as custom properties through the CSSOM (no style attribute is written via markup or setAttribute; style-src 'self' allows CSSOM writes). At large text or zoom the header grows, the tab bar grows and the chips would wrap, so the scroll padding follows what is measured, not a one-row guess. The stylesheet's rem estimates stay as the fallback until then. */
@@ -1219,12 +1228,12 @@ function getThisFor(
 ): GetThisHandler {
   const asked = new Set<number>();
   return async (seasons, onAccepted) => {
-    let kind: ApiErrorKind | 'accepted' = 'accepted';
+    let kind: ApiErrorKind | RateLimitedOutcome | 'accepted' = 'accepted';
     try {
       await api.getThis(mediaType, id, seasons, signal);
     } catch (error) {
       if (signal.aborted) return 'unavailable';
-      kind = kindOf(error);
+      kind = refusalOf(error);
     }
     if (kind === 'unauthorized' && current()) failure(kind, () => void render());
     if (kind !== 'accepted') return kind;
@@ -1522,7 +1531,7 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean, again
       await api.cancelRequest(entry, signal);
     } catch (error) {
       if (signal.aborted) return 'unavailable';
-      const kind = kindOf(error);
+      const kind = refusalOf(error);
       if (kind === 'unauthorized' && current()) failure(kind, () => void render());
       return kind;
     }

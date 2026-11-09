@@ -172,7 +172,7 @@ and nowhere else (on the administrator host they do not exist). The
 
 | Method | Path | Answer |
 | --- | --- | --- |
-| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `4` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
+| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `5` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
 | `GET` | `/jellypass/app/v1/search?q=...&page=N` | A page of title cards. `q` is 1 to 100 characters; `page` 1 to 500, default 1. |
 | `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `trending-movies`, `trending-tv`, `popular-movies`, `popular-tv`, `new-movies` (films that opened in US theatres in the last 60 days), `upcoming` (upcoming movies), `upcoming-tv` (upcoming series), `top-movies` or `top-tv` (TMDB's top rated). |
 | `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
@@ -319,9 +319,15 @@ from them gets the same `202` and does nothing. They can still request through
 Seerr. Before any branch, in the background, JellyPass reads the caller's own
 Seerr request permission and quota; a caller without permission for the media
 type, with a quota, or whose Seerr user or quota could not be read gets the
-same `202` and nothing runs. Calls are also limited to 10 per user, 30 per
-client address and 30 per household in each 10 minutes (`429`), on top of the
-limits above.
+same `202` and nothing runs. Calls (and cancels, which share the count) are
+also limited to 30 per user, 60 per client address and 60 per household in each
+10 minutes by default, on top of the limits above; set them with
+`GET_THIS_LIMIT_PER_USER`, `GET_THIS_LIMIT_PER_IP`, `GET_THIS_LIMIT_PER_HOUSEHOLD`
+and `GET_THIS_WINDOW_SECONDS` (see the
+[server reference](server-reference.md#configuration)). A refused call is
+`429 {"error":"too_many_requests","retryAfterSeconds":N}` with a `Retry-After: N`
+header, the whole seconds until the limit that refused it starts again, and the
+apps say "Too many tries. Try again in N minutes." (rounded up).
 
 **`GET /requests`** lists the household's own "Get this" titles, newest first
 (at most 200), from JellyPass's records only: `status` is `requested`

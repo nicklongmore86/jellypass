@@ -360,6 +360,17 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
     for (let index = 0; index < 61; index += 1) limited = await failing.get(`${APP}/me`);
     assert.equal(limited.status, 429);
     check(covered, 'GET', `${APP}/me`, limited);
+    // The "Get this" budgets' 429 says how long to wait, in the header and the body; cancels share the budgets.
+    const budgeted = await startApp(t, world(), { getThisLimits: { perUser: 1 } });
+    assert.equal((await budgeted.post(`${APP}/movie/${T_MOVIE}/get`, {})).status, 202);
+    for (const pathname of [`${APP}/movie/${T_MOVIE}/get`, `${APP}/tv/${T_TV}/get`, `${APP}/requests/${'A'.repeat(22)}/cancel`]) {
+      const refused = await budgeted.post(pathname, pathname.includes('/tv/') ? { seasons: [1] } : {});
+      assert.equal(refused.status, 429, pathname);
+      assert.equal(refused.headers['retry-after'], String(refused.json().retryAfterSeconds), pathname);
+      check(covered, 'POST', pathname, refused);
+    }
+    assert.notDeepEqual(validate({ error: 'too_many_requests', retryAfterSeconds: 0 }, responseSchema(operationFor('POST', `${APP}/movie/1/get`), 429), DOC), []);
+    assert.notDeepEqual(validate({ error: 'too_many_requests', retryAfterSeconds: 1.5 }, responseSchema(operationFor('POST', `${APP}/movie/1/get`), 429), DOC), []);
 
     // Every operation's success was checked, and every error status at least once somewhere.
     for (const [method, pathname] of [['POST', `${APP}/hidden/movie/0`], ['DELETE', `${APP}/hidden/tv/x`], ['GET', `${APP}/hidden?page=0`]]) {

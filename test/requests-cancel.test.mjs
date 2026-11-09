@@ -136,10 +136,14 @@ describe('cancelling: the endpoint', { timeout: 60_000 }, () => {
     }
     assert.equal((await post(app, `${APP}/requests/${'A'.repeat(22)}/cancel`, undefined, { user: null })).status, 401);
     assert.equal((await post(app, `${APP}/requests/${'A'.repeat(22)}/cancel`, undefined, AS_BOB)).status, 202);
-    // 10 a member in 10 minutes, cancels and "Get this" together.
-    for (let index = 0; index < 9; index += 1) assert.equal((await post(app, `${APP}/requests/${'B'.repeat(22)}/cancel`, {})).status, 202);
+    // 30 a member in 10 minutes, cancels and "Get this" together; a refused cancel says how long to wait, as "Get this" does.
+    for (let index = 0; index < 29; index += 1) assert.equal((await post(app, `${APP}/requests/${'B'.repeat(22)}/cancel`, {})).status, 202);
     assert.equal((await getThis(app)).status, 202);
-    assert.equal((await post(app, `${APP}/requests/${'B'.repeat(22)}/cancel`, {})).status, 429);
+    const refused = await post(app, `${APP}/requests/${'B'.repeat(22)}/cancel`, {});
+    assert.equal(refused.status, 429);
+    const wait = Number(refused.headers['retry-after']);
+    assert.ok(Number.isInteger(wait) && wait >= 1 && wait <= 600, String(wait));
+    assert.deepEqual(refused.json(), { error: 'too_many_requests', retryAfterSeconds: wait });
     assert.equal((await getThis(app)).status, 429);
     assert.equal(metric(app, 'jfa_app_requests_total', 'endpoint="cancel",outcome="rate_limited"'), 1);
   });

@@ -152,9 +152,25 @@ async function call(fetcher: Fetch, origin: string, token: string, path: string,
   }
   if (response.ok) return { ok: true, response };
   const failure: Failure = { ok: false, status: response.status };
-  const wait = response.status === 429 && response.headers ? Number(response.headers.get('retry-after')) : NaN;
-  if (wait > 0 && wait <= 3600) failure.retryAfterMs = Math.ceil(wait * 1000);
+  if (response.status === 429) {
+    let wait = response.headers ? Number(response.headers.get('retry-after')) : NaN;
+    // Without a readable header (a Samsung TV's add-on calls from another origin, which is not shown it), the body's
+    // `retryAfterSeconds`, which the "Get this" budgets send with it.
+    if (!(wait > 0)) wait = await retryAfterInBody(response);
+    if (wait > 0 && wait <= 3600) failure.retryAfterMs = Math.ceil(wait * 1000);
+  }
   return failure;
+}
+
+/** A `429` body's `retryAfterSeconds` (a whole number of seconds), or NaN when it has none. */
+async function retryAfterInBody(response: Response): Promise<number> {
+  try {
+    const body: unknown = await response.json();
+    const seconds = body && typeof body === 'object' ? (body as Record<string, unknown>).retryAfterSeconds : undefined;
+    return typeof seconds === 'number' && Math.floor(seconds) === seconds ? seconds : NaN;
+  } catch {
+    return NaN;
+  }
 }
 
 /** A `GET`'s JSON object, or the failure. */

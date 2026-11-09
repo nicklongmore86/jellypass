@@ -22,6 +22,20 @@ describe('AttemptCounter', () => {
     assert.equal(attempts.attempts('a'), 0);
   });
 
+  it("says how long until a key's window ends, from its first counted attempt", () => {
+    const { clock, attempts } = counter();
+    assert.equal(attempts.resetsIn('a'), 0);
+    attempts.increment('a');
+    clock.now += 300;
+    attempts.increment('a');
+    assert.equal(attempts.resetsIn('a'), 700);
+    assert.equal(attempts.resetsIn('b'), 0);
+    clock.now += 700;
+    assert.equal(attempts.resetsIn('a'), 0);
+    assert.equal(attempts.increment('a'), 1);
+    assert.equal(attempts.resetsIn('a'), WINDOW_MS);
+  });
+
   it('never tracks more keys than the cap and evicts the oldest window first', () => {
     const { clock, attempts } = counter(3);
     for (const key of ['a', 'b', 'c']) {

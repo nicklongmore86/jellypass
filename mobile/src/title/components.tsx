@@ -16,7 +16,7 @@ import { Icon } from '../icons';
 import { colors, layout, radii, spacing, typography } from '../theme';
 import { Button } from '../ui';
 import type { GetThisState } from './useTitle';
-import { GET_THIS_TEXT, lengthText, PLAY_TEXT, playLabel, STATE_NOTES } from './text';
+import { GET_THIS_TEXT, getThisErrorText, lengthText, PLAY_TEXT, playLabel, STATE_NOTES } from './text';
 
 const hidden = { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' } as const;
 
@@ -173,7 +173,7 @@ export function GetThisBox({
   onReload: () => void;
 }) {
   const controls = offered && !get.reloading && !get.refreshFailed;
-  const message = get.error ? GET_THIS_TEXT[get.error] : get.confirmed ? GET_THIS_TEXT.confirmation : '';
+  const message = get.error ? getThisErrorText(get.error, get.retryAfterSeconds) : get.confirmed ? GET_THIS_TEXT.confirmation : '';
   if (!controls && !message) return null;
   return (
     <View testID="get-this" style={styles.getThis}>

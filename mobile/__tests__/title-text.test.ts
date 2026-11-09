@@ -5,7 +5,8 @@ import path from 'node:path';
 
 import type { Movie, Series } from '../src/api/types';
 import { routeNumber } from '../src/title/route';
-import { episodesText, episodeTitle, GET_THIS_TEXT, getThisError, lengthText, runtimeText, seasonName, SEASONS_TEXT, STATE_NOTES } from '../src/title/text';
+import { CANCEL_TEXT, cancelErrorText } from '../src/requests/text';
+import { episodesText, episodeTitle, GET_THIS_TEXT, getThisError, getThisErrorText, lengthText, rateLimitedText, runtimeText, seasonName, SEASONS_TEXT, STATE_NOTES } from '../src/title/text';
 import { movieAnswer, seriesAnswer } from './support/title';
 
 const render = readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'render.ts'), 'utf8');
@@ -25,6 +26,38 @@ describe("the title pages' words", () => {
       'unavailable',
       'unavailable',
     ]);
+  });
+});
+
+describe('too many tries', () => {
+  it('says how long to wait in whole minutes, rounded up, one minute singular', () => {
+    expect([1, 59, 60, 61, 120, 121, 599, 600, 3600].map((seconds) => rateLimitedText(seconds, 'fallback'))).toEqual([
+      'Too many tries. Try again in 1 minute.',
+      'Too many tries. Try again in 1 minute.',
+      'Too many tries. Try again in 1 minute.',
+      'Too many tries. Try again in 2 minutes.',
+      'Too many tries. Try again in 2 minutes.',
+      'Too many tries. Try again in 3 minutes.',
+      'Too many tries. Try again in 10 minutes.',
+      'Too many tries. Try again in 10 minutes.',
+      'Too many tries. Try again in 60 minutes.',
+    ]);
+  });
+
+  it('keeps the fixed words when the server did not say (an older server), or said nothing usable', () => {
+    for (const seconds of [undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY]) expect(rateLimitedText(seconds, GET_THIS_TEXT.rate_limited)).toBe(GET_THIS_TEXT.rate_limited);
+    expect(getThisErrorText('rate_limited', undefined)).toBe(GET_THIS_TEXT.rate_limited);
+    expect(cancelErrorText('rate_limited', undefined)).toBe(CANCEL_TEXT.rate_limited);
+    expect(getThisErrorText('rate_limited', 200)).toBe('Too many tries. Try again in 4 minutes.');
+    expect(cancelErrorText('rate_limited', 200)).toBe('Too many tries. Try again in 4 minutes.');
+    // The wait is only for too many tries.
+    expect(getThisErrorText('offline', 200)).toBe(GET_THIS_TEXT.offline);
+    expect(cancelErrorText('unavailable', 200)).toBe(CANCEL_TEXT.unavailable);
+  });
+
+  it('is word for word the PWA\'s', () => {
+    expect(render).toContain("return `Too many tries. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`;");
+    expect(render).toContain('const minutes = Math.ceil(retryAfterSeconds / 60);');
   });
 });
 

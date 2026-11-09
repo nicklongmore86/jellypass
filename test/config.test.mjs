@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN', 'HOUSEHOLD_HOST_PREFIX', 'HOUSEHOLD_GATEWAY_ENABLED', 'TV_ADDON_ENABLED', 'TV_ADDON_HOUSEHOLDS', 'HOST', 'PORT', 'ADMIN_HOST', 'ADMIN_PORT', 'LEGACY_WEBHOOK_ON_MEMBER_PORT', 'JELLYFIN_UNTESTED_VERSION_OK', 'HOUSEHOLD_PLUGIN_ROUTES', 'JELLYFIN_PUBLIC_URLS', 'SEERR_PUBLIC_URL'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN', 'HOUSEHOLD_HOST_PREFIX', 'HOUSEHOLD_GATEWAY_ENABLED', 'TV_ADDON_ENABLED', 'TV_ADDON_HOUSEHOLDS', 'HOST', 'PORT', 'ADMIN_HOST', 'ADMIN_PORT', 'LEGACY_WEBHOOK_ON_MEMBER_PORT', 'JELLYFIN_UNTESTED_VERSION_OK', 'HOUSEHOLD_PLUGIN_ROUTES', 'JELLYFIN_PUBLIC_URLS', 'SEERR_PUBLIC_URL', 'GET_THIS_LIMIT_PER_USER', 'GET_THIS_LIMIT_PER_IP', 'GET_THIS_LIMIT_PER_HOUSEHOLD', 'GET_THIS_WINDOW_SECONDS'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -40,6 +40,31 @@ describe('JELLYFIN_UNTESTED_VERSION_OK', () => {
     assert.equal(load({ JELLYFIN_UNTESTED_VERSION_OK: ' 13.0.0 ' }).jellyfinUntestedVersionOk, '13.0.0');
     for (const value of ['13.0.0, 13.1.0', '13.*', '13.0.0 13.1.0', '../13']) {
       assert.throws(() => load({ JELLYFIN_UNTESTED_VERSION_OK: value }), /JELLYFIN_UNTESTED_VERSION_OK must be one exact Jellyfin version/, value);
+    }
+  });
+});
+
+describe('"Get this" limits', () => {
+  afterEach(restoreEnvironment);
+
+  it('default to 30 per user, 60 per address and 60 per household in each 10 minutes', () => {
+    assert.deepEqual(load().getThisLimits, { perUser: 30, perClient: 60, perHousehold: 60, windowMs: 600_000 });
+    const empty = { GET_THIS_LIMIT_PER_USER: '', GET_THIS_LIMIT_PER_IP: ' ', GET_THIS_LIMIT_PER_HOUSEHOLD: '', GET_THIS_WINDOW_SECONDS: '' };
+    assert.deepEqual(load(empty).getThisLimits, { perUser: 30, perClient: 60, perHousehold: 60, windowMs: 600_000 });
+  });
+
+  it('takes each from the environment', () => {
+    assert.deepEqual(load({ GET_THIS_LIMIT_PER_USER: '5', GET_THIS_LIMIT_PER_IP: ' 100 ', GET_THIS_LIMIT_PER_HOUSEHOLD: '100000', GET_THIS_WINDOW_SECONDS: '3600' }).getThisLimits, {
+      perUser: 5, perClient: 100, perHousehold: 100_000, windowMs: 3_600_000,
+    });
+    assert.equal(load({ GET_THIS_WINDOW_SECONDS: '1' }).getThisLimits.windowMs, 1000);
+  });
+
+  it('refuses to start on a value that is not a whole number in range, naming the setting', () => {
+    for (const [name, max] of [['GET_THIS_LIMIT_PER_USER', 100000], ['GET_THIS_LIMIT_PER_IP', 100000], ['GET_THIS_LIMIT_PER_HOUSEHOLD', 100000], ['GET_THIS_WINDOW_SECONDS', 3600]]) {
+      for (const value of ['0', '-1', '1.5', '1e3', '030', '+5', 'ten', '0x10', String(max + 1)]) {
+        assert.throws(() => load({ [name]: value }), new RegExp(`^Error: ${name} must be a whole number between 1 and ${max}$`), `${name}=${value}`);
+      }
     }
   });
 });

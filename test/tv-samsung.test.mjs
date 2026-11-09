@@ -72,12 +72,29 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
       assert.deepEqual([refused.status, refused.text, refused.headers['access-control-allow-origin']], [401, '{"error":"unauthorized"}', origin]);
       const unknown = await app.get('/jellypass/app/v1/nothing', { headers: { Origin: origin } });
       assert.deepEqual([unknown.status, unknown.headers['access-control-allow-origin']], [404, origin]);
-      assert.deepEqual(corsHeaders(me), ['access-control-allow-origin']);
+      assert.deepEqual(corsHeaders(me), ['access-control-allow-origin', 'access-control-expose-headers']);
+      // Only Retry-After, which a 429 from "Get this" or cancel carries, is shown beyond the safelisted headers.
+      assert.equal(me.headers['access-control-expose-headers'], 'Retry-After');
     }
     // "Get this", the add-on's one write (a JSON POST, so preflighted above), is taken from the app's origin as from any.
     const asked = await app.post(`/jellypass/app/v1/movie/${T_MOVIE}/get`, undefined, { headers: { Origin: 'null' } });
     await app.background.settled();
     assert.deepEqual([asked.status, asked.json(), asked.headers['access-control-allow-origin']], [202, { status: 'accepted' }, 'null']);
+  });
+
+  it('shows the app a refused "Get this"\'s Retry-After, with the same wait in the body for a runtime that hides it', async (t) => {
+    t.mock.method(console, 'warn', () => undefined);
+    const app = await startApp(t, webWorld(), { ...tvOn(), getThisLimits: { perUser: 1, perClient: 100, perHousehold: 100, windowMs: 60_000 } });
+    const ask = () => app.post(`/jellypass/app/v1/movie/${T_MOVIE}/get`, undefined, { headers: { Origin: 'null' } });
+    assert.equal((await ask()).status, 202);
+    const refused = await ask();
+    assert.equal(refused.status, 429);
+    assert.equal(refused.headers['access-control-allow-origin'], 'null');
+    assert.equal(refused.headers['access-control-expose-headers'], 'Retry-After');
+    const seconds = Number(refused.headers['retry-after']);
+    assert.ok(seconds >= 1 && seconds <= 60, refused.headers['retry-after']);
+    assert.deepEqual(refused.json(), { error: 'too_many_requests', retryAfterSeconds: seconds });
+    await app.background.settled();
   });
 
   it('changes nothing for any other origin, or a preflight asking for another method or header', async (t) => {
@@ -167,10 +184,13 @@ describe('Samsung app: caches', { timeout: 30_000 }, () => {
       for (const origin of askers) {
         const answer = await app.get(pathname, { user, headers: origin === undefined ? {} : { Origin: origin } });
         assert.equal(answer.headers.vary, 'Origin', `${pathname} ${origin}`);
-        // Only the one header depends on Origin, with one of the two fixed values; the answer is otherwise the same.
+        // Only the CORS headers depend on Origin, with fixed values; the answer is otherwise the same.
         assert.ok([undefined, ...APP_ORIGINS].includes(answer.headers['access-control-allow-origin']), `${pathname} ${origin}`);
         assert.equal(answer.headers['access-control-allow-origin'] === undefined, !APP_ORIGINS.includes(origin), `${pathname} ${origin}`);
-        const { 'access-control-allow-origin': _allowed, ...rest } = shape(answer).headers;
+        // An API answer that allows the app also shows it Retry-After; a fixed value, never one from the request.
+        const exposed = APP_ORIGINS.includes(origin) && pathname.startsWith('/jellypass/app/') ? 'Retry-After' : undefined;
+        assert.equal(answer.headers['access-control-expose-headers'], exposed, `${pathname} ${origin}`);
+        const { 'access-control-allow-origin': _allowed, 'access-control-expose-headers': _exposed, ...rest } = shape(answer).headers;
         answers.push({ ...shape(answer), headers: rest });
       }
       for (const answer of answers.slice(1)) assert.deepEqual(answer, answers[0], pathname);

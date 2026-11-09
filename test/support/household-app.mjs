@@ -932,7 +932,7 @@ function sees(user, item) {
  * `requests: false` to serve no "Get this", `loginFailureDelayMs` for the least time a refused household sign-in
  * takes (default 0, so tests not about it never wait), `loginTimeoutMs` for how long a sign-in waits for Jellyfin,
  * `addresses` for the address map (household → `{ origin, aliases }`) and `memberWebhook` for
- * LEGACY_WEBHOOK_ON_MEMBER_PORT, `tvEnvHouseholds` for TV_ADDON_HOUSEHOLDS. The member listener is at `port`, the admin listener at `adminPort`.
+ * LEGACY_WEBHOOK_ON_MEMBER_PORT, `tvEnvHouseholds` for TV_ADDON_HOUSEHOLDS, `getThisLimits` for the "Get this" budgets. The member listener is at `port`, the admin listener at `adminPort`.
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
@@ -1023,6 +1023,7 @@ export async function startApp(t, state = world(), options = {}) {
         ...(options.blocklistTtlMs !== undefined ? { blocklistTtlMs: options.blocklistTtlMs } : {}),
         catalogueLimits: options.catalogueLimits ?? { perSecond: 1000, burst: 1000 },
         ...(options.signOutLimits ? { signOutLimits: options.signOutLimits } : {}),
+        ...(options.getThisLimits ? { getThisLimits: options.getThisLimits } : {}),
       },
     }),
   });

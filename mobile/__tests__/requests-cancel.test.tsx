@@ -34,7 +34,7 @@ const SERIES_ID = FIXTURE.results[0]!.id;
 
 /** What the fake server holds: the list it answers and what a cancel gets. */
 let list: unknown[];
-let cancelAs: { status: number; body: unknown } | 'offline';
+let cancelAs: { status: number; body: unknown; headers?: Record<string, string> } | 'offline';
 /** A cancel is held until this is called, when set. */
 let hold: Promise<void> | undefined;
 let gateway: ReturnType<typeof searchGateway>;
@@ -50,7 +50,7 @@ function serveHousehold(household: SearchHousehold = {}) {
         if (hold) return hold.then(() => answer(202, { status: 'accepted' }));
         if (cancelAs === 'offline') return Promise.reject(new TypeError('Network request failed'));
         if (cancelAs.status === 202) list = list.filter((entry) => !call.url.includes((entry as { id: string }).id));
-        return answer(cancelAs.status, cancelAs.body);
+        return answer(cancelAs.status, cancelAs.body, cancelAs.headers);
       }
       return household.override?.(call);
     },
@@ -174,6 +174,18 @@ describe('cancelling', () => {
     await pressNode(first('cancel-confirm'));
     expect(posts()).toHaveLength(2);
     expect(noticeText()).toBe('Request cancelled');
+  });
+
+  it.each([
+    ['the header and the body', { error: 'too_many_requests', retryAfterSeconds: 125 }, { 'Retry-After': '125' }, 'Too many tries. Try again in 3 minutes.'],
+    ['the body alone', { error: 'too_many_requests', retryAfterSeconds: 60 }, {}, 'Too many tries. Try again in 1 minute.'],
+    ['neither (an older server)', { error: 'too_many_requests' }, {}, CANCEL_TEXT.rate_limited],
+  ])('says how long to wait for a 429 that says it in %s, in whole minutes rounded up', async (_what, body, headers, text) => {
+    cancelAs = { status: 429, body, headers };
+    await openSheet();
+    await pressNode(first('cancel-confirm'));
+    expect(errorText()).toBe(text);
+    expect(posts()).toHaveLength(1);
   });
 
   it('says the offline words with no connection', async () => {

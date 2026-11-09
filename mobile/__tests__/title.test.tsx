@@ -204,7 +204,9 @@ describe('Get this', () => {
   });
 
   it.each([
-    ['a 429', () => answer(429, { error: 'too_many_requests' }, { 'Retry-After': '30' }), GET_THIS_TEXT.rate_limited],
+    ['a 429', () => answer(429, { error: 'too_many_requests' }), GET_THIS_TEXT.rate_limited],
+    ['a 429 that says how long (Retry-After)', () => answer(429, { error: 'too_many_requests', retryAfterSeconds: 30 }, { 'Retry-After': '30' }), 'Too many tries. Try again in 1 minute.'],
+    ['a 429 that says how long in its body alone', () => answer(429, { error: 'too_many_requests', retryAfterSeconds: 481 }), 'Too many tries. Try again in 9 minutes.'],
     ['no answer', offline, GET_THIS_TEXT.offline],
     ['a 502', () => answer(502, { error: 'unavailable' }), GET_THIS_TEXT.unavailable],
     ['a 404', () => answer(404, { error: 'not_found' }), GET_THIS_TEXT.unavailable],

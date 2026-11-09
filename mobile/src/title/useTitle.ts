@@ -17,7 +17,7 @@ import type { MediaType, Movie, Season, Series } from '../api/types';
 import { errorText, type ErrorText } from '../home/text';
 import { useSession } from '../session/SessionProvider';
 import type { Asked } from './asked';
-import { GET_THIS_TEXT, getThisError, type GetThisError } from './text';
+import { GET_THIS_TEXT, getThisError, getThisErrorText, type GetThisError } from './text';
 
 export type TitleRoute = { mediaType: MediaType; tmdbId: number } | { mediaType: 'season'; tmdbId: number; seasonNumber: number };
 
@@ -42,11 +42,13 @@ export interface GetThisState {
   /** Accepted, but the screen could not be read again. */
   refreshFailed: boolean;
   error: GetThisError | undefined;
+  /** With `rate_limited`: how long the server asked to wait, in seconds, when it said. */
+  retryAfterSeconds: number | undefined;
   /** Seasons (0 for a movie) asked for on this screen: not offered again until it is left. */
   asked: ReadonlySet<number>;
 }
 
-const IDLE: GetThisState = { sending: false, reloading: false, confirmed: false, refreshFailed: false, error: undefined, asked: new Set() };
+const IDLE: GetThisState = { sending: false, reloading: false, confirmed: false, refreshFailed: false, error: undefined, retryAfterSeconds: undefined, asked: new Set() };
 
 export interface TitleData {
   load: TitleLoad;
@@ -157,7 +159,7 @@ export function useTitle(route: TitleRoute): TitleData {
       busy.current = true;
       const mine = opening.current;
       const target: MediaType = mediaType === 'movie' ? 'movie' : 'tv';
-      setGet((current) => ({ ...current, sending: true, error: undefined }));
+      setGet((current) => ({ ...current, sending: true, error: undefined, retryAfterSeconds: undefined }));
       void (async () => {
         try {
           await getThis(target, tmdbId, seasons, signal);
@@ -169,8 +171,9 @@ export function useTitle(route: TitleRoute): TitleData {
             return;
           }
           const message = getThisError(error instanceof ApiError ? error.kind : 'unavailable');
-          setGet((current) => ({ ...current, sending: false, error: message }));
-          AccessibilityInfo.announceForAccessibility?.(GET_THIS_TEXT[message]);
+          const wait = message === 'rate_limited' && error instanceof ApiError ? error.retryAfterSeconds : undefined;
+          setGet((current) => ({ ...current, sending: false, error: message, retryAfterSeconds: wait }));
+          AccessibilityInfo.announceForAccessibility?.(getThisErrorText(message, wait));
           return;
         }
         if (opening.current !== mine) return;

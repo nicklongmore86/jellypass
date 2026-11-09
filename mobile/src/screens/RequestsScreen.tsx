@@ -118,6 +118,7 @@ export function RequestsScreen() {
         title={cancel.target ? data.titles[cancel.target.id] : undefined}
         sending={cancel.sending}
         error={cancel.error}
+        retryAfterSeconds={cancel.retryAfterSeconds}
         onConfirm={cancel.confirm}
         onKeep={cancel.keep}
       />

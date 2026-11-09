@@ -820,10 +820,14 @@ describe('household app "Get this": input, budgets, shutdown and metrics', { tim
   });
 
   it('limits submissions per user, per client address and per household, counting each only past the one before', async (t) => {
+    const warnings = t.mock.method(console, 'warn', () => undefined);
     const nobody = { seerrUsers: Object.fromEntries([ALICE, ANN, CAROL, OUTSIDER].map((user) => [SEERR_IDS[user], { jellyfinUserId: user, permissions: 0 }])) };
+    // The app's own clock, moved on by hand: past the household's 10-second burst between members, inside the window.
+    let clock = Date.parse('2026-11-09T12:00:00Z');
     const app = await start(t, world(nobody), {
       trustedProxies: ['127.0.0.1'],
       households: [{ id: 'grove', name: 'Grove', userIds: [ALICE, ANN, CAROL, OUTSIDER] }, { id: 'mill', name: 'Mill', userIds: [BOB] }],
+      now: () => clock,
     });
     const from = (address, user) => app.post(GET_MOVIE, undefined, { user, headers: { 'X-Forwarded-For': address } });
     const statuses = async (count, address, user) => {
@@ -831,17 +835,106 @@ describe('household app "Get this": input, budgets, shutdown and metrics', { tim
       for (let index = 0; index < count; index += 1) seen.push((await from(address, user)).status);
       return seen;
     };
-    // Ten per user: the eleventh is refused and not counted against the address or the household.
-    assert.deepEqual(await statuses(11, '192.0.2.1', ALICE), [...Array(10).fill(202), 429]);
-    // Thirty per address: Ann and Carol from the same address use the rest of it.
-    assert.deepEqual(await statuses(10, '192.0.2.1', ANN), Array(10).fill(202));
-    assert.deepEqual(await statuses(11, '192.0.2.1', CAROL), [...Array(10).fill(202), 429]);
-    // The household's thirty are used up too, from any address: its fourth member is refused.
-    const refused = await from('192.0.2.2', OUTSIDER);
-    assert.equal(refused.status, 429);
-    assert.equal(refused.text, '{"error":"too_many_requests"}');
+    /** A refusal: the fixed code, and how long until the budget that refused it starts again, in the header and the body alike. */
+    const refusal = (answer, seconds) => {
+      assert.equal(answer.status, 429);
+      assert.equal(answer.headers['retry-after'], String(seconds));
+      assert.equal(answer.text, `{"error":"too_many_requests","retryAfterSeconds":${seconds}}`);
+    };
+    // Thirty per user: the 31st is refused (not the 11th, as before) and not counted against the address or the household.
+    assert.deepEqual(await statuses(30, '192.0.2.1', ALICE), Array(30).fill(202));
+    clock += 100_000;
+    refusal(await from('192.0.2.1', ALICE), 500);
+    // Sixty per address: Ann from the same address uses the rest of it, so Carol's first is refused there.
+    assert.deepEqual(await statuses(30, '192.0.2.1', ANN), Array(30).fill(202));
+    clock += 50_000;
+    refusal(await from('192.0.2.1', CAROL), 450);
+    // The household's sixty are used up too, from any address: its fourth member is refused.
+    clock += 50_000;
+    refusal(await from('192.0.2.2', OUTSIDER), 400);
     // Another household is not affected.
     assert.equal((await app.post(GET_MOVIE, undefined, { host: HOST_B, user: BOB, headers: { 'X-Forwarded-For': '192.0.2.3' } })).status, 202);
+    // Each budget starts again when its own window ends: Alice's after ten minutes from her first call.
+    clock += 400_000;
+    assert.equal((await from('192.0.2.3', ALICE)).status, 202);
+    // Each refusal is logged once, naming the budget and nothing about the caller.
+    const logged = warnings.mock.calls.map((call) => String(call.arguments[0])).filter((line) => line.includes('get this limit reached'));
+    assert.deepEqual(logged.map((line) => JSON.parse(line)), [
+      { level: 'warn', message: 'household app get this limit reached', endpoint: 'get', limiter: 'user', limit: 30, retryAfterSeconds: 500 },
+      { level: 'warn', message: 'household app get this limit reached', endpoint: 'get', limiter: 'ip', limit: 60, retryAfterSeconds: 450 },
+      { level: 'warn', message: 'household app get this limit reached', endpoint: 'get', limiter: 'household', limit: 60, retryAfterSeconds: 400 },
+    ]);
+    for (const line of logged) for (const secret of [ALICE, CAROL, OUTSIDER, '192.0.2', 'grove']) assert.ok(!line.includes(secret), line);
+    await app.background.settled();
+  });
+
+  it('says the wait of the budget that refused, each with its own window, and charges the ones checked before it', async (t) => {
+    // The budgets are checked in order, user, then address, then household, and each one checked is charged before the
+    // next is asked: a call the address refuses still counts against the caller, and one the household refuses counts
+    // against the caller and the address. Each budget's window starts at its own first call, so each ends at its own time.
+    const warnings = t.mock.method(console, 'warn', () => undefined);
+    const nobody = { seerrUsers: Object.fromEntries([ALICE, ANN, CAROL, OUTSIDER].map((user) => [SEERR_IDS[user], { jellyfinUserId: user, permissions: 0 }])) };
+    const started = Date.parse('2026-11-09T12:00:00Z');
+    let clock = started;
+    const at = (seconds) => { clock = started + seconds * 1000; };
+    const app = await start(t, world(nobody), {
+      trustedProxies: ['127.0.0.1'],
+      households: [{ id: 'grove', name: 'Grove', userIds: [ALICE, ANN, CAROL, OUTSIDER] }],
+      now: () => clock,
+      getThisLimits: { perUser: 3, perClient: 2, perHousehold: 6, windowMs: 100_000 },
+    });
+    const from = async (address, user) => {
+      const answer = await app.post(GET_MOVIE, undefined, { user, headers: { 'X-Forwarded-For': address } });
+      if (answer.status === 202) return 202;
+      assert.equal(answer.status, 429);
+      assert.deepEqual(answer.json(), { error: 'too_many_requests', retryAfterSeconds: Number(answer.headers['retry-after']) });
+      return Number(answer.headers['retry-after']);
+    };
+    const limiters = () => warnings.mock.calls.map((call) => String(call.arguments[0])).filter((line) => line.includes('get this limit reached')).map((line) => JSON.parse(line).limiter);
+    // Windows: the household's from 0 s (ends at 100), address .1's from 10 s (ends at 110), Ann's from 25 s (ends at 125).
+    at(0); assert.equal(await from('192.0.2.9', CAROL), 202);
+    at(10); assert.equal(await from('192.0.2.1', ALICE), 202);
+    at(25); assert.equal(await from('192.0.2.1', ANN), 202);
+    // Address .1 is full: refused with its own wait (110 - 30), not Ann's (95) or the household's (70), and again later.
+    at(30); assert.equal(await from('192.0.2.1', ANN), 80);
+    at(35); assert.equal(await from('192.0.2.1', ANN), 75);
+    // Those two refusals were charged to Ann: her fourth call is refused by her own budget (125 - 40), not the address's.
+    at(40); assert.equal(await from('192.0.2.1', ANN), 85);
+    // ... and not to the household: it has had 3 of its 6, so three more from fresh addresses fill it.
+    at(45); assert.equal(await from('192.0.2.2', OUTSIDER), 202);
+    at(50); assert.equal(await from('192.0.2.3', OUTSIDER), 202);
+    at(55); assert.equal(await from('192.0.2.9', ALICE), 202);
+    // The household is full: refused with its wait (100 - 60), not Alice's (50) or address .4's (100), and again later.
+    at(60); assert.equal(await from('192.0.2.4', ALICE), 40);
+    at(65); assert.equal(await from('192.0.2.4', OUTSIDER), 35);
+    // Both were charged to the caller and the address: address .4 (its 2) refuses Carol, and Outsider (their 3) and
+    // Alice (her 3) are refused by their own budgets, each with its own wait.
+    at(70); assert.equal(await from('192.0.2.4', CAROL), 90);
+    assert.equal(await from('192.0.2.4', OUTSIDER), 75);
+    assert.equal(await from('192.0.2.5', ALICE), 40);
+    assert.deepEqual(limiters(), ['ip', 'ip', 'user', 'household', 'household', 'ip', 'user', 'user']);
+    // The household's window, the first to start, is the first to end; Carol's, which started with it, too.
+    at(100); assert.equal(await from('192.0.2.5', CAROL), 202);
+    await app.background.settled();
+  });
+
+  it('takes the budgets and their window from its options (GET_THIS_LIMIT_* and GET_THIS_WINDOW_SECONDS)', async (t) => {
+    t.mock.method(console, 'warn', () => undefined);
+    const nobody = { seerrUsers: { [SEERR_IDS[ALICE]]: { jellyfinUserId: ALICE, permissions: 0 } } };
+    let clock = Date.parse('2026-11-09T12:00:00Z');
+    const app = await start(t, world(nobody), { now: () => clock, getThisLimits: { perUser: 2, perClient: 100, perHousehold: 100, windowMs: 60_000 } });
+    assert.equal((await app.post(GET_MOVIE)).status, 202);
+    assert.equal((await app.post(GET_MOVIE)).status, 202);
+    clock += 15_000;
+    const refused = await app.post(GET_MOVIE);
+    assert.equal(refused.status, 429);
+    assert.equal(refused.headers['retry-after'], '45');
+    assert.deepEqual(refused.json(), { error: 'too_many_requests', retryAfterSeconds: 45 });
+    // A part of a second left is a whole second; the window's end starts the budget again.
+    clock += 44_500;
+    assert.equal((await app.post(GET_MOVIE)).headers['retry-after'], '1');
+    clock += 500;
+    assert.equal((await app.post(GET_MOVIE)).status, 202);
     await app.background.settled();
   });
 

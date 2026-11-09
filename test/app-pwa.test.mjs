@@ -2637,6 +2637,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
             state.list = state.list.filter((item) => !url.includes(item.id));
             return json({ status: 'accepted' }, 202);
           }
+          if (state.cancelAnswer) return state.cancelAnswer;
           return { status: state.cancel, body: Buffer.from('{"error":"upstream said something private"}'), headers: { 'content-type': 'application/json' } };
         }
         return undefined;
@@ -2781,6 +2782,32 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         click(page, item.querySelector('.request-cancel-actions button'));
         await page.until(() => page.main().querySelector('.get-message')?.textContent === 'Request cancelled' && page.main().querySelector('p.muted')?.textContent.startsWith('Nothing requested yet'), 'confirmation and empty');
         assert.equal(page.main().querySelectorAll('.request').length, 0);
+      });
+
+      it('a 429 that says how long to wait says it, in whole minutes rounded up, from the header or (without one) the body', async (t) => {
+        const app = await startApp(t);
+        const limited = (headers, body) => ({ status: 429, body: Buffer.from(JSON.stringify(body)), headers: { 'content-type': 'application/json', ...headers } });
+        const state = { posts: [], cancel: 429, list: [entry(ID, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' })] };
+        const page = await openApp(t, app, { hash: '#/requests', override: server(state) });
+        await named(page, 1);
+        const item = page.main().querySelector('.request');
+        click(page, item.querySelector('.request-cancel'));
+        const [confirm] = item.querySelectorAll('.request-cancel-actions button');
+        const answers = [
+          [limited({ 'retry-after': '125' }, { error: 'too_many_requests', retryAfterSeconds: 125 }), 'Too many tries. Try again in 3 minutes.'],
+          [limited({}, { error: 'too_many_requests', retryAfterSeconds: 60 }), 'Too many tries. Try again in 1 minute.'],
+          [limited({ 'retry-after': '1' }, { error: 'too_many_requests' }), 'Too many tries. Try again in 1 minute.'],
+          [limited({}, { error: 'too_many_requests' }), 'Too many tries, try again in a few minutes.'],
+          [limited({}, { error: 'too_many_requests', retryAfterSeconds: 'soon' }), 'Too many tries, try again in a few minutes.'],
+        ];
+        for (const [answer, text] of answers) {
+          state.cancelAnswer = answer;
+          const before = state.posts.length;
+          click(page, confirm);
+          await page.until(() => state.posts.length > before && !confirm.disabled, 'the answer');
+          assert.equal(item.querySelector('.request-cancel-panel .get-message')?.textContent, text);
+        }
+        assert.doesNotMatch(page.serialize(), /download/i);
       });
 
       for (const [status, text] of [[429, 'Too many tries, try again in a few minutes.'], [500, "We couldn't cancel that just now. Try again in a moment."], [404, "We couldn't cancel that just now. Try again in a moment."]]) {
@@ -5219,6 +5246,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         override: (url, init) => {
           if (init.method !== 'POST') return undefined;
           if (mode === 'limited') return answer(429);
+          if (typeof mode === 'object') return mode;
           if (mode === 'server') return answer(502);
           if (mode === 'invalid') return answer(400);
           if (mode === 'offline') throw new TypeError('network canary');
@@ -5235,6 +5263,16 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         return page.main().querySelector('.get-message').textContent;
       };
       assert.equal(await press(), 'Too many tries, try again in a few minutes.');
+      // A 429 from the "Get this" budgets says how long, in whole minutes rounded up.
+      for (const [headers, body, text] of [
+        [{ 'retry-after': '90' }, { error: 'too_many_requests', retryAfterSeconds: 90 }, 'Too many tries. Try again in 2 minutes.'],
+        [{ 'retry-after': '60' }, { error: 'too_many_requests', retryAfterSeconds: 60 }, 'Too many tries. Try again in 1 minute.'],
+        [{}, { error: 'too_many_requests', retryAfterSeconds: 599 }, 'Too many tries. Try again in 10 minutes.'],
+        [{ 'retry-after': '0' }, { error: 'too_many_requests' }, 'Too many tries, try again in a few minutes.'],
+      ]) {
+        mode = { status: 429, body: Buffer.from(JSON.stringify(body)), headers };
+        assert.equal(await press(), text, JSON.stringify(headers));
+      }
       mode = 'offline';
       assert.equal(await press(), "You're offline. Check your connection, then try again.");
       for (const failing of ['server', 'invalid']) {
