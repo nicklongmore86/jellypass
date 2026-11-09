@@ -54,6 +54,34 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 4.3.0 without its heading, up to the 4.2.1 section', () => {
+    const notes = changelogSection(CHANGELOG, '4.3.0');
+    assertSection(notes, {
+      version: '4.3.0',
+      nextVersion: '4.2.1',
+      subheadings: ['Added', 'Changed', 'Fixed'],
+    });
+    assert.match(notes, /^This is a minor release\./);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*An existing install upgrades without any change to its configuration:\*\*/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:4\.2\.1`/);
+    assert.match(flat, /`apiVersion` is now 5/);
+    assert.match(flat, /schema 9/);
+    for (const name of ['GET_THIS_LIMIT_PER_USER', 'GET_THIS_LIMIT_PER_IP', 'GET_THIS_LIMIT_PER_HOUSEHOLD', 'GET_THIS_WINDOW_SECONDS']) {
+      assert.ok(flat.includes(`\`${name}\``), `names ${name}`);
+    }
+    for (const heading of ['Added', 'Changed', 'Fixed']) {
+      assert.equal(notes.split('\n').filter((line) => line === `### ${heading}`).length, 1, `one ### ${heading}`);
+    }
+    const added = notes.indexOf('### Added');
+    for (const note of ['**The state file is unchanged**', '**No CDN purge is needed.**', '**To roll back,**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `${note} is summarised first`);
+    }
+    assert.doesNotMatch(notes, /download/i);
+    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|TU7000|sdb\b/i, 'no server-specific details');
+    if (privateTerms) assert.equal(privateMatchCount(notes, privateTerms), 0, 'no private deployment details');
+  });
+
   it('extracts 4.2.1 without its heading, up to the 4.2.0 section', () => {
     const notes = changelogSection(CHANGELOG, '4.2.1');
     assertSection(notes, {

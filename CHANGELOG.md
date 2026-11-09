@@ -21,9 +21,33 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
-This adds settings, so it belongs in a minor release. An install that sets none
-of them upgrades without any change to its configuration, with the higher
-defaults below.
+## [4.3.0] - 2026-11-09
+
+This is a minor release. It makes the household app's "Get this" limits
+settings, raises their defaults, and tells members how long to wait when a
+limit refuses them. **An existing install upgrades without any change to its
+configuration:** it adds settings and removes or renames none, and an install
+that sets none of them gets the higher defaults below. The state file (schema
+9), webhook payloads, the administrator API and the gateway are as in 4.2.1;
+the household app API (`v1`) only gains a field, so `apiVersion` is now 5.
+Read these before upgrading:
+
+- **The state file is unchanged** (schema 9, with the same fields as 4.2.1),
+  and the "Get this" counts are kept in memory only, so 4.2.1 reads a state
+  file written by 4.3.0.
+- **No CDN purge is needed.** The TV add-on's script has a new name,
+  `jellypass-tv.d24f3a1f0a64.js` (it was `jellypass-tv.67293bf711ee.js` in
+  4.2.1); the stylesheet keeps `jellypass-tv.9f2a2886ec7c.css`. The `/web/`
+  page and the Samsung app's manifest are sent `no-store`. Some household app
+  script files also get new names and its service worker a new cache.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:4.2.1` and recreate the container. No
+  state-file or setting change is needed: 4.2.1 ignores the `GET_THIS_*`
+  settings and goes back to its own limits (10 per member, 30 per client
+  address and 30 per household in each 10 minutes), and apps that know
+  `apiVersion` 5 show their fixed "Too many tries" words again.
+- **The iPhone, iPad and Android app ships separately;** its changes are
+  described in `mobile/CHANGELOG.md`.
 
 ### Added
 
@@ -42,14 +66,12 @@ defaults below.
   (`user`, `ip` or `household`), nothing about the caller. The error code is
   unchanged, so older clients keep working. The app API contract
   (`docs/app-api/v1.openapi.json`) describes both, and `apiVersion` in
-  `GET /me` is now 5 (a new field). The Samsung app is shown the header
+  `GET /me` is now 5. The Samsung app is shown the header
   (`Access-Control-Expose-Headers: Retry-After`).
 - **The household app and the TV add-on show the wait:** "Too many tries. Try
   again in 3 minutes." (rounded up to whole minutes), and the fixed words as
   before when the server does not say. The TV add-on reads the body when it is
-  not shown the header (a Samsung TV). The TV add-on's script gets a new name.
-  The iPhone, iPad and Android app's change is in `mobile/CHANGELOG.md`
-  (Unreleased) and arrives with the app's own next release.
+  not shown the header (a Samsung TV).
 
 ### Changed
 
@@ -60,7 +82,9 @@ defaults below.
 
 ### Fixed
 
-- **Self-check docs:** `docs/household-access.md` said a missing or unreachable Seerr URL passes the Seerr probe. It always warns, and the docs now also say the direct-origin check has no pass result.
+- **Self-check documentation:** `docs/household-access.md` said a missing or
+  unreachable Seerr URL passes the Seerr probe. It always warns, and the
+  documentation now also says the direct-origin check has no pass result.
 
 ## [4.2.1] - 2026-11-06
 
@@ -3913,7 +3937,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.2.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.3.0...HEAD
+[4.3.0]: https://github.com/nicklongmore86/jellypass/compare/v4.2.1...v4.3.0
 [4.2.1]: https://github.com/nicklongmore86/jellypass/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/nicklongmore86/jellypass/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/nicklongmore86/jellypass/compare/v4.0.0...v4.1.0
