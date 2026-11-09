@@ -21,7 +21,8 @@ build.
   refused for too many tries and the server says how long until it can be tried
   again (`Retry-After`, or `retryAfterSeconds` in the answer), the app says
   "Too many tries. Try again in 3 minutes." (rounded up to whole minutes). A
-  server that does not say (before this change) gets the same words as before.
+  server that does not say (one before `apiVersion` 5) gets the same words as
+  before.
 
 ## [1.4.1] - 2026-11-05
 

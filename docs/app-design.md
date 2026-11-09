@@ -2102,6 +2102,15 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   order on its own. Parsing title answers on the main thread, and listing every
   household's records for one household's answer, fail none: they are timing-only (documented above).
 
+### App API revision 5: how long to wait after "Get this" is refused
+
+`GET /me` advertises `apiVersion: 5`. A `429 too_many_requests` from the "Get this" submission budgets
+(`POST /movie/{tmdbId}/get`, `/tv/{tmdbId}/get` and `/requests/{id}/cancel`) also carries `retryAfterSeconds` in its
+body and a `Retry-After` header, the same whole seconds until the budget that refused it starts again. The error code
+is unchanged, so a client that does not read the new field keeps working; a client that does falls back to fixed
+wording when it is absent (an older server, or any other `429`). The Samsung app's origin is shown `Retry-After`
+(`Access-Control-Expose-Headers`); the TV add-on still reads the body when a runtime hides the header.
+
 ### App API revision 4: administrator access control
 
 `GET /me` advertises `apiVersion: 4`. Every app API endpoint can return HTTP 403 with the fixed body

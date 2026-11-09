@@ -15,12 +15,16 @@ import { NEVER_STORE } from './app-assets.js';
  */
 export const TIZEN_APP_ORIGINS: ReadonlySet<string> = new Set(['file://', 'null']);
 
-/** The two families of paths that answer the app, with the methods and request headers each allows. */
+/**
+ * The two families of paths that answer the app, with the methods and request headers each allows, and the response
+ * headers beyond the CORS-safelisted ones the app may read: `Retry-After` on a `429` from "Get this" or cancel (its body
+ * also says `retryAfterSeconds`, which the add-on falls back to when a runtime does not show it the header).
+ */
 const FAMILIES = {
   /** The app API: reads, "Get this" and hiding (a JSON `POST`), and unhiding (`DELETE`), with the token in `Authorization`. */
-  api: { prefix: '/jellypass/app/v1/', methods: ['GET', 'POST', 'DELETE'], headers: ['authorization', 'content-type'] },
+  api: { prefix: '/jellypass/app/v1/', methods: ['GET', 'POST', 'DELETE'], headers: ['authorization', 'content-type'], exposed: ['retry-after'] },
   /** The add-on's files and its manifest: plain reads. */
-  tv: { prefix: '/jellypass/tv/', methods: ['GET', 'HEAD'], headers: [] as string[] },
+  tv: { prefix: '/jellypass/tv/', methods: ['GET', 'HEAD'], headers: [] as string[], exposed: [] as string[] },
 } as const;
 type Family = keyof typeof FAMILIES;
 
@@ -41,7 +45,8 @@ export function corsFamily(pathname: string): Family | undefined {
 /**
  * Applies the rules to one request in `family`: a preflight from the app's origin for a method and headers the family
  * allows is answered `204` here (returns true, before any token is looked at); any other request from that origin gets
- * `Access-Control-Allow-Origin` with it on whatever answer follows (returns false). Anything else, from another origin or
+ * `Access-Control-Allow-Origin` with it (and `Access-Control-Expose-Headers` for the family's exposed headers) on whatever
+ * answer follows (returns false). Anything else, from another origin or
  * with no `Origin`, or a preflight asking for more, is answered as it was (returns false), with only `Vary: Origin`.
  *
  * Every answer in a family says `Vary: Origin`, whatever `Origin` (or none) its request sent, the add-on's
@@ -78,6 +83,7 @@ export function applyTvCors(request: IncomingMessage, response: ServerResponse, 
     return true;
   }
   response.setHeader('Access-Control-Allow-Origin', origin);
+  if (rules.exposed.length) response.setHeader('Access-Control-Expose-Headers', rules.exposed.map(headerName).join(', '));
   return false;
 }
 

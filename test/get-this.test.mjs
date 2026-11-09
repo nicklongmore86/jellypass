@@ -868,6 +868,56 @@ describe('household app "Get this": input, budgets, shutdown and metrics', { tim
     await app.background.settled();
   });
 
+  it('says the wait of the budget that refused, each with its own window, and charges the ones checked before it', async (t) => {
+    // The budgets are checked in order, user, then address, then household, and each one checked is charged before the
+    // next is asked: a call the address refuses still counts against the caller, and one the household refuses counts
+    // against the caller and the address. Each budget's window starts at its own first call, so each ends at its own time.
+    const warnings = t.mock.method(console, 'warn', () => undefined);
+    const nobody = { seerrUsers: Object.fromEntries([ALICE, ANN, CAROL, OUTSIDER].map((user) => [SEERR_IDS[user], { jellyfinUserId: user, permissions: 0 }])) };
+    const started = Date.parse('2026-11-09T12:00:00Z');
+    let clock = started;
+    const at = (seconds) => { clock = started + seconds * 1000; };
+    const app = await start(t, world(nobody), {
+      trustedProxies: ['127.0.0.1'],
+      households: [{ id: 'grove', name: 'Grove', userIds: [ALICE, ANN, CAROL, OUTSIDER] }],
+      now: () => clock,
+      getThisLimits: { perUser: 3, perClient: 2, perHousehold: 6, windowMs: 100_000 },
+    });
+    const from = async (address, user) => {
+      const answer = await app.post(GET_MOVIE, undefined, { user, headers: { 'X-Forwarded-For': address } });
+      if (answer.status === 202) return 202;
+      assert.equal(answer.status, 429);
+      assert.deepEqual(answer.json(), { error: 'too_many_requests', retryAfterSeconds: Number(answer.headers['retry-after']) });
+      return Number(answer.headers['retry-after']);
+    };
+    const limiters = () => warnings.mock.calls.map((call) => String(call.arguments[0])).filter((line) => line.includes('get this limit reached')).map((line) => JSON.parse(line).limiter);
+    // Windows: the household's from 0 s (ends at 100), address .1's from 10 s (ends at 110), Ann's from 25 s (ends at 125).
+    at(0); assert.equal(await from('192.0.2.9', CAROL), 202);
+    at(10); assert.equal(await from('192.0.2.1', ALICE), 202);
+    at(25); assert.equal(await from('192.0.2.1', ANN), 202);
+    // Address .1 is full: refused with its own wait (110 - 30), not Ann's (95) or the household's (70), and again later.
+    at(30); assert.equal(await from('192.0.2.1', ANN), 80);
+    at(35); assert.equal(await from('192.0.2.1', ANN), 75);
+    // Those two refusals were charged to Ann: her fourth call is refused by her own budget (125 - 40), not the address's.
+    at(40); assert.equal(await from('192.0.2.1', ANN), 85);
+    // ... and not to the household: it has had 3 of its 6, so three more from fresh addresses fill it.
+    at(45); assert.equal(await from('192.0.2.2', OUTSIDER), 202);
+    at(50); assert.equal(await from('192.0.2.3', OUTSIDER), 202);
+    at(55); assert.equal(await from('192.0.2.9', ALICE), 202);
+    // The household is full: refused with its wait (100 - 60), not Alice's (50) or address .4's (100), and again later.
+    at(60); assert.equal(await from('192.0.2.4', ALICE), 40);
+    at(65); assert.equal(await from('192.0.2.4', OUTSIDER), 35);
+    // Both were charged to the caller and the address: address .4 (its 2) refuses Carol, and Outsider (their 3) and
+    // Alice (her 3) are refused by their own budgets, each with its own wait.
+    at(70); assert.equal(await from('192.0.2.4', CAROL), 90);
+    assert.equal(await from('192.0.2.4', OUTSIDER), 75);
+    assert.equal(await from('192.0.2.5', ALICE), 40);
+    assert.deepEqual(limiters(), ['ip', 'ip', 'user', 'household', 'household', 'ip', 'user', 'user']);
+    // The household's window, the first to start, is the first to end; Carol's, which started with it, too.
+    at(100); assert.equal(await from('192.0.2.5', CAROL), 202);
+    await app.background.settled();
+  });
+
   it('takes the budgets and their window from its options (GET_THIS_LIMIT_* and GET_THIS_WINDOW_SECONDS)', async (t) => {
     t.mock.method(console, 'warn', () => undefined);
     const nobody = { seerrUsers: { [SEERR_IDS[ALICE]]: { jellyfinUserId: ALICE, permissions: 0 } } };

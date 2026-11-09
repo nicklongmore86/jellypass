@@ -41,7 +41,9 @@ defaults below.
   refused it starts again, and the server logs one line naming that limit
   (`user`, `ip` or `household`), nothing about the caller. The error code is
   unchanged, so older clients keep working. The app API contract
-  (`docs/app-api/v1.openapi.json`) describes both; `apiVersion` stays 4.
+  (`docs/app-api/v1.openapi.json`) describes both, and `apiVersion` in
+  `GET /me` is now 5 (a new field). The Samsung app is shown the header
+  (`Access-Control-Expose-Headers: Retry-After`).
 - **The household app and the TV add-on show the wait:** "Too many tries. Try
   again in 3 minutes." (rounded up to whole minutes), and the fixed words as
   before when the server does not say. The TV add-on reads the body when it is
