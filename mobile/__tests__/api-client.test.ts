@@ -279,6 +279,20 @@ describe('error answers', () => {
     expect((await failure(api.me())).retryAfterSeconds).toBeUndefined();
   });
 
+  it('takes a 429\'s wait from its body\'s retryAfterSeconds when there is no usable Retry-After, and the header first', async () => {
+    const retryAfter = async (body: unknown, headers: Record<string, string> = {}) => {
+      const { api } = clientWith(() => answer(429, body, headers));
+      return (await failure(api.getThis('movie', 7, []))).retryAfterSeconds;
+    };
+    expect(await retryAfter({ error: 'too_many_requests', retryAfterSeconds: 90 })).toBe(90);
+    expect(await retryAfter({ error: 'too_many_requests', retryAfterSeconds: 90 }, { 'Retry-After': '120' })).toBe(120);
+    expect(await retryAfter({ error: 'too_many_requests', retryAfterSeconds: 999999 })).toBe(3600);
+    for (const value of [1.5, -1, '90', null]) expect(await retryAfter({ error: 'too_many_requests', retryAfterSeconds: value })).toBeUndefined();
+    expect(await retryAfter({ error: 'too_many_requests' })).toBeUndefined();
+    const { api } = clientWith(() => answer(502, { error: 'unavailable', retryAfterSeconds: 30 }));
+    expect((await failure(api.me())).retryAfterSeconds).toBeUndefined();
+  });
+
   it('never retries: one call for each failure', async () => {
     for (const respond of [() => answer(429, { error: 'too_many_requests' }), () => answer(502, { error: 'unavailable' }), () => answer(200, 'nope'), () => Promise.reject(new TypeError('Network request failed'))]) {
       const { api, calls } = clientWith(respond);

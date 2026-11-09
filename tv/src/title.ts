@@ -71,6 +71,17 @@ export const VIEW_ATTRIBUTE = 'data-jellypass-tv-title';
 /** The header's title until the title is known. */
 const PAGE_TITLE = 'JellyPass';
 
+/**
+ * What a Get this or Cancel refused for too many tries says: the wait the server gave, rounded up to whole minutes
+ * ("Too many tries. Try again in 2 minutes."), or `fallback` (the fixed words) when it gave none.
+ */
+export function rateLimitedText(failure: Failure, fallback: string): string {
+  const seconds = failure.retryAfterMs === undefined ? 0 : failure.retryAfterMs / 1000;
+  if (!(seconds > 0)) return fallback;
+  const minutes = Math.ceil(seconds / 60);
+  return `Too many tries. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`;
+}
+
 export function kindOf(failure: Failure): ErrorKind {
   if (failure.status === 0) return 'offline';
   if (failure.status === 401) return 'unauthorized';
@@ -758,7 +769,7 @@ export class TitlePage {
         open.drawn = drawn;
         const kind = kindOf(answer);
         message.className = 'jellypass-tv-title-message jellypass-tv-title-error';
-        message.textContent = kind === 'rate_limited' ? TITLE_TEXT.rate_limited : kind === 'offline' ? TITLE_TEXT.offline : TITLE_TEXT.unavailable;
+        message.textContent = kind === 'rate_limited' ? rateLimitedText(answer, TITLE_TEXT.rate_limited) : kind === 'offline' ? TITLE_TEXT.offline : TITLE_TEXT.unavailable;
         get.textContent = TITLE_TEXT.getThis;
         get.removeAttribute('aria-busy');
         for (const toggle of toggles) toggle.disabled = false;

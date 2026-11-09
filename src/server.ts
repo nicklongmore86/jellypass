@@ -78,7 +78,7 @@ export interface ServerOptions {
    * The household app API at /jellypass/app/v1/* on household hosts (needs `householdGateway`). Without it those paths
    * answer a fixed 404 there; they are never served on the admin host.
    */
-  householdApp?: Pick<HouseholdAppOptions, 'catalogue' | 'blocklist' | 'members' | 'requests' | 'libraryTtlMs' | 'titleTtlMs' | 'blocklistTtlMs' | 'catalogueLimits' | 'signOutLimits' | 'now'>;
+  householdApp?: Pick<HouseholdAppOptions, 'catalogue' | 'blocklist' | 'members' | 'requests' | 'libraryTtlMs' | 'titleTtlMs' | 'blocklistTtlMs' | 'catalogueLimits' | 'signOutLimits' | 'getThisLimits' | 'now'>;
   /**
    * The household app's title holds (HouseholdRequests.checkTitleHolds), checked in the background after each
    * MEDIA_AVAILABLE webhook and library catalog sync, so a title whose cancelled request Seerr lost is held soon after it

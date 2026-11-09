@@ -47,6 +47,13 @@ export class AttemptCounter {
     return 1;
   }
 
+  /** Milliseconds until the key's current window ends (its count starts again from 0), or 0 when it has none. */
+  public resetsIn(key: string): number {
+    const now = this.#now();
+    const window = this.#windows.get(key);
+    return window && window.resetsAt > now ? window.resetsAt - now : 0;
+  }
+
   public delete(key: string): void {
     this.#windows.delete(key);
   }

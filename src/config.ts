@@ -3,6 +3,7 @@ import { publicProbeUrls } from './self-check.js';
 import { parseAdditionalPluginRoutes } from './gateway-route-policy.js';
 import { parseTrustedProxies } from './client-ip.js';
 import { isTmdbCredential } from './tmdb.js';
+import { DEFAULT_GET_THIS_LIMITS, type GetThisLimits } from './household-requests.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 const LOG_LEVEL_ALIASES: Record<string, LogLevel> = {
@@ -28,6 +29,10 @@ export const DEFAULT_WS_IDLE_TIMEOUT_MS = 300_000;
 export const DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS = 180_000;
 const MAX_WS_IDLE_TIMEOUT_MS = 86_400_000;
 const JELLYFIN_WEBSOCKET_LOST_TIMEOUT_MS = 60_000;
+/** The highest GET_THIS_LIMIT_* value taken. */
+const MAX_GET_THIS_LIMIT = 100_000;
+/** The longest GET_THIS_WINDOW_SECONDS taken: an hour, the longest wait the apps show as asked. */
+const MAX_GET_THIS_WINDOW_SECONDS = 3600;
 
 export interface Config {
   jellyfinPublicUrls: string[];
@@ -87,6 +92,11 @@ export interface Config {
    * without an administrator confirming it in the admin site (see JellyfinVersionGate).
    */
   jellyfinUntestedVersionOk?: string;
+  /**
+   * The household app's "Get this" submission budgets (cancels share them): GET_THIS_LIMIT_PER_USER,
+   * GET_THIS_LIMIT_PER_IP (per client address), GET_THIS_LIMIT_PER_HOUSEHOLD, each in every GET_THIS_WINDOW_SECONDS.
+   */
+  getThisLimits: GetThisLimits;
 }
 
 /**
@@ -184,6 +194,12 @@ function readConfig(): Config {
   if (jellyfinUntestedVersionOk && !/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(jellyfinUntestedVersionOk)) {
     throw new Error('JELLYFIN_UNTESTED_VERSION_OK must be one exact Jellyfin version, as the admin site shows it (for example 13.0.0)');
   }
+  const getThisLimits: GetThisLimits = {
+    perUser: positiveIntegerEnvironment('GET_THIS_LIMIT_PER_USER', DEFAULT_GET_THIS_LIMITS.perUser, MAX_GET_THIS_LIMIT),
+    perClient: positiveIntegerEnvironment('GET_THIS_LIMIT_PER_IP', DEFAULT_GET_THIS_LIMITS.perClient, MAX_GET_THIS_LIMIT),
+    perHousehold: positiveIntegerEnvironment('GET_THIS_LIMIT_PER_HOUSEHOLD', DEFAULT_GET_THIS_LIMITS.perHousehold, MAX_GET_THIS_LIMIT),
+    windowMs: positiveIntegerEnvironment('GET_THIS_WINDOW_SECONDS', DEFAULT_GET_THIS_LIMITS.windowMs / 1000, MAX_GET_THIS_WINDOW_SECONDS) * 1000,
+  };
   const adminToken = env.ADMIN_TOKEN?.trim();
   if (!adminToken) {
     console.warn(JSON.stringify({
@@ -222,6 +238,7 @@ function readConfig(): Config {
     webSocketUpstreamIdleTimeoutMs,
     trustedProxies,
     ...(jellyfinUntestedVersionOk ? { jellyfinUntestedVersionOk } : {}),
+    getThisLimits,
   };
 }
 
@@ -307,6 +324,16 @@ function portEnvironment(name: string, fallback: number): number {
     throw new Error(`${name} must be an integer between 1 and 65535`);
   }
   return port;
+}
+
+/** A whole number from 1 to `max`, written plainly (no sign, decimals, exponent or leading zero); unset or empty is `fallback`. */
+function positiveIntegerEnvironment(name: string, fallback: number, max: number): number {
+  const input = env[name]?.trim();
+  if (!input) return fallback;
+  if (!/^[1-9][0-9]*$/.test(input) || Number(input) > max) {
+    throw new Error(`${name} must be a whole number between 1 and ${max}`);
+  }
+  return Number(input);
 }
 
 function booleanEnvironment(name: string, fallback: boolean): boolean {

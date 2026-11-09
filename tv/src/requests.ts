@@ -19,7 +19,7 @@ import {
   type RequestFilter,
 } from './requests-model.js';
 import { SessionWatch } from './session-watch.js';
-import { ERROR_TEXT, kindOf, titleHash, type ErrorKind } from './title.js';
+import { ERROR_TEXT, kindOf, rateLimitedText, titleHash, type ErrorKind } from './title.js';
 import { TitleCache } from './titles.js';
 
 /**
@@ -650,7 +650,7 @@ export class RequestsPage {
         }
         const kind = kindOf(answer);
         message.className = 'jellypass-tv-requests-cancel-message jellypass-tv-requests-error-text';
-        message.textContent = kind === 'rate_limited' ? CANCEL_TEXT.rate_limited : kind === 'offline' ? CANCEL_TEXT.offline : CANCEL_TEXT.unavailable;
+        message.textContent = kind === 'rate_limited' ? rateLimitedText(answer, CANCEL_TEXT.rate_limited) : kind === 'offline' ? CANCEL_TEXT.offline : CANCEL_TEXT.unavailable;
         confirm.textContent = CANCEL_TEXT.confirm;
         confirm.removeAttribute('aria-busy');
         confirm.disabled = false;

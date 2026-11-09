@@ -11,9 +11,28 @@ export const HIDING_API_VERSION = 3;
 export type ApiErrorKind = 'app_access_disabled' | 'unauthorized' | 'rate_limited' | 'not_found' | 'unavailable' | 'offline' | 'hidden_limit_reached';
 
 export class ApiError extends Error {
-  public constructor(public readonly kind: ApiErrorKind) {
+  /**
+   * For a `429` that said how long to wait (the "Get this" budgets: its `Retry-After`, or `retryAfterSeconds` in the
+   * body), in whole seconds; undefined when it did not, as from an older server.
+   */
+  public readonly retryAfterSeconds: number | undefined;
+
+  public constructor(public readonly kind: ApiErrorKind, retryAfterSeconds?: number) {
     super(kind);
+    this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+/** The longest wait taken at its word, in seconds (the server's longest window); a longer one is capped. */
+const MAX_RETRY_AFTER_SECONDS = 3600;
+
+/** A wait in whole seconds, from a `Retry-After` header (seconds) or the body's `retryAfterSeconds`; undefined if neither says one. */
+export function retryAfterOf(header: string | null, body: unknown): number | undefined {
+  const value = header?.trim();
+  const fromHeader = value && /^[0-9]{1,9}$/.test(value) ? Number(value) : undefined;
+  const field = body && typeof body === 'object' ? (body as { retryAfterSeconds?: unknown }).retryAfterSeconds : undefined;
+  const seconds = fromHeader ?? (typeof field === 'number' && Number.isInteger(field) ? field : undefined);
+  return seconds !== undefined && seconds > 0 ? Math.min(seconds, MAX_RETRY_AFTER_SECONDS) : undefined;
 }
 
 /**
@@ -155,8 +174,14 @@ export function createApi(options: ApiOptions): Api {
     }
     if (!response.ok) {
       let appDisabled = false;
+      let retryAfter: number | undefined;
       if (response.status === 403) {
         try { appDisabled = (await response.json() as { error?: unknown } | null)?.error === 'app_access_disabled'; } catch { /* An unknown refusal uses generic wording. */ }
+      } else if (response.status === 429) {
+        // How long to wait, when the server said (the "Get this" budgets); a 429 without it keeps the fixed wording.
+        let body: unknown;
+        try { body = await response.json(); } catch { /* No body to read: the header alone. */ }
+        retryAfter = retryAfterOf(response.headers.get('Retry-After'), body);
       } else await response.body?.cancel().catch(() => undefined);
       // The sign-in may have ended while the body was let go: then this answer is nobody's, whatever it says.
       if (ended()) throw new SessionChangedError();
@@ -166,7 +191,8 @@ export function createApi(options: ApiOptions): Api {
         forget();
         identity = undefined;
       }
-      throw new ApiError(appDisabled ? 'app_access_disabled' : kindOf(response.status, init.hiding));
+      const kind = appDisabled ? 'app_access_disabled' : kindOf(response.status, init.hiding);
+      throw new ApiError(kind, kind === 'rate_limited' ? retryAfter : undefined);
     }
     return response;
   }

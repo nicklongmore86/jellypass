@@ -21,6 +21,41 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+This adds settings, so it belongs in a minor release. An install that sets none
+of them upgrades without any change to its configuration, with the higher
+defaults below.
+
+### Added
+
+- **"Get this" limits are settings.** `GET_THIS_LIMIT_PER_USER`,
+  `GET_THIS_LIMIT_PER_IP` and `GET_THIS_LIMIT_PER_HOUSEHOLD` set how many
+  household app "Get this" calls (and cancels, which share the count) each
+  member, client address and household may make in each
+  `GET_THIS_WINDOW_SECONDS`. Each must be a whole number (limits 1 to 100000,
+  the window 1 to 3600 seconds); anything else stops startup with a message
+  naming the setting. No other limit changes. See the
+  [server reference](docs/server-reference.md#configuration).
+- **A refused "Get this" or cancel says how long to wait.** The `429
+  too_many_requests` answer now carries a `Retry-After` header and a
+  `retryAfterSeconds` field, the same whole seconds until the limit that
+  refused it starts again, and the server logs one line naming that limit
+  (`user`, `ip` or `household`), nothing about the caller. The error code is
+  unchanged, so older clients keep working. The app API contract
+  (`docs/app-api/v1.openapi.json`) describes both; `apiVersion` stays 4.
+- **The household app and the TV add-on show the wait:** "Too many tries. Try
+  again in 3 minutes." (rounded up to whole minutes), and the fixed words as
+  before when the server does not say. The TV add-on reads the body when it is
+  not shown the header (a Samsung TV). The TV add-on's script gets a new name.
+  The iPhone, iPad and Android app's change is in `mobile/CHANGELOG.md`
+  (Unreleased) and arrives with the app's own next release.
+
+### Changed
+
+- **Higher "Get this" defaults:** 30 per member (was 10), 60 per client address
+  (was 30) and 60 per household (was 30) in each 10 minutes. A member who asks
+  for a whole series a few seasons at a time no longer hits "Too many tries"
+  after ten.
+
 ### Fixed
 
 - **Self-check docs:** `docs/household-access.md` said a missing or unreachable Seerr URL passes the Seerr probe. It always warns, and the docs now also say the direct-origin check has no pass result.

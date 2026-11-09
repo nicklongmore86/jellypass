@@ -26,7 +26,7 @@ import { ApiError, isAbortError } from '../api/errors';
 import type { Request } from '../api/types';
 import { errorText, type ErrorText } from '../home/text';
 import type { Asked } from '../title/asked';
-import { CANCEL_TEXT, cancelError, type CancelError, REQUEST_TITLE_CALLS, REQUESTS_PER_PAGE, type RequestTitle } from './text';
+import { CANCEL_TEXT, cancelError, cancelErrorText, type CancelError, REQUEST_TITLE_CALLS, REQUESTS_PER_PAGE, type RequestTitle } from './text';
 import type { TitleCache } from './titleCache';
 
 export type RequestsLoad = { status: 'loading' } | { status: 'loaded'; requests: readonly Request[] } | { status: 'failed'; error: ErrorText };
@@ -37,6 +37,8 @@ export interface CancelState {
   /** The call is out: both of the sheet's buttons are disabled. */
   sending: boolean;
   error: CancelError | undefined;
+  /** With `rate_limited`: how long the server asked to wait, in seconds, when it said. */
+  retryAfterSeconds: number | undefined;
   /** "Request cancelled" after an accepted Cancel, until the screen is left or the next Cancel. */
   notice: string | undefined;
   /** Opens the confirmation for a request. */
@@ -193,6 +195,7 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
   const [target, setTarget] = useState<Request | undefined>(undefined);
   const [sending, setSending] = useState(false);
   const [cancelFailed, setCancelFailed] = useState<CancelError | undefined>(undefined);
+  const [cancelWait, setCancelWait] = useState<number | undefined>(undefined);
   const [notice, setNotice] = useState<string | undefined>(undefined);
   /** A Cancel is out: a second tap sends nothing. */
   const cancelling = useRef(false);
@@ -227,8 +230,10 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
           return;
         }
         const message = cancelError(error instanceof ApiError ? error.kind : 'unavailable');
+        const wait = message === 'rate_limited' && error instanceof ApiError ? error.retryAfterSeconds : undefined;
         setCancelFailed(message);
-        AccessibilityInfo.announceForAccessibility?.(CANCEL_TEXT[message]);
+        setCancelWait(wait);
+        AccessibilityInfo.announceForAccessibility?.(cancelErrorText(message, wait));
         return;
       }
       cancelling.current = false;
@@ -252,6 +257,6 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
     setNotice(undefined);
   }, []);
 
-  const cancel: CancelState = { target, sending, error: cancelFailed, notice, ask, keep, confirm };
+  const cancel: CancelState = { target, sending, error: cancelFailed, retryAfterSeconds: cancelWait, notice, ask, keep, confirm };
   return { load, shown, titles, naming, reload, loadMore, stop, cancel };
 }

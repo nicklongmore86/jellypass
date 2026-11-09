@@ -3,7 +3,7 @@
 import type { Card, CoarseStatus, MediaType, Request } from '../api/types';
 import type { ApiErrorKind } from '../api/errors';
 import { REQUEST_LABELS } from '../home/text';
-import { GET_THIS_TEXT } from '../title/text';
+import { GET_THIS_TEXT, rateLimitedText } from '../title/text';
 
 export const REQUESTS_TEXT = {
   title: 'My requests',
@@ -38,6 +38,11 @@ export function cancelError(kind: ApiErrorKind): CancelError {
   if (kind === 'too_many_requests') return 'rate_limited';
   if (kind === 'network') return 'offline';
   return 'unavailable';
+}
+
+/** A Cancel failure's words: the fixed ones, with the wait for `rate_limited` when the server said how long. */
+export function cancelErrorText(error: CancelError, retryAfterSeconds: number | undefined): string {
+  return error === 'rate_limited' ? rateLimitedText(retryAfterSeconds, CANCEL_TEXT.rate_limited) : CANCEL_TEXT[error];
 }
 
 /** The accessible name of an entry's Cancel button: it names its request. */

@@ -186,7 +186,7 @@ async function run(config: Config, setupWizard: (apply: () => void) => SetupWiza
       },
     } : {}),
     ...(config.householdAppEnabled && seerr && members && catalogue ? {
-      householdApp: { catalogue, blocklist: seerr, members, ...(requests ? { requests } : {}) },
+      householdApp: { catalogue, blocklist: seerr, members, getThisLimits: config.getThisLimits, ...(requests ? { requests } : {}) },
     } : {}),
     ...(requests && seerr ? {
       titleHolds: requests,

@@ -60,8 +60,30 @@ export const CANCEL_TEXT = {
   requestedOn: (day: string) => `Requested on ${day}`,
 } as const;
 
+/** A Get this or Cancel the "Get this" budgets refused, saying how long to wait, in whole seconds. */
+export interface RateLimitedOutcome {
+  kind: 'rate_limited';
+  retryAfterSeconds: number;
+}
+
+/**
+ * What a Get this or Cancel refused for too many tries says: the wait, rounded up to whole minutes, when the server said
+ * how long ("Too many tries. Try again in 2 minutes."); `fallback` (the fixed words) when it did not.
+ */
+export function rateLimitedText(retryAfterSeconds: number | undefined, fallback: string): string {
+  if (retryAfterSeconds === undefined || !Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) return fallback;
+  const minutes = Math.ceil(retryAfterSeconds / 60);
+  return `Too many tries. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`;
+}
+
+/** A failed Get this or Cancel's fixed message, from that action's words. */
+function failureText(text: { rate_limited: string; offline: string; unavailable: string }, outcome: ApiErrorKind | RateLimitedOutcome): string {
+  if (typeof outcome === 'object') return rateLimitedText(outcome.retryAfterSeconds, text.rate_limited);
+  return outcome === 'rate_limited' ? text.rate_limited : outcome === 'offline' ? text.offline : text.unavailable;
+}
+
 /** Cancels an entry: resolves to `accepted` (after `onAccepted`, the moment the call was), `refresh_failed`, or the kind of failure. Never rejects. */
-export type CancelHandler = (entry: RequestEntry, onAccepted: () => void) => Promise<'accepted' | 'refresh_failed' | ApiErrorKind>;
+export type CancelHandler = (entry: RequestEntry, onAccepted: () => void) => Promise<'accepted' | 'refresh_failed' | ApiErrorKind | RateLimitedOutcome>;
 
 const HIDE_LIMIT = "You've hidden as many titles as you can (2,000). Unhide some to hide more.";
 
@@ -764,7 +786,7 @@ export function stateNote(doc: Document, state: HouseholdState): HTMLElement | u
  * `accepted` once the call was accepted and the screen redrawn; `refresh_failed` when it was accepted but the screen
  * could not be read again. `onAccepted` runs the moment the call is accepted, before the screen is read again.
  */
-export type GetThisHandler = (seasons: number[], onAccepted: () => void) => Promise<'accepted' | 'refresh_failed' | ApiErrorKind>;
+export type GetThisHandler = (seasons: number[], onAccepted: () => void) => Promise<'accepted' | 'refresh_failed' | ApiErrorKind | RateLimitedOutcome>;
 
 /** A title page's "Not interested" / Unhide: whether the member hid the title, and the call (resolving to its outcome, never rejecting). */
 export interface TitleHiding {
@@ -888,7 +910,7 @@ export function getThisParts(doc: Document, subject: string, choices: Choice[], 
       }
       if (outcome === 'accepted' || accepted) return;
       message.className = 'get-message get-error';
-      message.textContent = outcome === 'rate_limited' ? GET_THIS_TEXT.rate_limited : outcome === 'offline' ? GET_THIS_TEXT.offline : GET_THIS_TEXT.unavailable;
+      message.textContent = failureText(GET_THIS_TEXT, outcome);
       button.textContent = GET_THIS_TEXT.button;
       button.removeAttribute('aria-busy');
       for (const input of inputs) input.disabled = false;
@@ -1345,7 +1367,7 @@ function cancelControl(doc: Document, entry: RequestEntry, onCancel: CancelHandl
     }).then((outcome) => {
       if (outcome === 'accepted' || outcome === 'refresh_failed' || outcome === 'unauthorized' || accepted) return;
       message.className = 'get-message get-error';
-      message.textContent = outcome === 'rate_limited' ? CANCEL_TEXT.rate_limited : outcome === 'offline' ? CANCEL_TEXT.offline : CANCEL_TEXT.unavailable;
+      message.textContent = failureText(CANCEL_TEXT, outcome);
       confirm.textContent = CANCEL_TEXT.confirm;
       confirm.removeAttribute('aria-busy');
       confirm.disabled = false;

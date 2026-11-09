@@ -319,9 +319,15 @@ from them gets the same `202` and does nothing. They can still request through
 Seerr. Before any branch, in the background, JellyPass reads the caller's own
 Seerr request permission and quota; a caller without permission for the media
 type, with a quota, or whose Seerr user or quota could not be read gets the
-same `202` and nothing runs. Calls are also limited to 10 per user, 30 per
-client address and 30 per household in each 10 minutes (`429`), on top of the
-limits above.
+same `202` and nothing runs. Calls (and cancels, which share the count) are
+also limited to 30 per user, 60 per client address and 60 per household in each
+10 minutes by default, on top of the limits above; set them with
+`GET_THIS_LIMIT_PER_USER`, `GET_THIS_LIMIT_PER_IP`, `GET_THIS_LIMIT_PER_HOUSEHOLD`
+and `GET_THIS_WINDOW_SECONDS` (see the
+[server reference](server-reference.md#configuration)). A refused call is
+`429 {"error":"too_many_requests","retryAfterSeconds":N}` with a `Retry-After: N`
+header, the whole seconds until the limit that refused it starts again, and the
+apps say "Too many tries. Try again in N minutes." (rounded up).
 
 **`GET /requests`** lists the household's own "Get this" titles, newest first
 (at most 200), from JellyPass's records only: `status` is `requested`

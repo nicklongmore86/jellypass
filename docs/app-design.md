@@ -571,7 +571,8 @@ server by months still works.
   the same for every endpoint and every title: `400 {"error":"invalid_request"}`, `401 {"error":"unauthorized"}`,
   `403 {"error":"app_access_disabled"}` (authenticated member; household app access off),
   `404 {"error":"not_found"}`, `409 {"error":"hidden_limit_reached"}` (only from hiding a new title past the member's
-  2,000; see "Hidden titles"), `429 {"error":"too_many_requests"}`, `502 {"error":"unavailable"}`; and, before any
+  2,000; see "Hidden titles"), `429 {"error":"too_many_requests"}` (from the "Get this" submission budgets only, also
+  with `retryAfterSeconds` and a `Retry-After` header, the same whole seconds until that budget starts again), `502 {"error":"unavailable"}`; and, before any
   token is checked, `404 {"error":"household_not_found"}` on a household address no household has (the household was
   removed, or the address is mistyped). The client shows fixed wording of its own for each and never shows a body, an
   upstream message or a status line; for sign-in, the PWA's: `401`/`403` "That didn't work", `429` "Too many
@@ -580,8 +581,9 @@ server by months still works.
   it every time: it never waits for or reads anything to tell what happened, and only `GET /requests` and the
   titles' `state` say how it went, later. Nothing the client shows may depend on another household.
 - **Budgets.** They are the server's, the same for every client: 300 calls per client address and 200 per member in
-  each 5 minutes, 60 per household in each 10 seconds; "Get this" 10 per member, 30 per address and 30 per household in
-  each 10 minutes; 20 sign-in attempts per address in each 5 minutes. A household's phones usually share one public
+  each 5 minutes, 60 per household in each 10 seconds; "Get this" 30 per member, 60 per address and 60 per household in
+  each 10 minutes by default (GET_THIS_LIMIT_PER_USER, GET_THIS_LIMIT_PER_IP, GET_THIS_LIMIT_PER_HOUSEHOLD,
+  GET_THIS_WINDOW_SECONDS), whose `429` says how long to wait; 20 sign-in attempts per address in each 5 minutes. A household's phones usually share one public
   address, so every call one device makes comes out of the others' budget too: a native client makes no more calls than
   the PWA does for the same screen (see "Fetch budget" below), fetches rows below the fold only when they near the
   screen, never polls, and on `429` stops and offers a retry rather than retrying by itself.
@@ -1083,10 +1085,13 @@ PWA's button (step 2b)").
 | `GET /jellypass/app/v1/requests` | `{results: [{id, mediaType, tmdbId, status, seasons, byYou}]}` (below) |
 
 **The answer depends only on the call.** In order: the address, user and household app budgets and the session and
-household check (as for every app endpoint); input validation (fixed `400`); the "Get this" submission budgets, 10 per
-user, 30 per client address and 30 per household in each 10-minute window (fixed windows, counted for every valid call
-and never given back; each counted only if the one before admitted the call, so a call refused for the caller's own
-volume never uses up the address's or the household's; fixed `429`); then the call is started as background work
+household check (as for every app endpoint); input validation (fixed `400`); the "Get this" submission budgets, by
+default 30 per user, 60 per client address and 60 per household in each 10-minute window (`GET_THIS_LIMIT_PER_USER`,
+`GET_THIS_LIMIT_PER_IP`, `GET_THIS_LIMIT_PER_HOUSEHOLD` and `GET_THIS_WINDOW_SECONDS`; fixed windows, counted for every
+valid call and never given back; each counted only if the one before admitted the call, so a call refused for the
+caller's own volume never uses up the address's or the household's; `429 {"error":"too_many_requests",
+"retryAfterSeconds":N}` with `Retry-After: N`, N being the whole seconds until the window of the budget that refused it
+ends, and one log line naming that budget, `user`, `ip` or `household`, and nothing about the caller); then the call is started as background work
 (`BackgroundTasks`, so shutdown aborts and waits for it) and the fixed `202` is sent. Nothing about the caller's
 eligibility or the title is read before the answer, and no endpoint ever waits on that work: its headers and body are
 byte-for-byte the same whatever the title's situation and whether or not the caller is eligible. A call made once
@@ -1385,8 +1390,8 @@ above).
 
 **The answer depends only on the call.** `:id` is an entry's opaque ID from `GET /requests`, checked only for its form
 (22 base64url characters; anything else is the fixed `400`), never looked up before the answer; the body must be empty
-or `{}`. Cancels count against the "Get this" submission budgets (10 per member, 30 per address and 30 per household in
-10 minutes, shared with "Get this"; fixed `429`). Then the work starts in the background and the fixed `202` is sent:
+or `{}`. Cancels count against the "Get this" submission budgets (by default 30 per member, 60 per address and 60 per
+household in 10 minutes, shared with "Get this"; the same `429` with `Retry-After` and `retryAfterSeconds`). Then the work starts in the background and the fixed `202` is sent:
 an ID the household does not list, an entry the caller may not cancel, and one cancelled all answer the same.
 
 **`cancellable` and `requestedOn`.** `cancellable` is true when the entry, **as the caller is shown it**, is

@@ -2,10 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { NEVER_STORE } from './app-assets.js';
 import { DispatchQueueFullError, FairDispatcher } from './fair-dispatcher.js';
 import {
-  GET_THIS_WINDOW_MS,
-  MAX_GET_THIS_PER_CLIENT,
-  MAX_GET_THIS_PER_HOUSEHOLD,
-  MAX_GET_THIS_PER_USER,
+  DEFAULT_GET_THIS_LIMITS,
+  type GetThisLimits,
   type HouseholdRequests,
   type OwnView,
   type RequestsDto,
@@ -270,6 +268,8 @@ export interface HouseholdAppOptions {
    * {@link MAX_SIGN_OUTS_PER_CLIENT}), and token hashes kept back after in all.
    */
   signOutLimits?: Partial<SignOutLimits>;
+  /** The "Get this" submission budgets (GET_THIS_LIMIT_* and GET_THIS_WINDOW_SECONDS); DEFAULT_GET_THIS_LIMITS unless set. */
+  getThisLimits?: Partial<GetThisLimits>;
   logLevel?: string;
 }
 
@@ -442,10 +442,17 @@ interface HouseholdCaches {
 }
 
 class AppAnswer extends Error {
-  public constructor(public readonly outcome: Exclude<AppOutcome, 'ok'>) {
+  /** For a `429` from the "Get this" budgets: whole seconds until the budget that refused the call starts again. */
+  public readonly retryAfterSeconds: number | undefined;
+
+  public constructor(public readonly outcome: Exclude<AppOutcome, 'ok'>, retryAfterSeconds?: number) {
     super(outcome);
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
+
+/** Which "Get this" budget refused a call, as the log names it. */
+type GetThisLimiter = 'user' | 'ip' | 'household';
 
 interface Route {
   endpoint: AppEndpoint;
@@ -475,6 +482,7 @@ export class HouseholdApp implements HouseholdAppHandler {
   readonly #getThisByUser: AttemptCounter;
   readonly #getThisByClient: AttemptCounter;
   readonly #getThisByHousehold: AttemptCounter;
+  readonly #getThisLimits: GetThisLimits;
   readonly #partitions = new Map<string, HouseholdCaches>();
   /** Verifications at Jellyfin now, with the tokens (hashes) each holds: a sign-out with one of them spoils it, so it is not kept. */
   readonly #verifying = new Set<{ tokenKeys: readonly string[]; spoiled: boolean }>();
@@ -509,9 +517,11 @@ export class HouseholdApp implements HouseholdAppHandler {
     this.#byClient = new AttemptCounter({ windowMs: APP_BUDGET_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#byUser = new AttemptCounter({ windowMs: APP_BUDGET_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#byHousehold = new AttemptCounter({ windowMs: APP_BURST_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
-    this.#getThisByUser = new AttemptCounter({ windowMs: GET_THIS_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
-    this.#getThisByClient = new AttemptCounter({ windowMs: GET_THIS_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
-    this.#getThisByHousehold = new AttemptCounter({ windowMs: GET_THIS_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#getThisLimits = { ...DEFAULT_GET_THIS_LIMITS, ...options.getThisLimits };
+    const getThisWindowMs = this.#getThisLimits.windowMs;
+    this.#getThisByUser = new AttemptCounter({ windowMs: getThisWindowMs, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#getThisByClient = new AttemptCounter({ windowMs: getThisWindowMs, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#getThisByHousehold = new AttemptCounter({ windowMs: getThisWindowMs, maxKeys: MAX_TRACKED, now: this.#now });
     this.#signOutsByClient = new AttemptCounter({ windowMs: APP_SIGN_OUT_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#signOutsByHousehold = new AttemptCounter({ windowMs: APP_SIGN_OUT_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#signOutLimits = {
@@ -664,10 +674,13 @@ export class HouseholdApp implements HouseholdAppHandler {
     const url = new URL(request.url ?? '/', 'http://localhost');
     const route = this.#route(request.method, url.pathname);
     const endpoint = route?.endpoint ?? 'unknown';
-    const answer = (outcome: AppOutcome, body?: unknown) => {
+    const answer = (outcome: AppOutcome, body?: unknown, retryAfterSeconds?: number) => {
       this.#record(endpoint, outcome);
       if (outcome === 'ok') writeAppJson(response, route?.status ?? 200, body);
-      else writeAppJson(response, APP_ERRORS[outcome].status, APP_ERRORS[outcome].body);
+      else if (retryAfterSeconds !== undefined) {
+        // Only the "Get this" budgets say how long: the standard header, and the same seconds in the body.
+        writeAppJson(response, APP_ERRORS[outcome].status, { ...APP_ERRORS[outcome].body, retryAfterSeconds }, { 'Retry-After': String(retryAfterSeconds) });
+      } else writeAppJson(response, APP_ERRORS[outcome].status, APP_ERRORS[outcome].body);
     };
     // Counted for every call, signed in or not, before Jellyfin is asked anything.
     if (this.#byClient.increment(context.clientId) > MAX_APP_REQUESTS_PER_CLIENT) return answer('rate_limited');
@@ -688,7 +701,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     try {
       body = await route.run(caller, context, url, request);
     } catch (error) {
-      if (error instanceof AppAnswer) return answer(error.outcome);
+      if (error instanceof AppAnswer) return answer(error.outcome, undefined, error.retryAfterSeconds);
       this.#logFailure(endpoint, error);
       return answer('unavailable');
     }
@@ -935,13 +948,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     const tmdbId = tmdbParameter(input);
     const seasons = getThisSeasons(mediaType, await readBody(request));
     const callerId = normalizedUserId(caller.id);
-    // Each counted only if the previous one admitted the call, so a call refused for the caller's own volume is never
-    // counted against the household's or the address's.
-    if (this.#getThisByUser.increment(callerId) > MAX_GET_THIS_PER_USER
-      || this.#getThisByClient.increment(context.clientId) > MAX_GET_THIS_PER_CLIENT
-      || this.#getThisByHousehold.increment(context.householdId) > MAX_GET_THIS_PER_HOUSEHOLD) {
-      throw new AppAnswer('rate_limited');
-    }
+    this.#spendGetThisBudgets('get', callerId, context);
     await requests.submit({
       householdId: context.householdId,
       callerId,
@@ -951,6 +958,27 @@ export class HouseholdApp implements HouseholdAppHandler {
       ownView: () => this.#ownView(caller, context, mediaType, tmdbId),
     });
     return GET_THIS_ACCEPTED;
+  }
+
+  /**
+   * Counts a "Get this" or cancel against the caller's submission budgets: per user, then per client address, then per
+   * household, each counted only if the one before admitted the call, so a call refused for the caller's own volume is
+   * never counted against the address's or the household's. A refused call is a `429` that says (Retry-After) how long
+   * until the budget that refused it starts again, and is logged once, naming that budget and nothing about the caller.
+   */
+  #spendGetThisBudgets(endpoint: 'get' | 'cancel', callerId: string, context: HouseholdAppRequest): void {
+    const limits = this.#getThisLimits;
+    const budgets: Array<[GetThisLimiter, AttemptCounter, string, number]> = [
+      ['user', this.#getThisByUser, callerId, limits.perUser],
+      ['ip', this.#getThisByClient, context.clientId, limits.perClient],
+      ['household', this.#getThisByHousehold, context.householdId, limits.perHousehold],
+    ];
+    for (const [limiter, counter, key, limit] of budgets) {
+      if (counter.increment(key) <= limit) continue;
+      const retryAfterSeconds = Math.max(1, Math.ceil(counter.resetsIn(key) / 1000));
+      console.warn(JSON.stringify({ level: 'warn', message: 'household app get this limit reached', endpoint, limiter, limit, retryAfterSeconds }));
+      throw new AppAnswer('rate_limited', retryAfterSeconds);
+    }
   }
 
   /**
@@ -965,11 +993,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     if (!/^[A-Za-z0-9_-]{22}$/.test(id)) throw new AppAnswer('invalid');
     getThisSeasons('movie', await readBody(request));
     const callerId = normalizedUserId(caller.id);
-    if (this.#getThisByUser.increment(callerId) > MAX_GET_THIS_PER_USER
-      || this.#getThisByClient.increment(context.clientId) > MAX_GET_THIS_PER_CLIENT
-      || this.#getThisByHousehold.increment(context.householdId) > MAX_GET_THIS_PER_HOUSEHOLD) {
-      throw new AppAnswer('rate_limited');
-    }
+    this.#spendGetThisBudgets('cancel', callerId, context);
     await requests.cancel({
       householdId: context.householdId,
       callerId,
@@ -1509,9 +1533,10 @@ function nonNegativeInteger(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-function writeAppJson(response: ServerResponse, status: number, body: unknown): void {
+function writeAppJson(response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const encoded = Buffer.from(JSON.stringify(body));
   response.writeHead(status, {
+    ...headers,
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': encoded.length,
     ...NEVER_STORE,

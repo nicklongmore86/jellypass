@@ -172,7 +172,10 @@ TRUSTED_PROXIES=192.0.2.10
 Every setting, with its default and validation, is in the
 [settings reference](https://jellypass.app/docs/configuration/) and, in full
 detail, in the [server reference](docs/server-reference.md#configuration).
-[`.env.example`](.env.example) lists them with comments.
+[`.env.example`](.env.example) lists them with comments. How many **Get this**
+requests (and cancels) the apps take is set with `GET_THIS_LIMIT_PER_USER`
+(default 30), `GET_THIS_LIMIT_PER_IP` (60) and `GET_THIS_LIMIT_PER_HOUSEHOLD`
+(60) in each `GET_THIS_WINDOW_SECONDS` (600).
 
 ## Apps
 

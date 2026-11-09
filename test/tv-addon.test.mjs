@@ -2186,6 +2186,11 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
   it('says each failure in its fixed words, never shows the answer\'s text, and never asks again by itself', async (t) => {
     const cases = [
       [{ status: 429, body: '{"error":"too_many_requests","canary":"upstream text"}' }, 'Too many tries, try again in a few minutes.'],
+      // The "Get this" budgets say how long to wait, in whole minutes rounded up: from the header, or (where the add-on is
+      // not shown it, as on a Samsung TV) from the body alone.
+      [{ status: 429, body: '{"error":"too_many_requests","retryAfterSeconds":90}', headers: { 'retry-after': '90' } }, 'Too many tries. Try again in 2 minutes.'],
+      [{ status: 429, body: '{"error":"too_many_requests","retryAfterSeconds":60}' }, 'Too many tries. Try again in 1 minute.'],
+      [{ status: 429, body: '{"error":"too_many_requests","retryAfterSeconds":1.5}' }, 'Too many tries, try again in a few minutes.'],
       [{ status: 502, body: '{"error":"canary upstream text"}' }, "We couldn't send that just now. Try again in a moment."],
       [{ status: 404, body: '{"error":"not_found"}' }, "We couldn't send that just now. Try again in a moment."],
       ['offline', "You're offline. Check your connection, then try again."],
@@ -3088,6 +3093,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
         state.list = state.list.filter((item) => !pathname.includes(item.id));
         return json({ status: 'accepted' }, 202);
       }
+      if (state.cancelAnswer) return state.cancelAnswer;
       return { status: state.cancel, body: '{"error":"upstream said something private"}' };
     }
     if (state.titles && /^\/jellypass\/app\/v1\/(?:movie|tv)\/[0-9]+$/.test(pathname)) return state.titles(pathname);
@@ -3695,6 +3701,27 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
         assert.equal(page.requests.some((request) => String(request.init?.headers?.Authorization).includes('a-new-token-for-alice')), true, 'the list is read with the new token');
       });
     }
+
+    it('says how long to wait when a refused cancel says it, in whole minutes rounded up, from the header or the body', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const state = { cancel: 429, list: [entry(A, T_MOVIE, { cancellable: true })] };
+      const page = await open(t, app, state);
+      await goToRequests(page);
+      const item = items(page)[0];
+      page.click(cancelOpen(item));
+      for (const [answer, words] of [
+        [{ status: 429, body: '{"error":"too_many_requests","retryAfterSeconds":125}', headers: { 'retry-after': '125' } }, 'Too many tries. Try again in 3 minutes.'],
+        [{ status: 429, body: '{"error":"too_many_requests","retryAfterSeconds":45}' }, 'Too many tries. Try again in 1 minute.'],
+        [{ status: 429, body: '{"error":"too_many_requests"}' }, 'Too many tries, try again in a few minutes.'],
+      ]) {
+        state.cancelAnswer = answer;
+        page.click(confirmOf(item));
+        await page.settled();
+        assert.equal(part(panel(item), '.jellypass-tv-requests-cancel-message'), words);
+        assert.equal(confirmOf(item).disabled, false);
+      }
+      assert.equal(state.posts.length, 3);
+    });
 
     for (const [answer, words] of [
       [429, 'Too many tries, try again in a few minutes.'],
