@@ -2143,6 +2143,61 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.ok(section.contains(focused) || rowOf(focused), 'in a Discover row');
   });
 
+  /**
+   * The Discover page with Trending's cards set to `states` (in order) and "New only" turned off, so held titles show; the remote's
+   * focus put on Trending's card at `at`, then "New only" turned on again (a click, so focus stays on the card), which takes the
+   * held cards out of the row and draws it again under the focus.
+   */
+  const hideUnderFocus = async (t, states, at) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    let ids = [];
+    const page = await withTrending(t, app, (results) => {
+      const kept = results.slice(0, states.length).map((card, index) => ({ ...card, state: states[index] }));
+      assert.equal(kept.length, states.length, 'Trending has the cards the test needs');
+      ids = kept.map((card) => String(card.tmdbId));
+      return kept;
+    });
+    const chip = page.document.querySelector('[data-jellypass-tv-discover] [data-jellypass-tv-focus="chip:hide"]');
+    assert.equal(chip?.getAttribute('aria-pressed'), 'true', '"New only" is on as the page opens');
+    page.click(chip);
+    await page.settled();
+    assert.deepEqual(page.cards().map((card) => card.getAttribute('data-tmdb-id')), ids, 'with "New only" off, every card shows');
+    const section = page.cards()[0].closest('.jellypass-tv-discover-row');
+    page.press('keydown');
+    page.cards()[at].focus();
+    assert.ok(page.focused() === page.cards()[at], 'focus');
+    page.click(chip);
+    await page.settled();
+    assert.equal(chip.getAttribute('aria-pressed'), 'true', '"New only" is on again');
+    return { page, ids, section };
+  };
+
+  it('moves focus to the nearest card left when the focused title leaves its row as the row is drawn again', async (t) => {
+    // The focused card is the second of three, and the only held one: the card now in its place is the third.
+    const { page, ids, section } = await hideUnderFocus(t, ['get_this', 'in_library', 'get_this'], 1);
+    assert.deepEqual(page.cards().map((card) => card.getAttribute('data-tmdb-id')), [ids[0], ids[2]], 'the held title is gone');
+    const focused = page.focused();
+    assert.ok(page.document.documentElement.contains(focused), 'focus is still in the page');
+    assert.ok(focused === page.cards()[1], 'on the card now in its place');
+    assert.equal(focused.getAttribute('data-tmdb-id'), ids[2]);
+    assert.ok(section.contains(focused), 'in the same row');
+    // The last card focused and gone: the row's last card left takes it.
+    const last = await hideUnderFocus(t, ['get_this', 'get_this', 'requested'], 2);
+    assert.deepEqual(last.page.cards().map((card) => card.getAttribute('data-tmdb-id')), last.ids.slice(0, 2));
+    assert.ok(last.page.focused() === last.page.cards()[1], 'on the row\'s last card left');
+  });
+
+  it('moves focus to the row\'s heading button when the focused title was the row\'s last and the row is drawn empty', async (t) => {
+    const { page, section } = await hideUnderFocus(t, ['in_library', 'requested'], 0);
+    assert.deepEqual(page.cards(), [], 'the row has no card left');
+    assert.ok(section.querySelector('.jellypass-tv-discover-row-note-text'), 'and says so');
+    const focused = page.focused();
+    assert.ok(page.document.documentElement.contains(focused), 'focus is still in the page');
+    assert.notEqual(focused, page.document.body, 'not dropped to the page');
+    assert.ok(focused === section.querySelector('button'), 'on the row\'s heading button (See all)');
+    assert.ok(section.querySelector('.sectionTitleContainer').contains(focused), 'in the heading, above where the cards were');
+  });
+
   it('keeps focus on the Discover page\'s My requests link when its rows are drawn again', async (t) => {
     const app = await startHeld(t);
     const page = await atHome(t, app);
