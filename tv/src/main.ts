@@ -1,6 +1,8 @@
 import { ABOUT_PATH, renderAbout } from './about.js';
 import { hidingKnown } from './api.js';
 import { Asked } from './asked.js';
+import { CollectionPage } from './collection.js';
+import { COLLECTION_PATH } from './collection-model.js';
 import { DiscoverData } from './discover-data.js';
 import { DiscoverEntry } from './discover-entry.js';
 import { DISCOVER_HASH, DISCOVER_PATH, LIST_PATH, SERVICE_PATH, STUDIO_PATH } from './discover-model.js';
@@ -63,6 +65,7 @@ function start(): void {
     safely(() => row.overlayExpired());
     safely(() => search.overlayChanged());
     safely(() => title.overlayExpired());
+    safely(() => collection.overlayExpired());
     safely(() => discover.overlayChanged());
     safely(() => sources.overlayChanged());
   });
@@ -77,6 +80,8 @@ function start(): void {
     safely(() => sources.overlayChanged());
   };
   const title = new TitlePage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, hiddenChanged, navigate });
+  // A film's collection, reached from its title page (a server with apiVersion 6 names it).
+  const collection: CollectionPage = new CollectionPage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); } });
   const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)), () => navigate(REQUESTS_HASH));
   // A cancel in My requests puts the title back to Get this: Home's row and the Search row draw from the same overlay.
   // The names My requests and its Hidden view read from titles are kept for both (ten minutes, this sign-in).
@@ -114,6 +119,7 @@ function start(): void {
   }, () => discoverWatch.snapshot());
   host.register(ABOUT_PATH, renderAbout);
   host.register(TITLE_PATH, (context) => title.render(context));
+  host.register(COLLECTION_PATH, (context) => collection.render(context));
   host.register(REQUESTS_PATH, (context) => requests.render(context));
   // The Hidden view only once an answer has shown that the server has hiding (a card or title with its flag): before
   // that (an older server, or nothing read yet) its address is My requests, and /hidden is never asked.
@@ -130,6 +136,7 @@ function start(): void {
       safely(trailSession);
       safely(() => host.update());
       safely(() => title.update());
+      safely(() => collection.update());
       safely(() => requests.update());
       safely(() => hiddenPage.update());
       safely(() => discover.update());
