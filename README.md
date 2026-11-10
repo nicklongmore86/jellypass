@@ -139,6 +139,8 @@ state file (see the [4.2.1 notes](CHANGELOG.md#421---2026-11-06)).
 4.3.0 adds the `GET_THIS_*` settings (with higher defaults) and keeps state
 schema 9, so 4.2.1 can run on its state file (see the
 [4.3.0 notes](CHANGELOG.md#430---2026-11-09)).
+4.4.0 changes no setting and keeps state schema 9, so 4.3.0 can run on its
+state file (see the [4.4.0 notes](CHANGELOG.md#440---2026-11-10)).
 
 To build from source instead, run these inside a clone of this repository
 (the container runs as UID 1000, so it needs a data directory it can write):
