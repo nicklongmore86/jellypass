@@ -13,15 +13,16 @@
 // actions (src/hidden/components.tsx): the page stays open, and the toast offers Undo. A season is never hidden alone.
 import { router, Stack } from 'expo-router';
 import { useState } from 'react';
-import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { Movie, Season, Series } from '../api/types';
 import { safePlayUrl } from '../api/urls';
-import { seasonPath, type TitleTab } from '../navigation/titles';
+import { ALL_SEASONS_TEXT, partOfText } from '../collection/text';
+import { collectionPath, seasonPath, type TitleTab } from '../navigation/titles';
 import { HideTitleButton } from '../hidden/components';
 import { useAsked, useHiddenTitles, useSession } from '../session/SessionProvider';
-import { colors, spacing, typography } from '../theme';
+import { colors, layout, spacing, typography } from '../theme';
 import {
   DETAIL_MAX_WIDTH,
   DETAIL_TABLET_WIDTH,
@@ -83,8 +84,9 @@ interface DetailProps {
 }
 
 function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { title: Movie | Series; tab: TitleTab }) {
-  const { api } = useSession();
+  const { api, hasCollections } = useSession();
   const hiddenTitles = useHiddenTitles();
+  const collection = title.mediaType === 'movie' && hasCollections ? title.collection : null;
   const column = useColumn();
   const [chosen, setChosen] = useState<ReadonlySet<number>>(new Set());
   const series = title.mediaType === 'tv' ? title : undefined;
@@ -109,6 +111,10 @@ function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { 
     send(picking ? selected : []);
     if (picking) setChosen(new Set());
   };
+  const onSendAll = () => {
+    send(choices);
+    setChosen(new Set());
+  };
   const toggle = (seasonNumber: number) =>
     setChosen((current) => {
       const next = new Set(current);
@@ -129,6 +135,16 @@ function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { 
           </Text>
           <Facts title={title} />
           <Genres genres={title.genres} />
+          {collection ? (
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel={partOfText(collection.name)}
+              onPress={() => router.push(collectionPath(tab, collection.id))}
+              style={({ pressed }) => [styles.collection, pressed && styles.pressed]}
+            >
+              <Text style={styles.collectionText}>{partOfText(collection.name)}</Text>
+            </Pressable>
+          ) : null}
           <DetailStatus state={title.state} failed={failedMovie} failedNote={failedAny} />
           {play || choices.length || get.confirmed || get.error ? (
             <View style={styles.actions}>
@@ -155,6 +171,8 @@ function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { 
           {picking && controls ? (
             <View style={styles.picker}>
               <Text style={styles.legend}>{GET_THIS_TEXT.chooseSeasons}</Text>
+              {/* Every season still to get, in one request: the same as Select all, then Get this. */}
+              <Button label={ALL_SEASONS_TEXT} onPress={() => onSendAll()} disabled={toggling} />
               {choices.length > 1 ? (
                 <Button
                   label={allChosen ? GET_THIS_TEXT.clearAll : GET_THIS_TEXT.selectAll}
@@ -250,6 +268,9 @@ const styles = StyleSheet.create({
   text: { gap: spacing.md },
   textWide: { flex: 1 },
   eyebrow: { ...typography.label, color: colors.muted },
+  collection: { minHeight: layout.touchTarget, justifyContent: 'center', alignSelf: 'flex-start' },
+  collectionText: { ...typography.label, color: colors.accent, textDecorationLine: 'underline' },
+  pressed: { opacity: 0.75 },
   title: { ...typography.detailTitle, color: colors.text },
   actions: { gap: spacing.md, marginTop: spacing.xxs },
   overview: { ...typography.body, color: colors.text },

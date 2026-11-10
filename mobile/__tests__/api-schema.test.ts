@@ -144,7 +144,8 @@ describe('the fetch budget (docs/app-api/fetch-budget.json)', () => {
       .replace('{n}', '1')
       .replace('{query}', 'synthetic')
       .replace('{list}', 'trending')
-      .replace(/\/(network|studio)\/\{id\}/, (_, kind: string) => `/${kind}/${kind === 'network' ? 213 : 3}`);
+      .replace(/\/(network|studio)\/\{id\}/, (_, kind: string) => `/${kind}/${kind === 'network' ? 213 : 3}`)
+      .replace('/collection/{id}', '/collection/900100');
   /** The client call that makes `METHOD /path` from the budget, its placeholders filled in. */
   function callFor(entry: string): (api: ReturnType<typeof clientWith>['api']) => Promise<unknown> {
     const path = fill(entry).replace(/^GET /, '');
@@ -160,6 +161,7 @@ describe('the fetch budget (docs/app-api/fetch-budget.json)', () => {
     if ((match = /^\/discover\/studio\/(\d+)$/.exec(path))) return (api) => api.studio(Number(match![1]));
     if ((match = /^\/discover\/([a-z-]+)$/.exec(path))) return (api) => api.discover(match![1] as (typeof DISCOVER_LISTS)[number]);
     if ((match = /^\/movie\/(\d+)$/.exec(path))) return (api) => api.movie(Number(match![1]));
+    if ((match = /^\/collection\/(\d+)$/.exec(path))) return (api) => api.collection(Number(match![1]));
     if ((match = /^\/tv\/(\d+)\/season\/(\d+)$/.exec(path))) return (api) => api.season(Number(match![1]), Number(match![2]));
     if ((match = /^\/tv\/(\d+)$/.exec(path))) return (api) => api.tv(Number(match![1]));
     throw new Error(`no client call for ${entry}`);

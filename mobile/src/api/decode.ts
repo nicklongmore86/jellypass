@@ -14,6 +14,9 @@ import {
   type Accepted,
   type Card,
   type CoarseStatus,
+  type Collection,
+  type CollectionFilm,
+  type CollectionLink,
   type Episode,
   type Hidden,
   type HiddenPage,
@@ -75,6 +78,7 @@ const LOGO_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w300\/[A-Za-z0-9_-]{1,100}\
 const PLAY_ITEM_ID = /^[0-9a-f]{32}$/;
 const REQUEST_ID = /^[A-Za-z0-9_-]{22}$/;
 const REQUESTED_ON = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+const RELEASE_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
 const HIDDEN_AT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
 
 function object(value: unknown, path: string): Fields {
@@ -234,6 +238,37 @@ export function decodeMovie(value: unknown, context: DecodeContext): Movie {
     ...withMediaType(card(record, '$', context, PATH_TMDB_ID), 'movie'),
     genres: array(record, 'genres', '$', genre, 20),
     runtime: nullableInteger(record, 'runtime', '$', { min: 1 }),
+    // Added in apiVersion 6: a server before it sends none, and has no collection pages.
+    collection: field(record, 'collection') === undefined || field(record, 'collection') === null ? null : decodeCollectionLink(field(record, 'collection'), '$.collection'),
+  };
+}
+
+function decodeCollectionLink(value: unknown, path: string): CollectionLink {
+  const record = object(value, path);
+  return { id: integer(record, 'id', path, PATH_TMDB_ID), name: string(record, 'name', path, { min: 1, max: 300 }) };
+}
+
+function decodeCollectionFilm(value: unknown, path: string, context: DecodeContext): CollectionFilm {
+  const record = object(value, path);
+  const film = card(record, path, context, CARD_TMDB_ID);
+  if (film.mediaType !== 'movie') throw new DecodeError(`${path}.mediaType`);
+  return {
+    ...(film as Card & { mediaType: 'movie' }),
+    releaseDate: field(record, 'releaseDate') === undefined || field(record, 'releaseDate') === null ? null : string(record, 'releaseDate', path, { pattern: RELEASE_DATE }),
+    // Not said: not counted as out, so never asked for by "Get all missing films".
+    released: field(record, 'released') === undefined ? false : boolean(record, 'released', path),
+  };
+}
+
+export function decodeCollection(value: unknown, context: DecodeContext): Collection {
+  const record = object(value, '$');
+  return {
+    id: integer(record, 'id', '$', PATH_TMDB_ID),
+    name: string(record, 'name', '$', { max: 300 }),
+    overview: string(record, 'overview', '$', { max: 4000 }),
+    posterUrl: image(record, 'posterUrl', '$', POSTER_URL),
+    backdropUrl: image(record, 'backdropUrl', '$', BACKDROP_URL),
+    films: array(record, 'films', '$', (entry, path) => decodeCollectionFilm(entry, path, context), 100),
   };
 }
 

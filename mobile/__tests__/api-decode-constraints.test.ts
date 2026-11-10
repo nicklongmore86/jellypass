@@ -6,6 +6,7 @@
 // field no fixture reaches, so a limit added to the schema without the decoder (or this walker) knowing it fails here.
 import {
   decodeAccepted,
+  decodeCollection,
   decodeHidden,
   decodeHiddenPage,
   decodeMe,
@@ -41,6 +42,7 @@ const DECODERS: Record<string, (value: unknown) => unknown> = {
   'page-last': (value) => decodePage(value, context),
   sources: decodeSources,
   movie: (value) => decodeMovie(value, context),
+  collection: (value) => decodeCollection(value, context),
   series: (value) => decodeSeries(value, context),
   season: decodeSeason,
   requests: decodeRequests,
@@ -67,12 +69,22 @@ const LENIENT: Record<string, (decoded: unknown, path: Path) => void> = {
   'Request required requestedOn': (decoded, path) => expect(at(decoded, path)).toBeNull(),
   // `hidden` on cards and titles, added in apiVersion 3: a server before it sends none (and hides nothing).
   ...Object.fromEntries(['Card', 'Movie', 'Series'].map((where) => [`${where} required hidden`, (decoded: unknown, path: Path) => expect(at(decoded, path)).toBe(false)])),
+  // `collection` on a movie, added in apiVersion 6: a server before it sends none (and has no collection pages).
+  'Movie required collection': (decoded, path) => expect(at(decoded, path)).toBeNull(),
+  // A collection's film is a card: `hidden` as on any card; when it does not say whether it is out, it is not (and so
+  // never in "Get all missing films"), and a missing date is none.
+  'CollectionFilm required hidden': (decoded, path) => expect(at(decoded, path)).toBe(false),
+  'CollectionFilm required released': (decoded, path) => expect(at(decoded, path)).toBe(false),
+  'CollectionFilm required releaseDate': (decoded, path) => expect(at(decoded, path)).toBeNull(),
   // Play.url: "a client ignores anything else"; the URL is built from itemId, so a bad itemId is ignored the same way.
   'Play.itemId pattern': (decoded, path) => expect(at(decoded, path.slice(0, -1))).toBeNull(),
   'Play.url pattern': (decoded, path) => expect(at(decoded, path.slice(0, -1))).toBeNull(),
   // An image URL off its field's pattern is that one image dropped, as the PWA drops it: never the whole answer.
   ...Object.fromEntries(
-    ['Card.posterUrl', 'Card.backdropUrl', 'Movie.posterUrl', 'Movie.backdropUrl', 'Series.posterUrl', 'Series.backdropUrl', 'Source.logoUrl', 'Network.logoUrl'].map(
+    [
+      'Card.posterUrl', 'Card.backdropUrl', 'Movie.posterUrl', 'Movie.backdropUrl', 'Series.posterUrl', 'Series.backdropUrl', 'Source.logoUrl', 'Network.logoUrl',
+      'Collection.posterUrl', 'Collection.backdropUrl', 'CollectionFilm.posterUrl', 'CollectionFilm.backdropUrl',
+    ].map(
       (where) => [`${where} pattern`, (decoded: unknown, path: Path) => expect(at(decoded, path)).toBeNull()],
     ),
   ),

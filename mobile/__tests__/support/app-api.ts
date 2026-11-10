@@ -88,6 +88,7 @@ export const OPERATIONS: Record<string, Operation> = {
   'GET /discover/network/{id}/all': { call: (api) => api.network(213, 'all', 2), sends: 'GET /discover/network/213/all?page=2', status: 200, fixture: 'page' },
   'GET /discover/studio/{id}': { call: (api) => api.studio(2), sends: 'GET /discover/studio/2', status: 200, fixture: 'page' },
   'GET /movie/{tmdbId}': { call: (api) => api.movie(900001), sends: 'GET /movie/900001', status: 200, fixture: 'movie' },
+  'GET /collection/{id}': { call: (api) => api.collection(900100), sends: 'GET /collection/900100', status: 200, fixture: 'collection' },
   'GET /tv/{tmdbId}': { call: (api) => api.tv(900002), sends: 'GET /tv/900002', status: 200, fixture: 'series' },
   'GET /tv/{tmdbId}/season/{n}': { call: (api) => api.season(900002, 1), sends: 'GET /tv/900002/season/1', status: 200, fixture: 'season' },
   'POST /movie/{tmdbId}/get': { call: (api) => api.getThis('movie', 900001), sends: 'POST /movie/900001/get', status: 202, fixture: 'accepted' },
