@@ -56,7 +56,7 @@ let apiVersion = 6;
 interface Options extends TitleHousehold {
   collection?: () => Record<string, unknown>;
   /** The collection read's whole answer, in place of a 200 with `collection`'s body. */
-  collectionRead?: () => ReturnType<typeof answer> | undefined;
+  collectionRead?: () => ReturnType<typeof answer> | Promise<ReturnType<typeof answer>> | undefined;
 }
 
 function useHousehold(household: Options = {}) {
@@ -267,46 +267,58 @@ describe('a collection page', () => {
     expect(screen.queryAllByRole('button', { name: /^Get / })).toHaveLength(0);
   });
 
-  describe('a 401 from My requests, read with the collection', () => {
-    /** The collection read fails at once (when `failing`); My requests answers 401 only when the test lets it, after. */
-    function useLateRefusal() {
-      const waiting: ((response: ReturnType<typeof answer>) => void)[] = [];
-      const state = { failing: true };
+  describe('a 401 from My requests with a failed collection read, in either order', () => {
+    type Answer = ReturnType<typeof answer>;
+    const COLLECTION_READ = `GET ${API}/collection/${COLLECTION_ID}`;
+    const REQUESTS_READ = `GET ${API}/requests`;
+    /**
+     * While `holding`, the collection read (a 503) and My requests (a 401) each wait until the test lets it answer, so the
+     * order they settle in is the test's.
+     */
+    function useGatedReads() {
+      const gates = new Map<string, () => void>();
+      const state = { holding: true };
+      const held = (route: string, response: Answer) => new Promise<Answer>((resolve) => gates.set(route, () => resolve(response)));
       useHousehold({
-        collectionRead: () => (state.failing ? answer(503, { error: 'unavailable' }) : undefined),
-        override: (call: Call) =>
-          state.failing && call.route === `GET ${API}/requests` ? new Promise<ReturnType<typeof answer>>((resolve) => waiting.push(resolve)) : undefined,
+        collectionRead: () => (state.holding ? held(COLLECTION_READ, answer(503, { error: 'unavailable' })) : undefined),
+        override: (call: Call) => (state.holding && call.route === REQUESTS_READ ? held(REQUESTS_READ, answer(401, { error: 'unauthorized' })) : undefined),
       });
       return {
         state,
-        refuse: async () => {
-          await act(async () => waiting.shift()!(answer(401, { error: 'unauthorized' })));
-          await settle();
+        answer: async (order: readonly string[]) => {
+          expect([...gates.keys()].sort()).toEqual([COLLECTION_READ, REQUESTS_READ].sort());
+          for (const route of order) {
+            await act(async () => gates.get(route)!());
+            gates.delete(route);
+            await settle();
+          }
         },
-        waiting: () => waiting.length,
       };
     }
+    const ORDERS: [string, string[]][] = [
+      ['the 401 first', [REQUESTS_READ, COLLECTION_READ]],
+      ['the collection failure first', [COLLECTION_READ, REQUESTS_READ]],
+    ];
 
-    it('signs the member out on opening, though the collection read failed first', async () => {
-      const late = useLateRefusal();
+    it.each(ORDERS)('signs the member out on opening, %s', async (_label, order) => {
+      const gate = useGatedReads();
       const app = await open(`/home/collection/${COLLECTION_ID}`);
-      expect(late.waiting()).toBe(1);
-      await late.refuse();
+      await gate.answer(order);
       expect(storedSession()).toBeUndefined();
       expect(app.getPathname()).toBe('/');
       expect(shows(ERROR_TEXT.unavailable.title)).toBe(false);
     });
 
-    it('signs the member out when the collection is read again after a film was asked for', async () => {
-      const late = useLateRefusal();
-      late.state.failing = false;
+    it.each(ORDERS)('signs the member out when the collection is read again after a film was asked for, %s', async (_label, order) => {
+      const gate = useGatedReads();
+      gate.state.holding = false;
       const app = await open(`/home/collection/${COLLECTION_ID}`);
-      late.state.failing = true;
+      gate.state.holding = true;
       await pressNode(getButton(COLLECTION_TEXT.getAll));
-      expect(late.waiting()).toBe(1);
-      await late.refuse();
+      await gate.answer(order);
       expect(storedSession()).toBeUndefined();
       expect(app.getPathname()).toBe('/');
+      expect(message()).toEqual([]);
     });
   });
 

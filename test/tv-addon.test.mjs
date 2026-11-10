@@ -7862,27 +7862,68 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
       assert.equal(message.querySelector('.jellypass-tv-title-collection-not-asked').textContent, 'Not asked for: Synthetic Movie One, Synthetic Movie Six.');
     });
 
-    it('shows the sign-in when My requests refuses the member, even when the collection read failed too', async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
-      let failing = true;
-      const override = (pathname, init) => {
-        if (!failing || (init.method ?? 'GET') !== 'GET') return undefined;
-        if (pathname === `/jellypass/app/v1/collection/${COLLECTION}`) return { status: 503, body: '{"error":"unavailable"}' };
-        if (pathname === '/jellypass/app/v1/requests') return { status: 401, body: '{"error":"unauthorized"}' };
-        return undefined;
+    describe('a 401 from My requests with a failed collection read, in either order', () => {
+      const COLLECTION_READ = `/jellypass/app/v1/collection/${COLLECTION}`;
+      const REQUESTS_READ = '/jellypass/app/v1/requests';
+      /**
+       * While `holding`, the collection read (a 503) and My requests (a 401) each wait until the test lets it answer, so
+       * the order they settle in is the test's. (`settled` waits for every call, so it is only awaited once both answered.)
+       */
+      const gated = () => {
+        const gates = new Map();
+        const state = { holding: true };
+        const held = (path, response) => new Promise((resolve) => gates.set(path, () => resolve(response)));
+        return {
+          state,
+          override: (pathname, init) => {
+            if (!state.holding || (init.method ?? 'GET') !== 'GET') return undefined;
+            if (pathname === COLLECTION_READ) return held(pathname, { status: 503, body: '{"error":"unavailable"}' });
+            if (pathname === REQUESTS_READ) return held(pathname, { status: 401, body: '{"error":"unauthorized"}' });
+            return undefined;
+          },
+          answer: async (page, order) => {
+            for (let round = 0; round < 300 && gates.size < 2; round += 1) await pause(10);
+            assert.equal(gates.size, 2, 'both reads in flight');
+            for (const path of order) {
+              gates.get(path)();
+              gates.delete(path);
+              // Drain the first response’s promise continuations while the other read stays held.
+              await new Promise((resolve) => setImmediate(resolve));
+            }
+            await page.settled();
+          },
+        };
       };
-      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
-      assert.equal(text(page, '.jellypass-tv-title-error'), 'Sign in to continue');
-      assert.equal(view(page).querySelector('.jellypass-tv-title-retry'), null, 'no Try again');
-      // The same after the button: the read again after a film was asked for fails both ways at once.
-      failing = false;
-      const again = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
-      failing = true;
-      again.click(toggle(again, 900006));
-      again.click(getButton(again));
-      await again.settled();
-      assert.equal(text(again, '.jellypass-tv-title-error'), 'Sign in to continue');
-      assert.equal(view(again).querySelector('.jellypass-tv-title-retry'), null, 'no Try again');
+      const ORDERS = [['the 401 first', [REQUESTS_READ, COLLECTION_READ]], ['the collection failure first', [COLLECTION_READ, REQUESTS_READ]]];
+      const signedOut = (page) => {
+        assert.equal(text(page, '.jellypass-tv-title-error'), 'Sign in to continue');
+        assert.equal(view(page).querySelector('.jellypass-tv-title-retry'), null, 'no Try again');
+      };
+
+      for (const [label, order] of ORDERS) {
+        it(`shows the sign-in on opening, ${label}`, { timeout: 15_000 }, async (t) => {
+          const app = await startApp(t, webWorld(), tvOn());
+          const gate = gated();
+          const page = await openJellyfinWeb(t, app, { override: gate.override });
+          page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+          page.goTo(`#/jellypass/collection/${COLLECTION}`);
+          showFallback(page.document);
+          await gate.answer(page, order);
+          signedOut(page);
+        });
+
+        it(`shows the sign-in when the collection is read again after a film was asked for, ${label}`, { timeout: 15_000 }, async (t) => {
+          const app = await startApp(t, webWorld(), tvOn());
+          const gate = gated();
+          gate.state.holding = false;
+          const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override: gate.override });
+          gate.state.holding = true;
+          page.click(toggle(page, 900006));
+          page.click(getButton(page));
+          await gate.answer(page, order);
+          signedOut(page);
+        });
+      }
     });
 
     it('says Not found with no call for an address that names no collection, and for one the server does not know', async (t) => {
