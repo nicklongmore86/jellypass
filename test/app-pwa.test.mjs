@@ -5615,6 +5615,52 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await app.background.settled();
     });
 
+    it('signs the member out when My requests refuses them, even when the collection read failed first or after', async (t) => {
+      const app = await startApp(t);
+      const settle = (page) => page.until(() => page.main().querySelector('[data-screen="signin"] h1, .notice h1'), 'the sign-in or the error');
+      const signedOut = async (page, label) => {
+        await settle(page);
+        assert.equal(page.main().querySelector('.notice h1')?.textContent ?? null, null, `${label}: no error state`);
+        assert.equal(page.main().querySelector('[data-screen="signin"] h1').textContent, 'Sign in', label);
+      };
+      const later = (answer) => new Promise((resolve) => setTimeout(() => resolve(answer), 50));
+      for (const [label, collectionFirst] of [['the collection fails first', true], ['the 401 comes first', false]]) {
+        const refused = jsonAnswer({ error: 'unauthorized' }, 401);
+        const failed = jsonAnswer({ error: 'unavailable' }, 503);
+        const page = await openApp(t, app, {
+          hash: `#/collection/${COLLECTION}`,
+          override: (url) => {
+            if (url === `/jellypass/app/v1/collection/${COLLECTION}`) return collectionFirst ? failed : later(failed);
+            if (url === '/jellypass/app/v1/requests') return collectionFirst ? later(refused) : refused;
+            return undefined;
+          },
+        });
+        await signedOut(page, label);
+      }
+      // The read again after a film was asked for, failing both ways at once with the collection's failure first.
+      let failReads = false;
+      const page = await openApp(t, app, {
+        hash: `#/collection/${COLLECTION}`,
+        override: (url, init) => {
+          if (init.method === 'POST') {
+            failReads = true;
+            return undefined;
+          }
+          if (!failReads) return undefined;
+          if (url === `/jellypass/app/v1/collection/${COLLECTION}`) return jsonAnswer({ error: 'unavailable' }, 503);
+          if (url === '/jellypass/app/v1/requests') return later(jsonAnswer({ error: 'unauthorized' }, 401));
+          return undefined;
+        },
+      });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      change(page, page.main().querySelector('.collection-film input[type="checkbox"]'), true);
+      click(page, page.main().querySelector('button.get-films'));
+      await page.until(() => page.main().querySelector('[data-screen="signin"] h1, .collection-outcome'), 'the sign-in or the summary');
+      assert.equal(page.main().querySelector('.collection-outcome'), null, 'after the button: no summary');
+      assert.equal(page.main().querySelector('[data-screen="signin"] h1').textContent, 'Sign in');
+      await app.background.settled();
+    });
+
     it('shows a film whose request failed as such, and never offers or ticks it', async (t) => {
       const app = await startApp(t);
       const failedList = { results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: T_MOVIE, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] };

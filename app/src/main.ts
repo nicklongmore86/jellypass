@@ -67,7 +67,7 @@ import { HiddenPager } from './hidden.js';
 import { icon } from './icons.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
-import type { Card, CollectionFilm, DiscoverList, HiddenEntry, HiddenList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
+import type { Card, Collection, CollectionFilm, DiscoverList, HiddenEntry, HiddenList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
 
 /** One of Home's rows, fetched from a discover list; `eager` rows are asked for at once, the others as they near the screen. */
 interface HomeRow {
@@ -1318,7 +1318,14 @@ async function collectionScreen(route: Route, signal: AbortSignal, current: () =
   if (!supportsCollections()) throw new ApiError('not_found');
   const id = route.id as number;
   // The household's failed requests come from My requests, as on a film's page: a failed film is not offered again.
-  const load = () => Promise.all([api.collection(id, signal), failedMovies(signal)]);
+  // Both reads settle before either failure is thrown: the requests read fails only for a refused sign-in (401), which
+  // wins over the collection's own failure whichever answers first.
+  const load = async (): Promise<[Collection, Set<number>]> => {
+    const [found, listed] = await Promise.allSettled([api.collection(id, signal), failedMovies(signal)]);
+    if (listed.status === 'rejected') throw listed.reason;
+    if (found.status === 'rejected') throw found.reason;
+    return [found.value, listed.value];
+  };
   let [answer, failed] = await load();
   if (!current()) return;
   // Films accepted on this screen stay requested here whatever a read says (or fails to say) until the screen is left.
