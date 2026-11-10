@@ -40,6 +40,8 @@ import {
 import { makeTempDir } from './support/temp-dir.mjs';
 
 const APP = '/jellypass/app/v1';
+/** The TMDB collection every fixture movie belongs to (test/tmdb-fixtures/3/collection.json). */
+const COLLECTION = 900100;
 /** Every endpoint, called once with valid arguments. */
 const ENDPOINTS = [
   `${APP}/me`,
@@ -63,6 +65,7 @@ const ENDPOINTS = [
   `${APP}/discover/studio/41077?page=2`,
   `${APP}/movie/${T_MOVIE}`,
   `${APP}/movie/${OWN_MOVIE}`,
+  `${APP}/collection/${COLLECTION}`,
   `${APP}/tv/${T_TV}`,
   `${APP}/tv/${T_TV}/season/1`,
   `${APP}/tv/${T_TV}/season/2`,
@@ -93,11 +96,11 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
     const app = await startApp(t);
     const answer = await app.get(`${APP}/me`);
     assert.equal(answer.status, 200);
-    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 5 });
+    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 6 });
     assert.equal(app.seerr.calls.length, 0);
     assert.equal(app.tmdb.calls.length, 0);
     // The version is the server's, the same for every household and every member.
-    assert.equal(APP_API_VERSION, 5);
+    assert.equal(APP_API_VERSION, 6);
     assert.deepEqual((await app.get(`${APP}/me`, { host: HOST_B, user: BOB })).json(), { name: 'Bob', household: 'Mill', apiVersion: APP_API_VERSION });
   });
 
@@ -135,7 +138,8 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
     assert.deepEqual((await app.get(`${APP}/movie/${OWN_MOVIE}`)).json(), {
       mediaType: 'movie', tmdbId: OWN_MOVIE, title: 'Synthetic Movie Three', year: 2024,
       overview: 'A synthetic film used only in tests.', posterUrl: POSTER(OWN_MOVIE), backdropUrl: BACKDROP(T_MOVIE),
-      rating: 7.1, genres: ['Action', 'Science Fiction'], runtime: 101, state: 'in_library', play: PLAY(ITEMS.ownMovie), hidden: false,
+      rating: 7.1, genres: ['Action', 'Science Fiction'], runtime: 101, collection: { id: COLLECTION, name: 'Synthetic Collection' },
+      state: 'in_library', play: PLAY(ITEMS.ownMovie), hidden: false,
     });
     assert.deepEqual((await app.get(`${APP}/tv/${T_TV}`)).json(), {
       mediaType: 'tv', tmdbId: T_TV, title: 'Synthetic Series Two', year: 2019,
@@ -197,6 +201,107 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
         assertNoCanaries(serialized(answer));
       }
     }
+  });
+});
+
+describe('household app API: collections', { timeout: 30_000 }, () => {
+  const NOW = Date.parse('2026-11-10T12:00:00.000Z');
+  const CARD = (tmdbId, title, extra) => ({
+    mediaType: 'movie', tmdbId, title, overview: '', posterUrl: POSTER(tmdbId), backdropUrl: null, rating: null,
+    state: 'get_this', play: null, hidden: false, ...extra,
+  });
+
+  it('links a film to its collection by ID and name only, and a film in none (or with an unusable one) to nothing', async (t) => {
+    const app = await startApp(t, world({
+      tmdbMovies: {
+        900010: { title: 'Synthetic Movie Ten', release_date: '2021-01-01', belongs_to_collection: null },
+        900011: { title: 'Synthetic Movie Eleven', release_date: '2021-01-01', belongs_to_collection: { id: 0, name: 'Synthetic' } },
+        900012: { title: 'Synthetic Movie Twelve', release_date: '2021-01-01', belongs_to_collection: { id: 900101, name: '' } },
+        900013: { title: 'Synthetic Movie Thirteen', release_date: '2021-01-01', belongs_to_collection: { id: 2147483648, name: 'Synthetic' } },
+        900014: { title: 'Synthetic Movie Fourteen', release_date: '2021-01-01', belongs_to_collection: { id: '900100', name: 'Synthetic' } },
+      },
+    }));
+    assert.deepEqual((await app.get(`${APP}/movie/${T_MOVIE}`)).json().collection, { id: COLLECTION, name: 'Synthetic Collection' });
+    for (const tmdbId of [900010, 900011, 900012, 900013, 900014]) {
+      const movie = (await app.get(`${APP}/movie/${tmdbId}`)).json();
+      assert.equal(movie.collection, null, String(tmdbId));
+      assert.ok(Object.hasOwn(movie, 'collection'));
+    }
+  });
+
+  it('lists a collection\'s films oldest first, undated last, each a card with the caller\'s state and whether it is out yet', async (t) => {
+    const app = await startApp(t, world(), { now: () => NOW });
+    const answer = await app.get(`${APP}/collection/${COLLECTION}`);
+    assert.equal(answer.status, 200);
+    assertNoCanaries(serialized(answer));
+    assert.deepEqual(answer.json(), {
+      id: COLLECTION,
+      name: 'Synthetic Collection',
+      overview: 'A synthetic film series used only in tests.',
+      posterUrl: POSTER(COLLECTION),
+      backdropUrl: BACKDROP(COLLECTION),
+      // TMDB lists them out of order, with a duplicate and a series: films only, each once, by release date.
+      films: [
+        { ...CARD(T_MOVIE, 'Synthetic Movie One', { year: 2020, overview: 'A synthetic film used only in tests.', backdropUrl: BACKDROP(T_MOVIE), rating: 7.1 }), releaseDate: '2020-05-01', released: true },
+        { ...CARD(OWN_MOVIE, 'Synthetic Movie Three', { year: 2024, overview: 'Not in Seerr yet.', rating: 5.5, state: 'in_library', play: PLAY(ITEMS.ownMovie) }), releaseDate: '2024-02-02', released: true },
+        { ...CARD(900005, 'Synthetic Movie Five', { year: 2999, overview: 'Not released yet.' }), releaseDate: '2999-12-31', released: false },
+        { ...CARD(900006, 'Synthetic Movie Six', { year: null, overview: 'No date yet.', posterUrl: null }), releaseDate: null, released: false },
+      ],
+    });
+    assert.deepEqual(app.tmdb.calls.filter((call) => call.pathname.startsWith('/3/collection')).map((call) => call.pathname), [`/3/collection/${COLLECTION}`]);
+  });
+
+  it('counts a film out on its release day (UTC), and not the day before', async (t) => {
+    let now = Date.parse('2026-11-09T23:59:59.000Z');
+    const parts = [
+      { id: 900020, media_type: 'movie', title: 'Synthetic Today', release_date: '2026-11-10' },
+      { id: 900021, title: 'Synthetic Yesterday', release_date: '2026-11-09' },
+      { id: 900022, title: 'Synthetic Bad Date', release_date: '2026-11' },
+    ];
+    const app = await startApp(t, world({ tmdbCollections: { 900150: { name: 'Synthetic Dates', parts } } }), { now: () => now });
+    const released = async () => Object.fromEntries((await app.get(`${APP}/collection/900150`)).json().films.map((film) => [film.tmdbId, [film.releaseDate, film.released]]));
+    assert.deepEqual(await released(), { 900021: ['2026-11-09', true], 900020: ['2026-11-10', false], 900022: [null, false] });
+    now += 1000;
+    // From the household's cache (one TMDB call), decided again with the clock.
+    assert.deepEqual(await released(), { 900021: ['2026-11-09', true], 900020: ['2026-11-10', true], 900022: [null, false] });
+    assert.equal(app.tmdb.calls.filter((call) => call.pathname === '/3/collection/900150').length, 1);
+  });
+
+  it('lists at most 100 films, and an empty collection as no films', async (t) => {
+    const many = Array.from({ length: 130 }, (_, index) => ({ id: 920000 + index, title: `Synthetic ${index}`, release_date: '2001-01-01' }));
+    const app = await startApp(t, world({ tmdbCollections: { 900160: { parts: many }, 900161: { parts: 'none' } } }));
+    const films = (await app.get(`${APP}/collection/900160`)).json().films;
+    assert.equal(films.length, 100);
+    // Equal dates keep TMDB's order.
+    assert.deepEqual(films.map((film) => film.tmdbId), many.slice(0, 100).map((part) => part.id));
+    assert.deepEqual((await app.get(`${APP}/collection/900161`)).json().films, []);
+  });
+
+  it('marks films the household asked for as requested, blocklisted ones unavailable, and the caller\'s hidden ones hidden', async (t) => {
+    const app = await startApp(t, world({ blocklist: [{ mediaType: 'movie', tmdbId: 900006 }] }), { stateFile: { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], appIdKey: 'ab'.repeat(32) } });
+    assert.equal((await app.post(`${APP}/movie/900005/get`, undefined)).status, 202);
+    assert.equal((await app.post(`${APP}/hidden/movie/${T_MOVIE}`, undefined)).status, 200);
+    await app.background.settled();
+    const films = (await app.get(`${APP}/collection/${COLLECTION}`)).json().films;
+    assert.deepEqual(films.map((film) => [film.tmdbId, film.state, film.hidden]), [
+      [T_MOVIE, 'get_this', true],
+      [OWN_MOVIE, 'in_library', false],
+      [900005, 'requested', false],
+      [900006, 'unavailable', false],
+    ]);
+    // Ann, in the same household, sees the household's request, but not Alice's hidden title.
+    assert.deepEqual((await app.get(`${APP}/collection/${COLLECTION}`, { user: ANN })).json().films.map((film) => [film.state, film.hidden]),
+      [['get_this', false], ['in_library', false], ['requested', false], ['unavailable', false]]);
+    // Household B asked for nothing (and Bob's own libraries hold Synthetic Movie Three too).
+    assert.deepEqual((await app.get(`${APP}/collection/${COLLECTION}`, { host: HOST_B, user: BOB })).json().films.map((film) => film.state),
+      ['get_this', 'in_library', 'get_this', 'unavailable']);
+  });
+
+  it('caches a collection per household, never across households', async (t) => {
+    const app = await startApp(t);
+    for (let index = 0; index < 3; index += 1) assert.equal((await app.get(`${APP}/collection/${COLLECTION}`)).status, 200);
+    assert.equal((await app.get(`${APP}/collection/${COLLECTION}`, { host: HOST_B, user: BOB })).status, 200);
+    assert.equal(app.tmdb.calls.filter((call) => call.pathname === `/3/collection/${COLLECTION}`).length, 2);
   });
 });
 
@@ -584,7 +689,7 @@ describe('household app API: identity', { timeout: 20_000 }, () => {
       '/3/search/multi', '/3/search/multi', '/3/trending/all/day', '/3/trending/movie/day', '/3/trending/tv/day', '/3/discover/movie',
       '/3/discover/tv', '/3/discover/movie', '/3/discover/tv', '/3/discover/movie', '/3/movie/top_rated', '/3/tv/top_rated',
       '/3/discover/tv', '/3/discover/movie', '/3/discover/movie',
-      `/3/movie/${T_MOVIE}`, `/3/movie/${OWN_MOVIE}`, `/3/tv/${T_TV}`, `/3/tv/${T_TV}/season/1`, `/3/tv/${T_TV}/season/2`,
+      `/3/movie/${T_MOVIE}`, `/3/movie/${OWN_MOVIE}`, `/3/collection/${COLLECTION}`, `/3/tv/${T_TV}`, `/3/tv/${T_TV}/season/1`, `/3/tv/${T_TV}/season/2`,
     ]);
   });
 });
@@ -1270,7 +1375,7 @@ describe('household app API: sessions', { timeout: 20_000 }, () => {
       [`${APP}/me?api_key=token-alice`, {}],
     ]) {
       const answer = await app.get(pathname, { user: null, headers });
-      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 5 }, JSON.stringify(headers));
+      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 6 }, JSON.stringify(headers));
     }
   });
 
@@ -1358,13 +1463,13 @@ describe('household app API: input, budgets and metrics', { timeout: 30_000 }, (
     for (const pathname of [
       `${APP}/search`, `${APP}/search?q=`, `${APP}/search?q=%20`, `${APP}/search?q=${'x'.repeat(101)}`,
       `${APP}/search?q=x&page=0`, `${APP}/search?q=x&page=1.5`, `${APP}/search?q=x&page=501`, `${APP}/discover/trending?page=-1`,
-      `${APP}/movie/0`, `${APP}/movie/abc`, `${APP}/movie/2147483648`, `${APP}/tv/1e3`, `${APP}/tv/${T_TV}/season/x`, `${APP}/tv/${T_TV}/season/1000`,
+      `${APP}/movie/0`, `${APP}/movie/abc`, `${APP}/movie/2147483648`, `${APP}/collection/0`, `${APP}/collection/x`, `${APP}/collection/2147483648`, `${APP}/tv/1e3`, `${APP}/tv/${T_TV}/season/x`, `${APP}/tv/${T_TV}/season/1000`,
     ]) {
       const answer = await app.get(pathname);
       assert.equal(answer.status, 400, pathname);
       assert.equal(answer.text, '{"error":"invalid_request"}', pathname);
     }
-    for (const pathname of [`${APP}/movie/404404`, `${APP}/tv/404404`, `${APP}/tv/${T_TV}/season/9`, `${APP}/discover/everything`, `${APP}/requests/x`, `${APP}/movie/${T_MOVIE}/get`, `${APP}/`, `${APP}`]) {
+    for (const pathname of [`${APP}/movie/404404`, `${APP}/collection/404404`, `${APP}/collection/${COLLECTION}/get`, `${APP}/tv/404404`, `${APP}/tv/${T_TV}/season/9`, `${APP}/discover/everything`, `${APP}/requests/x`, `${APP}/movie/${T_MOVIE}/get`, `${APP}/`, `${APP}`]) {
       const answer = await app.get(pathname);
       assert.equal(answer.status, 404, pathname);
       assert.equal(answer.text, '{"error":"not_found"}', pathname);
@@ -1419,6 +1524,7 @@ describe('household app API: input, budgets and metrics', { timeout: 30_000 }, (
     await app.get(`${APP}/search?q=synthetic`);
     await app.get(`${APP}/movie/${T_MOVIE}`);
     await app.get(`${APP}/movie/404404`);
+    await app.get(`${APP}/collection/${COLLECTION}`);
     await app.get(`${APP}/me`, { user: BOB });
     await app.get(`${APP}/nothing`);
     const metrics = app.service.renderMetrics();
@@ -1426,6 +1532,7 @@ describe('household app API: input, budgets and metrics', { timeout: 30_000 }, (
       'jfa_app_requests_total{endpoint="search",outcome="ok"} 1',
       'jfa_app_requests_total{endpoint="movie",outcome="ok"} 1',
       'jfa_app_requests_total{endpoint="movie",outcome="not_found"} 1',
+      'jfa_app_requests_total{endpoint="collection",outcome="ok"} 1',
       'jfa_app_requests_total{endpoint="me",outcome="unauthorized"} 1',
       'jfa_app_requests_total{endpoint="unknown",outcome="not_found"} 1',
     ]) assert.ok(metrics.includes(line), line);

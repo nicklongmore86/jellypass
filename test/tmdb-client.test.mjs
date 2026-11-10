@@ -20,6 +20,7 @@ const CALLS = {
   networkFilms: (client) => client.networkFilms(213, 3),
   studio: (client) => client.studio(41077, 1),
   movie: (client) => client.movie(900001),
+  collection: (client) => client.collection(900100),
   tv: (client) => client.tv(900002),
   season: (client) => client.season(900002, 1),
 };
@@ -80,6 +81,8 @@ describe('TMDB client', () => {
       `GET ${TMDB_API_URL}/3/discover/movie?page=3&sort_by=popularity.desc&include_adult=false&watch_region=US&with_watch_providers=8|1796&with_watch_monetization_types=flatrate&language=en-US`,
       `GET ${TMDB_API_URL}/3/discover/movie?page=1&sort_by=popularity.desc&include_adult=false&with_companies=41077&language=en-US`,
       `GET ${TMDB_API_URL}/3/movie/900001?language=en-US`,
+      // A film series, read from a film's page.
+      `GET ${TMDB_API_URL}/3/collection/900100?language=en-US`,
       `GET ${TMDB_API_URL}/3/tv/900002?language=en-US`,
       `GET ${TMDB_API_URL}/3/tv/900002/season/1?language=en-US`,
       `GET ${TMDB_API_URL}/3/trending/all/day?page=3&language=en-US`,

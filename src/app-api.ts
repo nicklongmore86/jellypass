@@ -50,7 +50,7 @@ export const APP_API_PREFIX = '/jellypass/app/v1';
  * an endpoint to v1, never lowered. v1 only ever gains (see docs/app-design.md, "Native clients (contract)"); anything
  * else is a new path, `/jellypass/app/v2`.
  */
-export const APP_API_VERSION = 5;
+export const APP_API_VERSION = 6;
 /** How long a verified Jellyfin token is trusted without asking Jellyfin again (at most 5 minutes). */
 export const APP_SESSION_TTL_MS = 5 * 60 * 1000;
 /** How long after a sign-out through the household host its tokens are still never kept as verified. */
@@ -135,7 +135,7 @@ const SEERR_REQUEST = 32;
 const SEERR_REQUEST_MOVIE = 262_144;
 const SEERR_REQUEST_TV = 524_288;
 
-export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'tv' | 'season' | 'get' | 'requests' | 'cancel' | 'hide' | 'unhide' | 'hidden' | 'unknown';
+export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'collection' | 'tv' | 'season' | 'get' | 'requests' | 'cancel' | 'hide' | 'unhide' | 'hidden' | 'unknown';
 export type AppOutcome = 'ok' | 'app_disabled' | 'unauthorized' | 'rate_limited' | 'invalid' | 'not_found' | 'hidden_limit' | 'unavailable';
 
 /**
@@ -177,6 +177,8 @@ export type HouseholdState = 'unavailable' | 'in_library' | 'requested' | 'get_t
 const GET_THIS_ACCEPTED = { status: 'accepted' };
 const MAX_GET_THIS_BODY_BYTES = 1024;
 const MAX_SEASONS_ASKED = 100;
+/** The most films a collection page lists (TMDB's largest collections hold a few dozen). */
+export const MAX_COLLECTION_FILMS = 100;
 /** The member's own hidden titles listed per page of GET /hidden. */
 export const HIDDEN_PAGE_SIZE = 50;
 
@@ -231,7 +233,7 @@ interface SignOutLimits {
 export interface HouseholdAppOptions {
   enabled?: (householdId: string) => boolean;
   /** Titles, from TMDB. */
-  catalogue: Pick<TmdbClient, 'search' | 'discover' | 'network' | 'networkFilms' | 'studio' | 'movie' | 'tv' | 'season'>;
+  catalogue: Pick<TmdbClient, 'search' | 'discover' | 'network' | 'networkFilms' | 'studio' | 'movie' | 'collection' | 'tv' | 'season'>;
   /** Seerr's administrator blocklist, read with the admin key. */
   blocklist: Pick<SeerrClient, 'blocklist'>;
   /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
@@ -756,6 +758,8 @@ export class HouseholdApp implements HouseholdAppHandler {
     }
     const movie = /^\/movie\/([^/]+)$/.exec(path);
     if (movie) return { endpoint: 'movie', run: (caller, context) => this.#movie(caller, context, movie[1] as string) };
+    const collection = /^\/collection\/([^/]+)$/.exec(path);
+    if (collection) return { endpoint: 'collection', run: (caller, context) => this.#collection(caller, context, collection[1] as string) };
     const tv = /^\/tv\/([^/]+)$/.exec(path);
     if (tv) return { endpoint: 'tv', run: (caller, context) => this.#tv(caller, context, tv[1] as string) };
     const season = /^\/tv\/([^/]+)\/season\/([^/]+)$/.exec(path);
@@ -880,8 +884,52 @@ export class HouseholdApp implements HouseholdAppHandler {
       ...titleFields(answer, 'movie'),
       genres: genreNames(field(answer, 'genres')),
       runtime: positiveInteger(field(answer, 'runtime')),
+      collection: collectionLink(field(answer, 'belongs_to_collection')),
       ...stateFields(state, context.origin),
       hidden: view.hidden.has(titleKey('movie', tmdbId)),
+    };
+  }
+
+  /**
+   * A TMDB collection (a film series), reached from a film's page (`collection` on GET /movie/:id): its name and images,
+   * and its films, each a movie card with the household state {@link titleState} decides for it from the caller's own
+   * view, as on any other card, and its release date. A film is `released` once TMDB's release date is today (UTC) or
+   * earlier; one without a date is not. Films come oldest first, those without a date last, at most
+   * {@link MAX_COLLECTION_FILMS}. Asking for them is one "Get this" per film (POST /movie/:id/get), each counted against
+   * the budgets as any other: there is no collection request.
+   */
+  async #collection(caller: JellyfinCaller, context: HouseholdAppRequest, input: string): Promise<CollectionDto> {
+    const collectionId = tmdbParameter(input);
+    const [answer, view] = await Promise.all([
+      this.#title(context, `collection\n${collectionId}`, (signal) => this.#catalogue.collection(collectionId, { signal })),
+      this.#view(caller, context),
+    ]);
+    const today = new Date(this.#now()).toISOString().slice(0, 10);
+    const parts = field(answer, 'parts');
+    const seen = new Set<number>();
+    const films = (Array.isArray(parts) ? parts : []).flatMap((entry, index) => {
+      const card = cardOf(entry, 'movie', view, context.origin);
+      if (!card || card.mediaType !== 'movie' || seen.has(card.tmdbId)) return [];
+      seen.add(card.tmdbId);
+      const date = field(entry, 'release_date');
+      const releaseDate = typeof date === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(date) ? date : null;
+      return [{ index, film: { ...card, mediaType: 'movie' as const, releaseDate, released: releaseDate !== null && releaseDate <= today } }];
+    });
+    films.sort((left, right) => {
+      const a = left.film.releaseDate;
+      const b = right.film.releaseDate;
+      if (a === b) return left.index - right.index;
+      if (a === null) return 1;
+      if (b === null) return -1;
+      return a < b ? -1 : 1;
+    });
+    return {
+      id: collectionId,
+      name: text(field(answer, 'name'), 300),
+      overview: text(field(answer, 'overview'), 4000),
+      posterUrl: imageUrl(TMDB_POSTER_BASE, field(answer, 'poster_path')),
+      backdropUrl: imageUrl(TMDB_BACKDROP_BASE, field(answer, 'backdrop_path')),
+      films: films.slice(0, MAX_COLLECTION_FILMS).map((entry) => entry.film),
     };
   }
 
@@ -1242,6 +1290,33 @@ export interface MovieDto extends Omit<CardDto, 'mediaType'> {
   mediaType: 'movie';
   genres: string[];
   runtime: number | null;
+  /** The TMDB collection (film series) the film belongs to, for a link to GET /collection/:id, or null. Since apiVersion 6. */
+  collection: CollectionLinkDto | null;
+}
+
+/** A film's collection as its page links to it. */
+export interface CollectionLinkDto {
+  id: number;
+  name: string;
+}
+
+/** One film of a collection: a movie card with its release date. */
+export interface CollectionFilmDto extends Omit<CardDto, 'mediaType'> {
+  mediaType: 'movie';
+  /** TMDB's release date (YYYY-MM-DD), or null when TMDB has none. */
+  releaseDate: string | null;
+  /** Whether the release date is today (UTC) or earlier: clients leave unreleased films out of "Get all missing films". */
+  released: boolean;
+}
+
+/** GET /collection/:id (since apiVersion 6). */
+export interface CollectionDto {
+  id: number;
+  name: string;
+  overview: string;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+  films: CollectionFilmDto[];
 }
 
 export interface TvDto extends Omit<CardDto, 'mediaType'> {
@@ -1332,6 +1407,14 @@ function stateFields(state: TitleState, origin: string): Pick<CardDto, 'state' |
       ? { itemId: state.itemId, url: `${origin}/web/#/details?id=${state.itemId}` }
       : null,
   };
+}
+
+/** A film's `belongs_to_collection`, as its ID and name, or null (no collection, or one without an ID). */
+function collectionLink(value: unknown): CollectionLinkDto | null {
+  const id = positiveInteger(field(value, 'id'));
+  if (id === null || id > 2_147_483_647) return null;
+  const name = text(field(value, 'name'), 300);
+  return name ? { id, name } : null;
 }
 
 function seasonList(value: unknown): Array<Omit<SeasonSummaryDto, 'state'>> {

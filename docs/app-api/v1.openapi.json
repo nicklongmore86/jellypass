@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "JellyPass household app API",
-    "version": "5",
+    "version": "6",
     "description": "The household app API, /jellypass/app/v1, on household hosts only. info.version is GET /me's apiVersion. v1 only ever gains fields and endpoints; see docs/app-design.md, \"Native clients (contract)\". Schemas are closed (additionalProperties false) so the server's own test catches an undeclared field; a client decodes leniently and ignores fields it does not know. Every answer is Cache-Control: no-store."
   },
   "servers": [
@@ -495,6 +495,56 @@
             }
           }
         ]
+      }
+    },
+    "/collection/{id}": {
+      "get": {
+        "operationId": "collection",
+        "summary": "One collection (a film series), with its films.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Collection"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          },
+          "403": {
+            "$ref": "#/components/responses/AppAccessDisabled"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The TMDB collection ID, from Movie.collection.id.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          }
+        ],
+        "description": "Reached from a film's page (Movie.collection); not listed anywhere else. Each film is a movie card with the caller's household state, decided as on any card from the caller's own view, so nothing about another household shows. Films come oldest first, those without a release date last, at most 100. Asking for films is one POST /movie/{tmdbId}/get per film, each counted against the Get this budgets: there is no collection request. Clients leave films that are not released yet out of \"Get all missing films\". Added in apiVersion 6."
       }
     },
     "/tv/{tmdbId}": {
@@ -1529,7 +1579,8 @@
           "play",
           "genres",
           "runtime",
-          "hidden"
+          "hidden",
+          "collection"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1617,6 +1668,189 @@
           "hidden": {
             "type": "boolean",
             "description": "Whether the caller hid this title (\"Not interested\"; see /hidden). Only the caller's own hides, in this household. Discovery lists leave hidden titles out, so it is true only in search results and on title pages. Added in apiVersion 3; a client decodes a missing value as false."
+          },
+          "collection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CollectionLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The TMDB collection (film series) the film belongs to, for a link to GET /collection/{id}; null when it belongs to none. Added in apiVersion 6; a client decodes a missing value as null."
+          }
+        }
+      },
+      "CollectionLink": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        }
+      },
+      "CollectionFilm": {
+        "type": "object",
+        "required": [
+          "mediaType",
+          "tmdbId",
+          "title",
+          "year",
+          "overview",
+          "posterUrl",
+          "backdropUrl",
+          "rating",
+          "state",
+          "play",
+          "hidden",
+          "releaseDate",
+          "released"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mediaType": {
+            "type": "string",
+            "const": "movie"
+          },
+          "tmdbId": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "Any positive whole number TMDB gives, up to 2^53 - 1; only one up to 2147483647 can be opened as /movie/{tmdbId} or /tv/{tmdbId}."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9999
+          },
+          "overview": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "posterUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w342/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB poster at w342; the same file is served at other TMDB widths."
+          },
+          "backdropUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w780/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB backdrop at w780; the PWA also draws the same file at w1280."
+          },
+          "rating": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 10,
+            "description": "TMDB vote average to one decimal; null when TMDB has none."
+          },
+          "state": {
+            "$ref": "#/components/schemas/HouseholdState"
+          },
+          "play": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Play"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hidden": {
+            "type": "boolean",
+            "description": "Whether the caller hid this title (\"Not interested\"; see /hidden). Only the caller's own hides, in this household. Discovery lists leave hidden titles out, so it is true only in search results and on title pages. Added in apiVersion 3; a client decodes a missing value as false."
+          },
+          "releaseDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "description": "TMDB's release date; null when TMDB has none."
+          },
+          "released": {
+            "type": "boolean",
+            "description": "Whether releaseDate is today (UTC) or earlier; false without a date. Clients leave films not released yet out of \"Get all missing films\" and do not pre-select them."
+          }
+        }
+      },
+      "Collection": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "overview",
+          "posterUrl",
+          "backdropUrl",
+          "films"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647,
+            "description": "The id of the path."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "overview": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "posterUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w342/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB poster at w342; the same file is served at other TMDB widths."
+          },
+          "backdropUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w780/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB backdrop at w780; the PWA also draws the same file at w1280."
+          },
+          "films": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/CollectionFilm"
+            }
           }
         }
       },

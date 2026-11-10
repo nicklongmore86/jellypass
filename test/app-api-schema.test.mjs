@@ -155,10 +155,12 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
     const cardSchema = { $ref: '#/components/schemas/Card' };
     for (const tmdbId of [1, 2147483647, 2147483648, Number.MAX_SAFE_INTEGER]) assert.deepEqual(validate({ ...card, tmdbId }, cardSchema, DOC), [], String(tmdbId));
     for (const tmdbId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1']) assert.notDeepEqual(validate({ ...card, tmdbId }, cardSchema, DOC), [], String(tmdbId));
-    // A title's own page, season and request echo the path's ID, which the server takes only up to 2147483647.
-    for (const name of ['Movie', 'Series', 'Season', 'Request', 'HiddenTitle']) {
-      assert.equal(DOC.components.schemas[name].properties.tmdbId.maximum, 2147483647, name);
-      assert.equal(DOC.components.schemas[name].properties.tmdbId.minimum, 1, name);
+    // A title's own page, season and request echo the path's ID, which the server takes only up to 2147483647, as a
+    // collection and a film's link to it do.
+    for (const name of ['Movie', 'Series', 'Season', 'Request', 'HiddenTitle', 'Collection', 'CollectionLink']) {
+      const key = name.startsWith('Collection') ? 'id' : 'tmdbId';
+      assert.equal(DOC.components.schemas[name].properties[key].maximum, 2147483647, name);
+      assert.equal(DOC.components.schemas[name].properties[key].minimum, 1, name);
     }
   });
 
@@ -187,10 +189,12 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       `${APP}/search?q=a`,
       ...['1', '40', '500', '501', '0', 'x'].map((page) => `${APP}/hidden?page=${page}`),
     ];
-    for (const target of reads) {
+    // Collections in an app of their own: the household's burst budget (60 in 10 seconds) would run out.
+    const collections = await startApp(t, world());
+    for (const target of [...reads, ...['900100', '2147483647', '2147483648', '0', '-1', '1.5', 'abc'].map((value) => `${APP}/collection/${value}`)]) {
       const url = new URL(target, 'https://household.invalid');
       const errors = parameters(operationFor('GET', url.pathname), url.pathname, url.searchParams);
-      const answer = await app.get(target);
+      const answer = await (target.includes('/collection/') ? collections : app).get(target);
       assert.equal(answer.status === 400, errors.length > 0, `GET ${target} is ${answer.status}; the document says ${errors.join('; ') || 'valid'}`);
     }
     const seasons = Array.from({ length: 101 }, (_, index) => index + 1);
@@ -264,6 +268,7 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       `${APP}/movie/${T_MOVIE}`,
       `${APP}/movie/${OWN_MOVIE}`,
       `${APP}/movie/900010`,
+      `${APP}/collection/900100`,
       `${APP}/tv/${T_TV}`,
       `${APP}/tv/${T_TV}/season/1`,
       `${APP}/tv/${T_TV}/season/2`,
@@ -288,7 +293,7 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
     }
     await app.background.settled();
     // Now with the household's requests: `requested` titles and a list with a movie and a series in it.
-    for (const pathname of [`${APP}/requests`, `${APP}/movie/${T_MOVIE}`, `${APP}/tv/${T_TV}`, `${APP}/tv/${T_TV}/season/1`, `${APP}/search?q=synthetic`]) {
+    for (const pathname of [`${APP}/requests`, `${APP}/movie/${T_MOVIE}`, `${APP}/collection/900100`, `${APP}/tv/${T_TV}`, `${APP}/tv/${T_TV}/season/1`, `${APP}/search?q=synthetic`]) {
       const answer = await app.get(pathname);
       check(covered, 'GET', pathname, answer);
       noteStates(answer.json());

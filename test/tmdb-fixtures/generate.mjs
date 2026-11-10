@@ -78,7 +78,8 @@ const fixtures = {
   movie: {
     adult: false,
     backdrop_path: '/synthetic-backdrop-900001.jpg',
-    belongs_to_collection: { id: 7300201, name: 'canary collection', poster_path: '/canary-collection.jpg', backdrop_path: null },
+    // The app relays the collection's ID and name (since apiVersion 6); its images are read from the collection itself.
+    belongs_to_collection: { id: 900100, name: 'Synthetic Collection', poster_path: '/canary-collection.jpg', backdrop_path: null },
     budget: 7300202,
     genres: [{ id: 28, name: 'Action' }, { id: 878, name: 'Science Fiction' }],
     homepage: 'https://canary.example.invalid/',
@@ -139,6 +140,47 @@ const fixtures = {
     type: 'Scripted',
     vote_average: 6.9,
     vote_count: 7300310,
+  },
+  // GET /3/collection/:id. Parts in TMDB's own order (not by date): a released film, an unreleased one, the film in household
+  // A's library, one without a release date, a duplicate entry and a series entry (both dropped).
+  collection: {
+    backdrop_path: '/synthetic-backdrop-900100.jpg',
+    id: 900100,
+    name: 'Synthetic Collection',
+    original_language: 'en',
+    original_name: 'canary original collection name',
+    overview: 'A synthetic film series used only in tests.',
+    poster_path: '/synthetic-poster-900100.jpg',
+    parts: [
+      { ...movieThree },
+      { ...movieOne },
+      {
+        ...movieThree,
+        id: 900005,
+        title: 'Synthetic Movie Five',
+        original_title: 'Synthetic Movie Five (canary original title)',
+        overview: 'Not released yet.',
+        poster_path: '/synthetic-poster-900005.jpg',
+        release_date: '2999-12-31',
+        popularity: 7300501,
+        vote_average: 0,
+        vote_count: 7300502,
+      },
+      {
+        ...movieThree,
+        id: 900006,
+        title: 'Synthetic Movie Six',
+        original_title: 'Synthetic Movie Six (canary original title)',
+        overview: 'No date yet.',
+        poster_path: null,
+        release_date: '',
+        popularity: 7300503,
+        vote_average: 0,
+        vote_count: 7300504,
+      },
+      { ...movieOne, title: 'canary duplicate' },
+      { ...seriesTwo },
+    ],
   },
   season: {
     _id: 'canary0000000000',

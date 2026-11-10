@@ -172,7 +172,7 @@ and nowhere else (on the administrator host they do not exist). The
 
 | Method | Path | Answer |
 | --- | --- | --- |
-| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `5` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
+| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `6` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
 | `GET` | `/jellypass/app/v1/search?q=...&page=N` | A page of title cards. `q` is 1 to 100 characters; `page` 1 to 500, default 1. |
 | `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `trending-movies`, `trending-tv`, `popular-movies`, `popular-tv`, `new-movies` (films that opened in US theatres in the last 60 days), `upcoming` (upcoming movies), `upcoming-tv` (upcoming series), `top-movies` or `top-tv` (TMDB's top rated). |
 | `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
@@ -180,7 +180,8 @@ and nowhere else (on the administrator host they do not exist). The
 | `GET` | `/jellypass/app/v1/discover/network/{id}/films?page=N` | A page of the films the service streams **in the US**, from TMDB's where-to-watch data (JustWatch). |
 | `GET` | `/jellypass/app/v1/discover/network/{id}/all?page=N` | The service's series and films mixed (film, series, …): Home's "Popular on" rows. |
 | `GET` | `/jellypass/app/v1/discover/studio/{id}?page=N` | A page of a listed studio's popular movies. |
-| `GET` | `/jellypass/app/v1/movie/{tmdbId}` | One movie. |
+| `GET` | `/jellypass/app/v1/movie/{tmdbId}` | One movie; since `apiVersion` 6 with `collection` (`{"id", "name"}` or `null`), the film series it belongs to. |
+| `GET` | `/jellypass/app/v1/collection/{id}` | One collection (a film series, since `apiVersion` 6), reached from a film's page: its name, images and films, each a movie card with the household state, its `releaseDate` and whether it is `released`. Films are asked for one "Get this" at a time (`POST /movie/{tmdbId}/get`), each counted against the budgets. |
 | `GET` | `/jellypass/app/v1/tv/{tmdbId}` | One series, with its seasons. |
 | `GET` | `/jellypass/app/v1/tv/{tmdbId}/season/{n}` | One season, with its episodes. |
 | `POST` | `/jellypass/app/v1/movie/{tmdbId}/get` | ["Get this"](#get-this) for a movie (empty body or `{}`): always `202 {"status":"accepted"}`. |
