@@ -1996,6 +1996,45 @@ describe('household app page: rendering', () => {
       matches(css, /\.choice \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/);
     });
 
+    it('offers Get all missing seasons beside the seasons: one press asks once for every season still to get, and only those', async () => {
+      const { document, Event, titleDetail, GET_THIS_TEXT } = await renderer();
+      const asked = [];
+      let answer;
+      const detail = titleDetail(document, tv(), origin, { onGet: (seasons, onAccepted) => { asked.push(seasons); return new Promise((resolve) => { answer = () => { onAccepted(); resolve('accepted'); }; }); } });
+      const all = detail.querySelector('fieldset.get-seasons .season-tools button.get-all-seasons');
+      assert.equal(all.textContent, 'Get all missing seasons');
+      assert.equal(all.textContent, GET_THIS_TEXT.allMissingSeasons);
+      assert.equal(all.getAttribute('aria-label'), 'Get all missing seasons: Synthetic Series Two');
+      // Nothing ticked: it still asks for both seasons the household has neither got nor asked for, never a special,
+      // the one in the library or the requested one, in one call, as Select all then Get this would.
+      click(all, Event);
+      assert.deepEqual(asked, [[2, 3]]);
+      const boxes = [...detail.querySelectorAll('fieldset input[type="checkbox"]')];
+      assert.deepEqual(boxes.map((box) => [box.checked, box.disabled]), [[true, true], [true, true]]);
+      assert.equal(all.disabled, true, 'locked while in flight');
+      click(all, Event);
+      click(detail.querySelector('.detail-action button'), Event);
+      assert.equal(asked.length, 1, 'nothing sent twice');
+      answer();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(detail.querySelector('.get-all-seasons'), null, 'gone once accepted');
+      assert.equal(detail.querySelector('.get-message').textContent, GET_THIS_TEXT.confirmation);
+      // Seasons just asked for, or that failed, are not offered again; with one left it is still offered, for that one.
+      const one = titleDetail(document, tv(), origin, { onGet: async (seasons) => { asked.push(seasons); return 'accepted'; }, asked: new Set([2]) });
+      click(one.querySelector('.get-all-seasons'), Event);
+      assert.deepEqual(asked.at(-1), [3]);
+      assert.equal(titleDetail(document, tv(), origin, { onGet: async () => 'accepted', asked: new Set([2]), failed: new Set([3]) }).querySelector('.get-all-seasons'), null);
+      // Nothing to get, or no way to ask (a season page, a signed-out screen): none.
+      assert.equal(titleDetail(document, tv({ seasons: [{ seasonNumber: 1, name: 'Season 1', episodeCount: 8, state: 'in_library' }] }), origin, { onGet: async () => 'accepted' }).querySelector('.get-all-seasons'), null);
+      assert.equal(titleDetail(document, tv(), origin, {}).querySelector('.get-all-seasons'), null);
+      // A failure leaves it ready again, with the failure's words.
+      const failing = titleDetail(document, tv(), origin, { onGet: async () => ({ kind: 'rate_limited', retryAfterSeconds: 90 }) });
+      click(failing.querySelector('.get-all-seasons'), Event);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(failing.querySelector('.get-all-seasons').disabled, false);
+      assert.equal(failing.querySelector('.get-message').textContent, 'Too many tries. Try again in 2 minutes.');
+    });
+
     it('gives the hero and a detail page their own skeletons, hidden from assistive technology and free of controls', async () => {
       const { document, skeletonHero, skeletonDetail } = await renderer();
       for (const [name, node] of [['hero', skeletonHero(document)], ['detail', skeletonDetail(document)]]) {
@@ -2521,7 +2560,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         perMember: { calls: MAX_APP_REQUESTS_PER_USER, windowSeconds: APP_BUDGET_WINDOW_MS / 1000 },
         perHousehold: { calls: MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST, windowSeconds: APP_BURST_WINDOW_MS / 1000 },
       });
-      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['home-all', 'home-movies', 'home-tv', 'movie', 'network', 'network-films', 'network-series', 'requests', 'search', 'season', 'series', 'studio', 'tv-discover', 'tv-discover-list', 'tv-discover-movies', 'tv-discover-network', 'tv-discover-studio', 'tv-discover-tv', 'tv-home-row', 'tv-movie', 'tv-requests', 'tv-search-row', 'tv-series']);
+      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['collection', 'home-all', 'home-movies', 'home-tv', 'movie', 'network', 'network-films', 'network-series', 'requests', 'search', 'season', 'series', 'studio', 'tv-discover', 'tv-discover-list', 'tv-discover-movies', 'tv-discover-network', 'tv-discover-studio', 'tv-discover-tv', 'tv-home-row', 'tv-movie', 'tv-requests', 'tv-search-row', 'tv-series']);
       for (const [name, screen] of Object.entries(BUDGET.screens)) {
         assert.equal(screen.calls, screen.atOnce.length + (screen.belowTheFold?.length ?? 0), name);
       }
@@ -2553,6 +2592,15 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(page.requests.length, BUDGET.screens[name].calls);
       });
     }
+
+    it('a collection page, opened directly', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: '#/collection/900100' });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      await settled(page);
+      assert.deepEqual(calls(page).map((call) => call.replace(/\/collection\/[0-9]+$/, '/collection/{id}')), BUDGET.screens.collection.atOnce);
+      assert.equal(page.requests.length, BUDGET.screens.collection.calls);
+    });
 
     it('Search, opened directly on a query', async (t) => {
       const app = await startApp(t);
@@ -5407,6 +5455,145 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.doesNotMatch(sources, /localStorage\.setItem|sessionStorage|indexedDB|caches\./, 'the app still keeps nothing');
       await settle();
       t.diagnostic('checked');
+    });
+  });
+
+  describe('collections and all missing seasons against the API', () => {
+    const COLLECTION = 900100;
+    const posts = (page) => page.requests.filter((request) => request.init.method === 'POST');
+    const jsonAnswer = (value, status = 200, headers = {}) => ({ status, body: Buffer.from(JSON.stringify(value)), headers: { 'content-type': 'application/json', ...headers } });
+    const click = (page, node) => node.dispatchEvent(new page.Event('click', { bubbles: true }));
+    const change = (page, node, checked) => {
+      node.checked = checked;
+      node.dispatchEvent(new page.Event('change', { bubbles: true }));
+    };
+    /** /me as a server before collections says it. */
+    const oldServer = (url) => (url === '/jellypass/app/v1/me' ? jsonAnswer({ name: 'Alice', household: 'Grove', apiVersion: 5 }) : undefined);
+    const films = (page) => [...page.main().querySelectorAll('.collection-film')].map((item) => ({
+      name: item.querySelector('.season-name').textContent,
+      meta: item.querySelector('.card-meta').textContent,
+      badge: item.querySelector('.badge').textContent,
+      box: item.querySelector('input[type="checkbox"]')?.checked ?? null,
+    }));
+
+    it('asks once for every missing season of a series with Get all missing seasons', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: `#/tv/${T_TV}` });
+      const all = await page.until(() => page.main().querySelector('.get-all-seasons'), 'the button');
+      click(page, all);
+      await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
+      assert.deepEqual(posts(page).map((request) => [request.url, request.init.body]), [[`/jellypass/app/v1/tv/${T_TV}/get`, '{"seasons":[1,2]}']]);
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      await page.until(() => page.main().querySelectorAll('.season .badge').length === 2
+        && [...page.main().querySelectorAll('.season .badge')].every((badge) => badge.textContent === 'Requested'), 'both requested');
+      assert.equal(page.main().querySelector('.get-all-seasons'), null);
+      await app.background.settled();
+    });
+
+    it('links a film to its collection on a server with collections, and to nothing on an older one or for a film in none', async (t) => {
+      const app = await startApp(t, world({ tmdbMovies: { 900010: { title: 'Synthetic Movie Ten', release_date: '2021-01-01', belongs_to_collection: null } } }));
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+      const link = await page.until(() => page.main().querySelector('.collection-link a'), 'the link');
+      assert.equal(link.textContent, 'Part of Synthetic Collection');
+      assert.equal(link.getAttribute('href'), `#/collection/${COLLECTION}`);
+      const alone = await openApp(t, app, { hash: '#/movie/900010' });
+      await alone.until(() => alone.main().querySelector('article.detail'), 'the page');
+      assert.equal(alone.main().querySelector('.collection-link'), null);
+      const old = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: oldServer });
+      await old.until(() => old.main().querySelector('article.detail'), 'the page');
+      assert.equal(old.main().querySelector('.collection-link'), null);
+      // An old server's movie has no such field at all.
+      const bare = await openApp(t, app, {
+        hash: `#/movie/${T_MOVIE}`,
+        override: (url) => oldServer(url) ?? (url === `/jellypass/app/v1/movie/${T_MOVIE}`
+          ? jsonAnswer({ mediaType: 'movie', tmdbId: T_MOVIE, title: 'Synthetic Movie One', year: 2020, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, genres: [], runtime: null, hidden: false })
+          : undefined),
+      });
+      await bare.until(() => bare.main().querySelector('article.detail'), 'the page');
+      assert.equal(bare.main().querySelector('.collection-link'), null);
+      // Opened directly on an old server, a collection is Not found, and is never asked for.
+      const direct = await openApp(t, app, { hash: `#/collection/${COLLECTION}`, override: oldServer });
+      await direct.until(() => direct.main().querySelector('h1')?.textContent && !direct.main().querySelector('.detail-skeleton'), 'the answer');
+      assert.ok(!direct.requests.some((request) => request.url.includes('/collection/')));
+      assert.equal(direct.main().querySelector('.collection-view'), null);
+    });
+
+    it('lists the films with their states, ticks the released ones still to get, and asks for each with its own Get this', async (t) => {
+      const app = await startApp(t, world(), { now: () => Date.parse('2026-11-10T12:00:00Z') });
+      const page = await openApp(t, app, { hash: `#/collection/${COLLECTION}` });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      assert.equal(page.main().querySelector('h1').textContent, 'Synthetic Collection');
+      assert.equal(page.main().querySelector('.overview').textContent, 'A synthetic film series used only in tests.');
+      assert.deepEqual(films(page), [
+        { name: 'Synthetic Movie One', meta: '2020', badge: 'Available to get', box: true },
+        { name: 'Synthetic Movie Three', meta: '2024', badge: 'Ready to watch', box: null },
+        { name: 'Synthetic Movie Five', meta: '2999 · Not released yet', badge: 'Available to get', box: false },
+        { name: 'Synthetic Movie Six', meta: 'Not released yet', badge: 'Available to get', box: false },
+      ]);
+      assert.equal(page.main().querySelector('.collection-film a.button').textContent, 'Play');
+      assert.deepEqual([...page.main().querySelectorAll('.collection-film .season-link')].map((link) => link.getAttribute('href')),
+        [`#/movie/${T_MOVIE}`, `#/movie/${OWN_MOVIE}`, '#/movie/900005', '#/movie/900006']);
+      const button = page.main().querySelector('button.get-films');
+      assert.equal(button.textContent, 'Get all missing films');
+      // Ticking a film not out yet makes it a selection; back to the first ticks, it is Get all again; none, nothing to send.
+      const boxes = [...page.main().querySelectorAll('.collection-film input[type="checkbox"]')];
+      change(page, boxes[1], true);
+      assert.equal(button.textContent, 'Get selected (2)');
+      change(page, boxes[1], false);
+      assert.equal(button.textContent, 'Get all missing films');
+      change(page, boxes[0], false);
+      assert.equal(button.textContent, 'Get selected (0)');
+      assert.equal(button.disabled, true);
+      change(page, boxes[0], true);
+      assert.equal(posts(page).length, 0, 'ticking asked for nothing');
+      click(page, button);
+      const summary = await page.until(() => page.main().querySelector('.collection-outcome'), 'the summary');
+      assert.equal(summary.textContent, "Thanks — we'll get this film for your household.");
+      assert.deepEqual(posts(page).map((request) => [request.url, request.init.body]), [[`/jellypass/app/v1/movie/${T_MOVIE}/get`, '{}']]);
+      // Read again: the film is requested now, and the rest stay as they were.
+      assert.deepEqual(films(page).map((film) => [film.badge, film.box]), [['Requested', null], ['Ready to watch', null], ['Available to get', false], ['Available to get', false]]);
+      assert.equal(page.main().querySelector('button.get-films').textContent, 'Get selected (0)');
+      await app.background.settled();
+      // My requests lists it as its own entry.
+      const list = (await app.get('/jellypass/app/v1/requests')).json().results;
+      assert.deepEqual(list.map((entry) => [entry.mediaType, entry.tmdbId]), [['movie', T_MOVIE]]);
+    });
+
+    it('stops at the first refusal and says which films were asked for and which were not, with the wait', async (t) => {
+      const app = await startApp(t, world(), { now: () => Date.parse('2026-11-10T12:00:00Z') });
+      const page = await openApp(t, app, {
+        hash: `#/collection/${COLLECTION}`,
+        override: (url, init) => (init.method === 'POST' && url === '/jellypass/app/v1/movie/900005/get'
+          ? jsonAnswer({ error: 'too_many_requests', retryAfterSeconds: 90 }, 429, { 'retry-after': '90' })
+          : undefined),
+      });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      for (const box of page.main().querySelectorAll('.collection-film input[type="checkbox"]')) change(page, box, true);
+      const button = page.main().querySelector('button.get-films');
+      assert.equal(button.textContent, 'Get selected (3)');
+      click(page, button);
+      const summary = await page.until(() => page.main().querySelector('.collection-outcome'), 'the summary');
+      // One call per film, in the page's order, until the refusal: the film after it is never sent.
+      assert.deepEqual(posts(page).map((request) => request.url), [`/jellypass/app/v1/movie/${T_MOVIE}/get`, '/jellypass/app/v1/movie/900005/get']);
+      assert.ok(summary.classList.contains('get-error'));
+      assert.deepEqual([...summary.querySelectorAll('p')].map((line) => line.textContent), [
+        'Asked for: Synthetic Movie One (2020).',
+        'Not asked for: Synthetic Movie Five (2999), Synthetic Movie Six.',
+        'Too many tries. Try again in 2 minutes.',
+      ]);
+      assert.equal(summary.getAttribute('role'), 'status');
+      // The two not asked for can be asked for again; the one asked for is requested.
+      assert.deepEqual(films(page).map((film) => [film.badge, film.box]), [['Requested', null], ['Ready to watch', null], ['Available to get', false], ['Available to get', false]]);
+      assert.doesNotMatch(page.serialize(), /download/i);
+      await app.background.settled();
+    });
+
+    it('says when the household has every film it can get, and offers no button', async (t) => {
+      const app = await startApp(t, world({ tmdbCollections: { 900180: { name: 'Synthetic Held', parts: [{ id: OWN_MOVIE, title: 'Synthetic Movie Three', release_date: '2024-02-02' }] } } }));
+      const page = await openApp(t, app, { hash: '#/collection/900180' });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      assert.equal(page.main().querySelector('button.get-films'), null);
+      assert.equal(page.main().querySelector('.detail-text .muted').textContent, 'Your household has every released film here, or has asked for it.');
     });
   });
 

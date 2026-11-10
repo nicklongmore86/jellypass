@@ -2102,6 +2102,35 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   order on its own. Parsing title answers on the main thread, and listing every
   household's records for one household's answer, fail none: they are timing-only (documented above).
 
+### App API revision 6: collections (film series)
+
+`GET /me` advertises `apiVersion: 6`. Two additions, both read-only; "Get this" itself is unchanged.
+
+- **`collection` on `GET /movie/{tmdbId}`**: `{id, name}` of the TMDB collection (film series, such as a trilogy) the
+  film belongs to, from TMDB's `belongs_to_collection`, or `null`. Only its ID and name are copied.
+- **`GET /collection/{id}`**: the collection's name, overview and images, and its films (TMDB's `parts`, movies only,
+  each once), oldest first with undated films last, at most 100. Each film is a movie card whose household state comes
+  from the same `titleState` as every other card (the caller's own Jellyfin view, Seerr's blocklist, the caller's own
+  permissions and this household's own records), so a film another household holds privately, or asked for, looks
+  exactly as one nobody has, byte for byte. Each film also says its `releaseDate` (TMDB's, or `null`) and whether it is
+  `released` (that date is today, UTC, or earlier). Answers are cached per household like every other TMDB answer.
+
+There is no collection request. A client asks for films one `POST /movie/{tmdbId}/get` at a time, in the page's order,
+so Seerr gets one request per film (its own model of a collection), each counts 1 against the "Get this" budgets (eight
+films are eight), each becomes its own My requests entry (and its own row in the administrators' Requests tab), and
+each is cancelled on its own. Films another household holds or asked for go through the existing branches (join,
+interest, or nothing), as from the film's own page. A client stops at the first refusal and says which films were
+asked for and which were not; for a `429` it shows the wait from `Retry-After`. Clients tick every released film the
+household can still ask for, leave films not out yet unticked (and out of "Get all missing films"), and show the
+collection link only on `apiVersion >= 6`. Collections are reached only from a film's page; search does not list them.
+
+**All missing seasons.** A series page's "Get all missing seasons" button sends the one call Select all then Get this
+sends: every season the household neither has nor asked for, as listed now. No server change.
+
+**Planned / not yet built: following a series.** "Get all missing seasons" requests only the seasons that exist when
+it is pressed. A later version should let a member follow a series, so each new season is requested for the household
+when it is released. Nothing of that exists yet.
+
 ### App API revision 5: how long to wait after "Get this" is refused
 
 `GET /me` advertises `apiVersion: 5`. A `429 too_many_requests` from the "Get this" submission budgets

@@ -1,10 +1,13 @@
-import { ApiError, createApi, createSignInApi, HIDING_API_VERSION, SessionChangedError, type Api, type ApiErrorKind, type SignInApi } from './api.js';
+import { ApiError, COLLECTIONS_API_VERSION, createApi, createSignInApi, HIDING_API_VERSION, SessionChangedError, type Api, type ApiErrorKind, type SignInApi } from './api.js';
 import {
   accountText,
   accountView,
   cardList,
   cardItem,
   addCardControls,
+  collectionView,
+  type CollectionHandler,
+  type CollectionOutcome,
   el,
   ERROR_TEXT,
   errorState,
@@ -64,7 +67,7 @@ import { HiddenPager } from './hidden.js';
 import { icon } from './icons.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
-import type { Card, DiscoverList, HiddenEntry, HiddenList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
+import type { Card, CollectionFilm, DiscoverList, HiddenEntry, HiddenList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
 
 /** One of Home's rows, fetched from a discover list; `eager` rows are asked for at once, the others as they near the screen. */
 interface HomeRow {
@@ -495,6 +498,11 @@ function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): 
   }, expired);
 }
 
+/** Whether this server has collections (`apiVersion` 6); a server before it shows no link to one. */
+function supportsCollections(): boolean {
+  return (me?.apiVersion ?? 0) >= COLLECTIONS_API_VERSION;
+}
+
 /** Whether this server has hiding titles (`apiVersion` 3); a server before it shows none of it and is never asked. */
 function supportsHiding(): boolean {
   return (me?.apiVersion ?? 0) >= HIDING_API_VERSION;
@@ -690,7 +698,7 @@ function failure(kind: ApiErrorKind, retry: () => void): void {
 }
 
 interface Route {
-  name: 'home' | 'search' | 'requests' | 'hidden' | 'movie' | 'tv' | 'season' | 'account' | SourceKind;
+  name: 'home' | 'search' | 'requests' | 'hidden' | 'movie' | 'tv' | 'season' | 'collection' | 'account' | SourceKind;
   id?: number;
   season?: number;
   query?: string;
@@ -720,6 +728,8 @@ function parse(hash: string): Route {
     const list = new URLSearchParams(queryString).get('kind');
     return { name: 'network', id: Number(source[2]), list: list === 'series' || list === 'films' ? list : 'all' };
   }
+  const collection = /^\/collection\/(\d{1,10})$/.exec(path);
+  if (collection) return { name: 'collection', id: Number(collection[1]) };
   const title = /^\/(movie|tv)\/(\d{1,10})$/.exec(path);
   if (title) return { name: title[1] === 'tv' ? 'tv' : 'movie', id: Number(title[2]) };
   const filter = new URLSearchParams(queryString).get('kind');
@@ -789,6 +799,7 @@ async function render(): Promise<void> {
     else if (route.name === 'requests') await requestsScreen(abort.signal, current);
     else if (route.name === 'hidden') await hiddenScreen(abort.signal, current);
     else if (route.name === 'movie' || route.name === 'tv') await title(route, abort.signal, current);
+    else if (route.name === 'collection') await collectionScreen(route, abort.signal, current);
     else if (route.name === 'network' || route.name === 'studio') await sourceScreen(route, abort.signal, current);
     else await season(route, abort.signal, current);
   } catch (error) {
@@ -1280,7 +1291,9 @@ async function title(route: Route, signal: AbortSignal, current: () => boolean):
   if (!current()) return;
   const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
     const hiding = supportsHiding() ? { hidden: answer.hidden === true, run: (hidden: boolean) => changeHidden(mediaType, id, hidden) } : undefined;
-    show(titleDetail(doc, answer, origin, { onGet, asked, failed, confirmed, onReload: () => void render(), ...(hiding ? { hiding } : {}) }));
+    show(titleDetail(doc, answer, origin, {
+      onGet, asked, failed, confirmed, onReload: () => void render(), collections: supportsCollections(), ...(hiding ? { hiding } : {}),
+    }));
     if (confirmed) main.querySelector<HTMLElement>('.get-message')?.focus({ preventScroll: true });
   };
   const onGet = getThisFor(mediaType, id, signal, current, async (asked) => {
@@ -1289,6 +1302,60 @@ async function title(route: Route, signal: AbortSignal, current: () => boolean):
   });
   setTitle(answer.title);
   draw(new Set(), false);
+  announce('');
+  focusHeading();
+}
+
+/**
+ * A collection's page (a film series, from a film's "Part of" link; needs `apiVersion` 6, else Not found without a
+ * call). Its button asks for the ticked films one "Get this" each, in the page's order, and stops at the first refusal:
+ * the page is then read again and says which films were asked for and which were not (with the wait, for a 429).
+ */
+async function collectionScreen(route: Route, signal: AbortSignal, current: () => boolean): Promise<void> {
+  busy(skeletonDetail(doc));
+  setTitle();
+  await loadMe(signal);
+  if (!supportsCollections()) throw new ApiError('not_found');
+  const id = route.id as number;
+  let answer = await api.collection(id, signal);
+  if (!current()) return;
+  const draw = (outcome?: CollectionOutcome) => {
+    show(collectionView(doc, answer, origin, { onGet, ...(outcome ? { outcome } : {}) }));
+    if (outcome) main.querySelector<HTMLElement>('.collection-outcome')?.focus({ preventScroll: true });
+  };
+  const onGet: CollectionHandler = async (films, progress) => {
+    const asked: CollectionFilm[] = [];
+    let refusal: CollectionOutcome['failure'];
+    for (const [index, film] of films.entries()) {
+      progress(index + 1, films.length);
+      try {
+        await api.getThis('movie', film.tmdbId, [], signal);
+        asked.push(film);
+      } catch (error) {
+        refusal = signal.aborted ? 'unavailable' : refusalOf(error);
+        break;
+      }
+    }
+    if (refusal === 'unauthorized') {
+      if (current()) failure('unauthorized', () => void render());
+      return 'unauthorized';
+    }
+    const outcome: CollectionOutcome = { asked, notAsked: films.slice(asked.length), ...(refusal ? { failure: refusal } : {}) };
+    if (signal.aborted || !current()) return outcome;
+    // The page is read again, so what was asked for shows as requested; if that fails, the summary still says it all.
+    try {
+      answer = await api.collection(id, signal);
+    } catch (error) {
+      if (kindOf(error) === 'unauthorized' && current()) {
+        failure('unauthorized', () => void render());
+        return 'unauthorized';
+      }
+    }
+    if (current()) draw(outcome);
+    return outcome;
+  };
+  setTitle(answer.name);
+  draw();
   announce('');
   focusHeading();
 }

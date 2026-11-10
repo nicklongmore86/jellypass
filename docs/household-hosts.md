@@ -330,6 +330,27 @@ and `GET_THIS_WINDOW_SECONDS` (see the
 header, the whole seconds until the limit that refused it starts again, and the
 apps say "Too many tries. Try again in N minutes." (rounded up).
 
+**All missing seasons and collections.** A series page has **Get all missing
+seasons**: one press sends the same single call as Select all then Get this,
+for every season the household neither has nor asked for (it counts 1). A
+film's page links to its collection (since `apiVersion` 6: "Part of The …
+Collection"); the collection page lists every film with the household's state
+and ticks the released films the household can still get (films not out yet
+are shown, not ticked, and left out of **Get all missing films**; they can be
+ticked by hand). **Get all missing films** or **Get selected** sends one "Get
+this" per film, one after another, so each film counts 1 against the limits
+above (eight films are eight), is its own entry in My requests and in the
+administrators' Requests tab, and is cancelled on its own. When a call is
+refused part-way (a limit, say), the rest are not sent and the page says which
+films were asked for and which were not, with the wait. Films another household
+holds are handled as on their own pages, and nothing about that household
+shows. Collections are reached only from a film's page, not from search.
+
+> **Planned / not yet built:** "Get all missing seasons" requests only the
+> seasons that exist when it is pressed. A future version should let a member
+> follow a series, so each new season is requested automatically when it is
+> released. This is not implemented.
+
 **`GET /requests`** lists the household's own "Get this" titles, newest first
 (at most 200), from JellyPass's records only: `status` is `requested`
 (Requested), `ready` (Ready to watch, and only for a caller whose own Jellyfin
