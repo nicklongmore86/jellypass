@@ -287,6 +287,14 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home, no key
     toggle buttons (`aria-pressed`) with **Select all** when there is more than one; **Get this** stays disabled with
     "Choose the seasons you want below." until one is chosen, and sends exactly the seasons chosen (HD only: the API
     asks for nothing else). A series partly in the library keeps **Play** as its primary, with **Get this** beside it.
+  - **Get all missing seasons**, beside **Select all** above the season cards whenever at least one season can be asked
+    for (even one): it ticks every season offered and sends them in the one call **Select all** then **Get this**
+    makes (`POST /tv/{id}/get` with those seasons, the same answers and words). Only seasons the series has now and the
+    household neither has nor asked for are sent; a season added later is not asked for by itself (see the planned
+    "follow a series" note in the household app docs).
+  - **Part of …** on a film that belongs to a collection (a film series), on a server with `apiVersion` 6: it opens the
+    film's collection page (see "Collections"). The add-on never calls `/me`; a movie answer with no `collection`
+    field (an older server), or with `null`, has no such button. It costs the title page no call.
   - "Requested", "Can't request" and "We couldn't get this" have no button, only their note. "Requested" says "Follow it
     in My requests." and, like a title just asked for with **Get this**, a title with a failed request, or a series with
     a requested season, has a **My requests** button after the others (it only opens the page; see "My requests").
@@ -325,6 +333,30 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home, no key
   late answers are dropped. Leaving the page drops what is in flight.
 - **Text.** Everything shown is a fixed string or a DTO field set with `textContent`; images are only the API's TMDB URLs
   (`w342` posters, `w780` backdrops), set with `referrerpolicy="no-referrer"`.
+
+### Collections
+
+`tv/src/collection.ts` (`tv/src/collection-model.ts` for its address and words): a film series as a page of Jellyfin
+web's on the page host at `#/jellypass/collection/<id>`, reached only from a film's **Part of …** button (no search or
+Discover entry). It is the title page's family (its classes, backdrop, buttons, status words and focus rules).
+
+- **One call** when it opens, `GET /collection/{id}` (`tv-collection` in `docs/app-api/fetch-budget.json`); an address
+  whose id is not one says "Not found" and calls nothing.
+- **The films**, in the server's order (oldest first), each with a small poster, its name, year and household status.
+  A film the household can ask for is a toggle (`aria-pressed`, the season cards' look and focus ring): ticked when it
+  is out already, **not** ticked when it is not released yet ("Not released yet", with its date when TMDB has one), which
+  can still be ticked by hand. A film in the library, requested or that can't be requested has no toggle.
+- **One button**: **Get all missing films** while the ticks are every film out and missing, **Get selected (N)**
+  otherwise, disabled at 0. A press sends one `POST /movie/{tmdbId}/get` per film ticked (Seerr's model: a request per
+  film, each counted against the "Get this" limits, so eight films are eight), one after another in the list's order,
+  never two at once, and stops at the first that fails. Each accepted film is shown as Requested at once (the overlay)
+  and is its own entry in My requests, cancelled on its own.
+- **What it did** stays under the button, with focus: the confirmation, or the failure's words (for a `429` the wait the
+  server gave, "Too many tries. Try again in N minutes."), then "Asked for: …" and "Not asked for: …" naming the films.
+  Then the collection is read again (its states); if that read fails, the page is drawn again from the answer it showed,
+  the films asked for showing Requested. A `401` forgets the overlay and says sign in. Nothing is sent again by itself.
+- Every answer is checked against the session that sent it, as on the title page; another member or a sign-out empties
+  the page and stops what is left to send.
 
 ### The Search row
 
