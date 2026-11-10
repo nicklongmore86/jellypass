@@ -1,10 +1,11 @@
 import { failedSeasons, getThis, setHidden, title as readTitle, type Failure, type HouseholdState, type MediaType, type SeasonSummary, type Title } from './api.js';
 import type { Asked } from './asked.js';
+import { COLLECTION_TEXT, collectionHash } from './collection-model.js';
 import { HIDDEN_TEXT, hiddenFailureText } from './hidden-model.js';
 import { detailsHash, type Session } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import { REQUESTS_HASH, REQUESTS_TEXT } from './requests-model.js';
-import { STATE_LABELS } from './row.js';
+import { STATE_LABELS } from './cards.js';
 import { SessionWatch } from './session-watch.js';
 
 /**
@@ -18,7 +19,7 @@ import { SessionWatch } from './session-watch.js';
  * each failure, never retried by itself. Everything shown is a fixed string or a DTO field set with `textContent`.
  *
  * It is a route, so Jellyfin web's header, its Back button, its history and its focus manager are what apply: this
- * module handles no key. Back returns to where the member came from (Home's card is given focus again by the row).
+ * module handles no key. Back returns to where the member came from (the card it was opened from is given focus again by its page).
  */
 
 /** Every fixed string the page shows; the "Get this" words are the household app's (app/src/render.ts, GET_THIS_TEXT). */
@@ -32,6 +33,7 @@ export const TITLE_TEXT = {
   chooseSeasons: 'Choose the seasons you want',
   chooseBelow: 'Choose the seasons you want below.',
   selectAll: 'Select all',
+  getAllSeasons: 'Get all missing seasons',
   clearAll: 'Clear all',
   confirmation: "Thanks — we'll get this for your household.",
   failed: "We couldn't get this",
@@ -104,7 +106,7 @@ interface Scope {
 
 /** What the page asks of the page around it. */
 export interface TitleHost {
-  /** The overlay changed (a "Get this" was accepted, or it was forgotten): the Home row redraws its statuses. */
+  /** The overlay changed (a "Get this" was accepted, or it was forgotten): the Discover and service pages redraw their statuses. */
   changed(): void;
   /** The member hid or unhid this title (accepted): every row, page and cached list leaves it out, or has it back, from what it holds (no call). */
   hiddenChanged(): void;
@@ -156,7 +158,7 @@ interface Kept {
 }
 
 /** The classes that name a button (or the message) on the page, for finding its new self after a redraw. */
-const FOCUS_CLASSES = ['jellypass-tv-title-play', 'jellypass-tv-title-get', 'jellypass-tv-title-requests', 'jellypass-tv-title-hide', 'jellypass-tv-title-select-all', 'jellypass-tv-title-retry', 'jellypass-tv-title-message'];
+const FOCUS_CLASSES = ['jellypass-tv-title-play', 'jellypass-tv-title-get', 'jellypass-tv-title-requests', 'jellypass-tv-title-hide', 'jellypass-tv-title-collection', 'jellypass-tv-title-get-all', 'jellypass-tv-title-select-all', 'jellypass-tv-title-retry', 'jellypass-tv-title-message'];
 
 export class TitlePage {
   readonly #document: Document;
@@ -497,6 +499,16 @@ export class TitlePage {
       });
       actions.appendChild(requests);
     }
+    // A film's collection, on a server that has collection pages (it sends the field): opens the collection's page.
+    if (found.mediaType === 'movie' && found.collection) {
+      const collectionId = found.collection.id;
+      const link = this.#button('jellypass-tv-title-collection jellypass-tv-title-secondary', COLLECTION_TEXT.partOf(found.collection.name), 'collection');
+      link.addEventListener('click', () => {
+        if (this.#open !== open) return;
+        this.#host.navigate(collectionHash(collectionId));
+      });
+      actions.appendChild(link);
+    }
     // "Not interested" / Unhide, on a server that has hiding (it sends the flag); not while a refresh failed, as nothing here sends then.
     const hide = !refreshFailed && found.hidden !== undefined ? this.#hideControl(open, found) : undefined;
     if (hide) actions.appendChild(hide.button);
@@ -524,15 +536,22 @@ export class TitlePage {
     // The seasons: each a card with its status; the ones the household can ask for are toggles (aria-pressed).
     const toggles: HTMLButtonElement[] = [];
     let selectAll: HTMLButtonElement | undefined;
+    let getAll: HTMLButtonElement | undefined;
     if (found.mediaType === 'tv') {
       const section = this.#el('div', 'jellypass-tv-title-seasons padded-left padded-right');
       section.appendChild(this.#el('h2', 'sectionTitle jellypass-tv-title-seasons-heading', TITLE_TEXT.seasons));
       if (get) {
         section.appendChild(this.#el('p', 'jellypass-tv-title-note', TITLE_TEXT.chooseSeasons));
+        // Beside the picker: every season the household can ask for now, in the one call Select all and Get this make.
+        const pickerActions = this.#el('div', 'focuscontainer-x jellypass-tv-title-season-actions');
+        getAll = this.#button('jellypass-tv-title-get-all jellypass-tv-title-secondary', TITLE_TEXT.getAllSeasons, 'get-all');
+        getAll.setAttribute('aria-label', `${TITLE_TEXT.getAllSeasons}: ${found.title}`);
+        pickerActions.appendChild(getAll);
         if (seasonChoices.length > 1) {
           selectAll = this.#button('jellypass-tv-title-select-all jellypass-tv-title-secondary', TITLE_TEXT.selectAll, 'select-all');
-          section.appendChild(selectAll);
+          pickerActions.appendChild(selectAll);
         }
+        section.appendChild(pickerActions);
       }
       const list = this.#el('div', 'jellypass-tv-title-season-list');
       for (const season of seasons) {
@@ -560,7 +579,7 @@ export class TitlePage {
       parts.push(section);
     }
 
-    if (get) this.#wireGetThis(open, found, { get, hint, message, toggles, selectAll, picking });
+    if (get) this.#wireGetThis(open, found, { get, hint, message, toggles, selectAll, getAll, picking });
     this.#fill(open, parts);
     open.drawn = { found, failed, confirmed, refreshFailed, shown: [state].concat(seasons.map((season) => season.state)).join(' ') };
     const again = kept && kept.focus ? this.#same(open, kept.focus) : null;
@@ -588,7 +607,7 @@ export class TitlePage {
   /**
    * "Not interested" (Unhide, once hidden): a button among the title's others, so Jellyfin's focus manager and the remote
    * reach it like them, with what it does in words under the buttons. Its one call is sent once (the button is disabled
-   * while it is out); an accepted one is written to the overlay (so Home's row, the Discover and service pages and the
+   * while it is out); an accepted one is written to the overlay (so the Discover and service pages and the
    * Search row leave the title out, or have it back, at once from what they hold) and the label changes in place, with
    * focus staying on the button. A failure says its fixed words and the button is offered again. A `401` forgets the overlay.
    */
@@ -689,8 +708,8 @@ export class TitlePage {
    * accepted call shows the one fixed confirmation at once, marks the title (and seasons) requested in the overlay, and
    * reads the page again; a failure shows its fixed words and offers the button again. Nothing is ever sent by itself.
    */
-  #wireGetThis(open: Open, found: Title, parts: { get: HTMLButtonElement; hint: HTMLElement | undefined; message: HTMLElement; toggles: HTMLButtonElement[]; selectAll: HTMLButtonElement | undefined; picking: boolean }): void {
-    const { get, hint, message, toggles, selectAll, picking } = parts;
+  #wireGetThis(open: Open, found: Title, parts: { get: HTMLButtonElement; hint: HTMLElement | undefined; message: HTMLElement; toggles: HTMLButtonElement[]; selectAll: HTMLButtonElement | undefined; getAll: HTMLButtonElement | undefined; picking: boolean }): void {
+    const { get, hint, message, toggles, selectAll, getAll, picking } = parts;
     const chosen = (): number[] => toggles.filter((toggle) => toggle.getAttribute('aria-pressed') === 'true').map((toggle) => Number(toggle.getAttribute('data-season')));
     const refresh = () => {
       const count = chosen().length;
@@ -714,21 +733,34 @@ export class TitlePage {
       });
     }
     refresh();
-    get.addEventListener('click', () => {
-      if (get.disabled || this.#open !== open) return;
+    // "Get all missing seasons": every season offered ticked, then the same one call as Get this.
+    if (getAll) {
+      getAll.addEventListener('click', () => {
+        if (getAll.disabled || get.getAttribute('aria-busy') === 'true') return;
+        for (const toggle of toggles) toggle.setAttribute('aria-pressed', 'true');
+        refresh();
+        send(getAll);
+      });
+    }
+    get.addEventListener('click', () => send(get));
+    const send = (from: HTMLButtonElement): void => {
+      if ((from === get && get.disabled) || this.#open !== open) return;
       const session = this.#session();
       if (!session || session.userId !== open.userId) {
         this.#end(open);
         return;
       }
       const seasons = picking ? chosen() : [];
+      if (picking && seasons.length === 0) return;
       // Not drawn again while the call is out: its answer decides what the page shows next.
       const drawn = open.drawn;
       open.drawn = undefined;
       get.disabled = true;
       for (const toggle of toggles) toggle.disabled = true;
       if (selectAll) selectAll.disabled = true;
+      if (getAll) getAll.disabled = true;
       get.textContent = TITLE_TEXT.sending;
+      if (getAll && from === getAll) getAll.textContent = TITLE_TEXT.sending;
       get.setAttribute('aria-busy', 'true');
       message.className = 'jellypass-tv-title-message';
       message.textContent = '';
@@ -753,7 +785,7 @@ export class TitlePage {
           for (const season of seasons.length ? seasons : [0]) open.askedHere.push(season);
           // The confirmation at once, whatever the read that follows does; nothing left here can send again.
           message.textContent = TITLE_TEXT.confirmation;
-          for (const node of [get, hint, selectAll]) if (node && node.parentNode) node.parentNode.removeChild(node);
+          for (const node of [get, hint, selectAll, getAll]) if (node && node.parentNode) node.parentNode.removeChild(node);
           for (const toggle of toggles) toggle.setAttribute('aria-pressed', 'false');
           this.#focus(open, message);
           if (now.userId === open.userId) this.#load(open, now, true, drawn);
@@ -774,10 +806,14 @@ export class TitlePage {
         get.removeAttribute('aria-busy');
         for (const toggle of toggles) toggle.disabled = false;
         if (selectAll) selectAll.disabled = false;
+        if (getAll) {
+          getAll.disabled = false;
+          getAll.textContent = TITLE_TEXT.getAllSeasons;
+        }
         refresh();
-        this.#focus(open, get.disabled ? toggles[0] ?? null : get);
+        this.#focus(open, from === getAll ? getAll : get.disabled ? toggles[0] ?? null : get);
       }).catch(() => undefined);
-    });
+    };
   }
 }
 

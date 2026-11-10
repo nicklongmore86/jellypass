@@ -46,6 +46,31 @@ export interface Movie extends Card {
   mediaType: 'movie';
   genres: string[];
   runtime: number | null;
+  /** The film series it belongs to, or null. Absent from a server before `apiVersion` 6, which has no collections. */
+  collection?: CollectionLink | null;
+}
+
+/** A film's collection (a film series, `GET /collection/:id`), as its page links to it. */
+export interface CollectionLink {
+  id: number;
+  name: string;
+}
+
+/** One film of a collection: a movie card, its release date, and whether it is out yet. */
+export interface CollectionFilm extends Card {
+  mediaType: 'movie';
+  releaseDate: string | null;
+  released: boolean;
+}
+
+/** `GET /collection/:id` (since `apiVersion` 6): the films oldest first, undated ones last. */
+export interface Collection {
+  id: number;
+  name: string;
+  overview: string;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+  films: CollectionFilm[];
 }
 
 export interface Series extends Card {

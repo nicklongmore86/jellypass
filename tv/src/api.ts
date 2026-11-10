@@ -40,7 +40,38 @@ export interface Title extends Card {
   /** Jellyfin's item, only when `play.url` is exactly this origin's own details page for it. */
   playItemId: string | null;
   seasons: SeasonSummary[];
+  /**
+   * A movie's collection (a film series), for a link to its collection page: sent by a server with `apiVersion` 6 (null
+   * when the film belongs to none), undefined from one before it, which has no collection pages (no link is offered).
+   */
+  collection?: CollectionLink | null;
 }
+
+/** A film's collection as its page links to it (`Movie.collection`). */
+export interface CollectionLink {
+  id: number;
+  name: string;
+}
+
+/** One film of a collection (`CollectionFilm`): a movie card, with whether it is out yet. */
+export interface CollectionFilm extends Card {
+  /** TMDB's release date (`YYYY-MM-DD`), or null. */
+  releaseDate: string | null;
+  /** Out today or earlier: only these are ticked for "Get all missing films". */
+  released: boolean;
+}
+
+/** `GET /collection/{id}`: its name, words and backdrop, and its films in the server's order. */
+export interface Collection {
+  id: number;
+  name: string;
+  overview: string;
+  backdropUrl: string | null;
+  films: CollectionFilm[];
+}
+export type CollectionAnswer = { ok: true; collection: Collection } | Failure;
+/** The most films a collection page keeps (the API sends at most 100). */
+export const MAX_COLLECTION_FILMS = 100;
 
 /**
  * A Card DTO as the Discover page draws it: the row's fields and the three the hero reads (`overview`, `backdropUrl`,
@@ -186,10 +217,6 @@ async function read(fetcher: Fetch, origin: string, token: string, path: string,
   return body && typeof body === 'object' ? { ok: true, body: body as Record<string, unknown> } : { ok: false, status: 502 };
 }
 
-/** `GET /discover/trending` (first page): one call. */
-export async function trending(fetcher: Fetch, origin: string, token: string): Promise<Answer> {
-  return cardsOf(await read(fetcher, origin, token, '/discover/trending'));
-}
 
 /** The discover lists (`GET /discover/{list}`) the Discover page asks for. */
 export type DiscoverList = 'trending' | 'trending-movies' | 'trending-tv' | 'popular-movies' | 'popular-tv' | 'new-movies' | 'upcoming' | 'upcoming-tv';
@@ -293,6 +320,44 @@ export async function title(fetcher: Fetch, origin: string, token: string, media
   if (!answer.ok) return answer;
   const found = titleOf(answer.body, origin);
   return found && found.mediaType === mediaType && found.tmdbId === tmdbId ? { ok: true, title: found } : { ok: false, status: 502 };
+}
+
+/** `GET /collection/{id}` (since `apiVersion` 6): one call. An id the API would refuse is not sent. */
+export async function collection(fetcher: Fetch, origin: string, token: string, id: number): Promise<CollectionAnswer> {
+  if (!validTmdbId(id)) return { ok: false, status: 400 };
+  const answer = await read(fetcher, origin, token, `/collection/${id}`);
+  if (!answer.ok) return answer;
+  const { name, overview, backdropUrl, films } = answer.body;
+  if (answer.body.id !== id || !Array.isArray(films)) return { ok: false, status: 502 };
+  const shown: CollectionFilm[] = [];
+  for (const value of films) {
+    const card = cardOf(value);
+    if (!card || card.mediaType !== 'movie' || !validTmdbId(card.tmdbId) || shown.some((film) => film.tmdbId === card.tmdbId)) continue;
+    const { releaseDate, released } = value as Record<string, unknown>;
+    const film: CollectionFilm = {
+      mediaType: card.mediaType,
+      tmdbId: card.tmdbId,
+      title: card.title,
+      year: card.year,
+      posterUrl: card.posterUrl,
+      state: card.state,
+      releaseDate: typeof releaseDate === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(releaseDate) ? releaseDate : null,
+      released: released === true,
+    };
+    if (card.hidden !== undefined) film.hidden = card.hidden;
+    shown.push(film);
+    if (shown.length === MAX_COLLECTION_FILMS) break;
+  }
+  return {
+    ok: true,
+    collection: {
+      id,
+      name: typeof name === 'string' ? name.slice(0, 300) : '',
+      overview: typeof overview === 'string' ? overview.slice(0, 2000) : '',
+      backdropUrl: typeof backdropUrl === 'string' && BACKDROP_URL.test(backdropUrl) ? backdropUrl : null,
+      films: shown,
+    },
+  };
 }
 
 /** `GET /requests`, read only for one title's failed seasons (0 for a movie): one call. */
@@ -482,7 +547,7 @@ function discoverCardOf(value: unknown): DiscoverCard | undefined {
 function titleOf(value: Record<string, unknown>, origin: string): Title | undefined {
   const card = cardOf(value);
   if (!card) return undefined;
-  const { overview, backdropUrl, rating, genres, runtime, play, seasons } = value;
+  const { overview, backdropUrl, rating, genres, runtime, play, seasons, collection: collectionValue } = value;
   const link = (play && typeof play === 'object' ? play : {}) as Record<string, unknown>;
   const itemId = typeof link.itemId === 'string' && ITEM_ID.test(link.itemId) && link.url === `${origin}/web/#/details?id=${link.itemId}` ? link.itemId : null;
   const shownSeasons: SeasonSummary[] = [];
@@ -515,5 +580,13 @@ function titleOf(value: Record<string, unknown>, origin: string): Title | undefi
     runtime: typeof runtime === 'number' && runtime > 0 ? Math.floor(runtime) : null,
     playItemId: itemId,
     seasons: shownSeasons,
+    ...(card.mediaType === 'movie' && Object.prototype.hasOwnProperty.call(value, 'collection') ? { collection: collectionLinkOf(collectionValue) } : {}),
   };
+}
+
+/** A Movie DTO's `collection`: its id and name, or null for none (or one that can't be linked to). */
+function collectionLinkOf(value: unknown): CollectionLink | null {
+  if (!value || typeof value !== 'object') return null;
+  const { id, name } = value as Record<string, unknown>;
+  return typeof id === 'number' && validTmdbId(id) && typeof name === 'string' && name ? { id, name: name.slice(0, 300) } : null;
 }

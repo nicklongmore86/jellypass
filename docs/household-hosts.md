@@ -172,15 +172,16 @@ and nowhere else (on the administrator host they do not exist). The
 
 | Method | Path | Answer |
 | --- | --- | --- |
-| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `5` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
+| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `6` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
 | `GET` | `/jellypass/app/v1/search?q=...&page=N` | A page of title cards. `q` is 1 to 100 characters; `page` 1 to 500, default 1. |
 | `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `trending-movies`, `trending-tv`, `popular-movies`, `popular-tv`, `new-movies` (films that opened in US theatres in the last 60 days), `upcoming` (upcoming movies), `upcoming-tv` (upcoming series), `top-movies` or `top-tv` (TMDB's top rated). |
 | `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
 | `GET` | `/jellypass/app/v1/discover/network/{id}?page=N` | A page of a service's popular series. Only the eight listed services (Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+, Peacock); any other ID is `400`. |
 | `GET` | `/jellypass/app/v1/discover/network/{id}/films?page=N` | A page of the films the service streams **in the US**, from TMDB's where-to-watch data (JustWatch). |
-| `GET` | `/jellypass/app/v1/discover/network/{id}/all?page=N` | The service's series and films mixed (film, series, …): Home's "Popular on" rows. |
+| `GET` | `/jellypass/app/v1/discover/network/{id}/all?page=N` | The service's series and films mixed (film, series, …): the "Popular on" rows of the web app's Discover page and the phone app's Home. |
 | `GET` | `/jellypass/app/v1/discover/studio/{id}?page=N` | A page of a listed studio's popular movies. |
-| `GET` | `/jellypass/app/v1/movie/{tmdbId}` | One movie. |
+| `GET` | `/jellypass/app/v1/movie/{tmdbId}` | One movie; since `apiVersion` 6 with `collection` (`{"id", "name"}` or `null`), the film series it belongs to. |
+| `GET` | `/jellypass/app/v1/collection/{id}` | One collection (a film series, since `apiVersion` 6), reached from a film's page: its name, images and films, each a movie card with the household state, its `releaseDate` and whether it is `released`. Films are asked for one "Get this" at a time (`POST /movie/{tmdbId}/get`), each counted against the budgets. |
 | `GET` | `/jellypass/app/v1/tv/{tmdbId}` | One series, with its seasons. |
 | `GET` | `/jellypass/app/v1/tv/{tmdbId}/season/{n}` | One season, with its episodes. |
 | `POST` | `/jellypass/app/v1/movie/{tmdbId}/get` | ["Get this"](#get-this) for a movie (empty body or `{}`): always `202 {"status":"accepted"}`. |
@@ -329,6 +330,29 @@ and `GET_THIS_WINDOW_SECONDS` (see the
 header, the whole seconds until the limit that refused it starts again, and the
 apps say "Too many tries. Try again in N minutes." (rounded up).
 
+**All missing seasons and collections.** A series page has **Get all missing
+seasons**: one press sends the same single call as Select all then Get this,
+for every season the household neither has nor asked for (it counts 1). A
+film's page links to its collection (since `apiVersion` 6: "Part of The …
+Collection"); the collection page lists every film with the household's state
+and ticks the released films the household can still get (films not out yet,
+and films the member marked Not interested, are shown, not ticked, and left
+out of **Get all missing films**; they can be ticked by hand). A film the
+household asked for that could not be got shows "We couldn't get this" and is
+not offered again. **Get all missing films** or **Get selected** sends one "Get
+this" per film, one after another, so each film counts 1 against the limits
+above (eight films are eight), is its own entry in My requests and in the
+administrators' Requests tab, and is cancelled on its own. When a call is
+refused part-way (a limit, say), the rest are not sent and the page says which
+films were asked for and which were not, with the wait. Films another household
+holds are handled as on their own pages, and nothing about that household
+shows. Collections are reached only from a film's page, not from search.
+
+> **Planned / not yet built:** "Get all missing seasons" requests only the
+> seasons that exist when it is pressed. A future version should let a member
+> follow a series, so each new season is requested automatically when it is
+> released. This is not implemented.
+
 **`GET /requests`** lists the household's own "Get this" titles, newest first
 (at most 200), from JellyPass's records only: `status` is `requested`
 (Requested), `ready` (Ready to watch, and only for a caller whose own Jellyfin
@@ -461,8 +485,10 @@ switched off (those answer the same fixed `404`).
   inside the installed app: its picker stores the session in the app's own
   storage, and Jellyfin web (also inside the installed app, whose scope is the
   whole household address) finds it there.
-- **Screens:** Home (Trending, Popular movies, Popular series and Upcoming
-  movies as scrolling rows), Search (as you type, with **Load more**), a movie
+- **Screens:** Home (links to Discover, Search and My requests), Discover
+  (Trending, Popular movies, Popular series, New movie releases, Upcoming and
+  each service's titles as scrolling rows, with an All | Movies | TV switch;
+  the old Home addresses `#/?kind=…` open it), Search (as you type, with **Load more**), a movie
   page, a series page with its seasons (each with its own state) and a season
   page with its episodes (**Get this** on each title or season that can be
   asked for, with a season picker on a series page), **My requests** (the

@@ -1,0 +1,72 @@
+{
+  "id": 900100,
+  "name": "Synthetic Collection",
+  "overview": "A synthetic film series.",
+  "posterUrl": "https://image.tmdb.org/t/p/w342/synthetic-poster_900100.jpg",
+  "backdropUrl": "https://image.tmdb.org/t/p/w780/synthetic-backdrop_900100.jpg",
+  "films": [
+    {
+      "mediaType": "movie",
+      "tmdbId": 900001,
+      "title": "Synthetic Movie One",
+      "year": 2020,
+      "overview": "A synthetic overview of Synthetic Movie One.",
+      "posterUrl": "https://image.tmdb.org/t/p/w342/synthetic-poster_900001.jpg",
+      "backdropUrl": "https://image.tmdb.org/t/p/w780/synthetic-backdrop_900001.jpg",
+      "rating": 7.4,
+      "state": "in_library",
+      "play": {
+        "itemId": "0123456789abcdef0123456789abcdef",
+        "url": "https://media.example.com/web/#/details?id=0123456789abcdef0123456789abcdef"
+      },
+      "hidden": false,
+      "releaseDate": "2020-05-01",
+      "released": true
+    },
+    {
+      "mediaType": "movie",
+      "tmdbId": 900003,
+      "title": "Synthetic Movie Three",
+      "year": 2024,
+      "overview": "A synthetic overview of Synthetic Movie Three.",
+      "posterUrl": "https://image.tmdb.org/t/p/w342/synthetic-poster_900003.jpg",
+      "backdropUrl": "https://image.tmdb.org/t/p/w780/synthetic-backdrop_900003.jpg",
+      "rating": 7.4,
+      "state": "get_this",
+      "play": null,
+      "hidden": false,
+      "releaseDate": "2024-02-02",
+      "released": true
+    },
+    {
+      "mediaType": "movie",
+      "tmdbId": 900005,
+      "title": "Synthetic Movie Five",
+      "year": 2999,
+      "overview": "A synthetic overview of Synthetic Movie Five.",
+      "posterUrl": "https://image.tmdb.org/t/p/w342/synthetic-poster_900005.jpg",
+      "backdropUrl": "https://image.tmdb.org/t/p/w780/synthetic-backdrop_900005.jpg",
+      "rating": 7.4,
+      "state": "get_this",
+      "play": null,
+      "hidden": false,
+      "releaseDate": "2999-12-31",
+      "released": false
+    },
+    {
+      "mediaType": "movie",
+      "tmdbId": 900006,
+      "title": "Synthetic Movie Six",
+      "year": null,
+      "overview": "A synthetic overview of Synthetic Movie Six.",
+      "posterUrl": null,
+      "backdropUrl": null,
+      "rating": null,
+      "state": "get_this",
+      "play": null,
+      "hidden": false,
+      "releaseDate": null,
+      "released": false
+    }
+  ]
+}

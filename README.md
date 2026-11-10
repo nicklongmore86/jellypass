@@ -42,7 +42,9 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
   requests are refused.
 - **Apps for members.** An app for iPhone, iPad and Android (invitation-only for
   now), an installable web app on every household address, and an optional TV add-on for Jellyfin web:
-  browse, **Get this** (a Seerr request made as the member) and **My requests**.
+  browse, **Get this** (a Seerr request made as the member), **Get all missing
+  seasons** of a series, a film's whole collection (one request per film), and
+  **My requests**. See [Get this](docs/household-hosts.md#get-this).
 - **Administrator UI.** Signed in with a Jellyfin administrator account:
   households, grants, bulk access for existing titles (up to 500 at a time),
   request approval, and a searchable catalogue of your library.
@@ -194,7 +196,9 @@ from TMDB's image server, `image.tmdb.org`, as the
   App Store or Google Play release yet. Needs JellyPass 3.2.0 or
   later; Cancel request needs 3.5.0 or later.
 - **TV add-on, experimental** (`TV_ADDON_ENABLED`, per-household admin switches):
-  Discover rows, title pages and My requests inside Jellyfin web on the listed
+  a Discover page (from a compass button in Jellyfin's header, with a link to
+  My requests), a Discover row on Jellyfin's Search page, title pages and My
+  requests inside Jellyfin web, and nothing on Jellyfin's Home, on the listed
   households' addresses ([design](docs/tv-addon.md)). A Samsung (Tizen) build is
   in `tv/samsung/` for advanced users.
 

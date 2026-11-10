@@ -213,6 +213,8 @@ export const DISCOVER_TEXT = {
   filters: { all: 'All', movies: 'Movies', tv: 'TV' } as Readonly<Record<DiscoverFilter, string>>,
   hideHeld: 'New only',
   hideHeldName: "New only: show only titles you don't have or haven't requested",
+  /** The link to My requests, at the end of the chips' row. */
+  requests: 'My requests',
   studios: 'Studios',
   nothing: 'Nothing to show here.',
   nothingLeft: "You already have everything here.",

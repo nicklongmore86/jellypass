@@ -1,6 +1,8 @@
 import { ABOUT_PATH, renderAbout } from './about.js';
 import { hidingKnown } from './api.js';
 import { Asked } from './asked.js';
+import { CollectionPage } from './collection.js';
+import { COLLECTION_PATH } from './collection-model.js';
 import { DiscoverData } from './discover-data.js';
 import { DiscoverEntry } from './discover-entry.js';
 import { DISCOVER_HASH, DISCOVER_PATH, LIST_PATH, SERVICE_PATH, STUDIO_PATH } from './discover-model.js';
@@ -10,11 +12,10 @@ import { HiddenPage } from './hidden-page.js';
 import { SourcePage } from './discover-source.js';
 import { DiscoverPage } from './discover.js';
 import { HistoryTrail } from './history-trail.js';
-import { isHomeShown, isSearchShown } from './jellyfin-web.js';
+import { isSearchShown } from './jellyfin-web.js';
 import { PageHost } from './page-host.js';
 import { RequestsPage } from './requests.js';
-import { REQUESTS_HASH, REQUESTS_PATH } from './requests-model.js';
-import { HomeRow } from './row.js';
+import { REQUESTS_PATH } from './requests-model.js';
 import { SearchRow } from './search.js';
 import { installSearchCap } from './search-cap.js';
 import { TitleCache } from './titles.js';
@@ -23,16 +24,16 @@ import { TITLE_PATH, TitlePage, titleHash } from './title.js';
 
 /**
  * The JellyPass TV add-on's entry (docs/tv-addon.md): one classic script that the household gateway adds to Jellyfin
- * web's page, built by scripts/build-tv.mjs to ES2017 for the TVs' Chromium 63. It waits for Jellyfin web's Home and adds
- * the JellyPass row to it, and one to Jellyfin web's Search page when something is searched for; a card opens the
- * JellyPass title page, a page of Jellyfin web's own (page-host.ts); a compass button in Jellyfin's header opens the Discover page. It handles no key. It calls only the household app API, on the origin this script was loaded from. On a TV it also lowers the limits of Jellyfin web's own search requests (search-cap.ts).
+ * web's page, built by scripts/build-tv.mjs to ES2017 for the TVs' Chromium 63. It adds a JellyPass row to Jellyfin web's
+ * Search page when something is searched for, and nothing to Home; a card opens the JellyPass title page, a page of
+ * Jellyfin web's own (page-host.ts); a compass button in Jellyfin's header opens the Discover page, which links to My requests. It handles no key. It calls only the household app API, on the origin this script was loaded from. On a TV it also lowers the limits of Jellyfin web's own search requests (search-cap.ts).
  */
 
 /** The stylesheet's built (fingerprinted) name, next to this script; written in by scripts/build-tv.mjs. */
 declare const __JELLYPASS_TV_CSS__: string;
 
 const MARKER = 'data-jellypass-tv';
-/** How long page changes are gathered before the row checks Home again, in milliseconds. */
+/** How long page changes are gathered before the pages and the Search row are checked again, in milliseconds. */
 const SETTLE_MS = 50;
 
 function start(): void {
@@ -58,33 +59,33 @@ function start(): void {
   document.head.appendChild(stylesheet);
 
   const api = { get ApiClient() { return (window as unknown as { ApiClient?: unknown }).ApiClient; }, fetch: (url: string, init: RequestInit) => window.fetch(url, init) };
-  // What the member just asked for: in memory only, shared by the row and the title page.
+  // What the member just asked for: in memory only, shared by the pages and the Search row.
   const asked = new Asked(() => performance.now(), () => Date.now(), () => {
-    safely(() => row.overlayExpired());
     safely(() => search.overlayChanged());
     safely(() => title.overlayExpired());
+    safely(() => collection.overlayExpired());
     safely(() => discover.overlayChanged());
     safely(() => sources.overlayChanged());
   });
   const navigate = (hash: string) => {
     location.hash = hash;
   };
-  // A member hiding or unhiding a title (from its page, or the Hidden view) changes what the row, the Discover and service pages and the Search row hold, from what they hold: no call.
+  // A member hiding or unhiding a title (from its page, or the Hidden view) changes what the Discover and service pages and the Search row hold, from what they hold: no call.
   const hiddenChanged = () => {
-    safely(() => row.hiddenChanged());
     safely(() => search.overlayChanged());
     safely(() => discover.overlayChanged());
     safely(() => sources.overlayChanged());
   };
-  const title = new TitlePage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, hiddenChanged, navigate });
-  const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)), () => navigate(REQUESTS_HASH));
-  // A cancel in My requests puts the title back to Get this: Home's row and the Search row draw from the same overlay.
+  const title = new TitlePage(document, api, base.origin, asked, { changed: () => { safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, hiddenChanged, navigate });
+  // A film's collection, reached from its title page (a server with apiVersion 6 names it).
+  const collection: CollectionPage = new CollectionPage(document, api, base.origin, asked, { changed: () => { safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); } });
+  // A cancel in My requests puts the title back to Get this: the Discover and service pages and the Search row draw from the same overlay.
   // The names My requests and its Hidden view read from titles are kept for both (ten minutes, this sign-in).
   const names = new TitleCache(() => performance.now(), () => Date.now());
-  const requests = new RequestsPage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, navigate }, () => performance.now(), () => Date.now(), names);
+  const requests = new RequestsPage(document, api, base.origin, asked, { changed: () => { safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, navigate }, () => performance.now(), () => Date.now(), names);
   const hiddenPage = new HiddenPage(document, api, base.origin, asked, names, {
     hiddenChanged,
-    changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); },
+    changed: () => { safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); },
     navigate,
   });
   // The Discover page's answers (kept ten minutes, in memory) are timed on the monotonic clock, and the wall clock catches a long sleep.
@@ -114,6 +115,7 @@ function start(): void {
   }, () => discoverWatch.snapshot());
   host.register(ABOUT_PATH, renderAbout);
   host.register(TITLE_PATH, (context) => title.render(context));
+  host.register(COLLECTION_PATH, (context) => collection.render(context));
   host.register(REQUESTS_PATH, (context) => requests.render(context));
   // The Hidden view only once an answer has shown that the server has hiding (a card or title with its flag): before
   // that (an older server, or nothing read yet) its address is My requests, and /hidden is never asked.
@@ -130,12 +132,12 @@ function start(): void {
       safely(trailSession);
       safely(() => host.update());
       safely(() => title.update());
+      safely(() => collection.update());
       safely(() => requests.update());
       safely(() => hiddenPage.update());
       safely(() => discover.update());
       safely(() => sources.update());
       safely(() => discoverEntry.update());
-      safely(() => row.update());
       safely(() => search.update());
     }, SETTLE_MS);
   };
@@ -143,7 +145,6 @@ function start(): void {
   // Every document listener is a capturing, passive one: it observes, and can neither stop nor prevent what Jellyfin web does.
   const listen = (type: string, run: (event: Event) => void) => document.addEventListener(type, run, { capture: true, passive: true });
   listen('viewshow', (event) => {
-    if (isHomeShown(event)) safely(() => row.homeShown());
     if (isSearchShown(event)) safely(() => search.shown());
   });
   // The search field being typed in changes no element, so the page's changes alone would not show it.
@@ -152,7 +153,6 @@ function start(): void {
   for (const type of ['keydown', 'pointerdown', 'mousedown', 'touchstart']) {
     listen(type, () => {
       safely(() => host.userInput());
-      safely(() => row.userInput());
       safely(() => search.userInput());
     });
   }
@@ -165,7 +165,6 @@ function start(): void {
   });
   safely(() => host.update());
   safely(() => discoverEntry.update());
-  row.update();
   search.update();
 }
 

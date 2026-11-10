@@ -3,7 +3,7 @@ import { HIDDEN_TEXT } from './hidden-model.js';
 import { JELLYFIN_CLASSES, listClasses } from './jellyfin-web.js';
 
 /**
- * The "Discover" section both rows draw, one component so Home and Search look and move alike: a Jellyfin web section
+ * The "Discover" section the Search row draws (search.ts; Home has no JellyPass row): a Jellyfin web section
  * (`verticalSection`) with its heading, and a strip of its own portrait cards, as `cardBuilder` writes them. Everything
  * shown is a fixed string or a DTO field set with `textContent`; no HTML is parsed, and a poster is only ever a TMDB
  * URL (api.ts checks it). It runs no navigation of its own: Jellyfin web's focus manager moves between the cards.
@@ -19,11 +19,7 @@ export const STATE_LABELS: Record<HouseholdState, string> = {
 
 export const ROW_TEXT = {
   heading: 'Discover',
-  requests: 'My requests',
 } as const;
-
-/** On the strip's link card (Home's "My requests"), which is not a title. */
-export const LINK_ATTRIBUTE = 'data-jellypass-tv-link';
 
 /** A drawn card, with what its status is drawn from. */
 export interface Drawn {
@@ -40,8 +36,6 @@ export interface DrawOptions {
   hidden?: (card: Card) => boolean;
   /** A card was chosen. */
   choose: (card: Card) => void;
-  /** A last card in the strip that is a link, not a title (Home's "My requests"): not one of the drawn cards. */
-  link?: { label: string; open: () => void };
 }
 
 /** A card's accessible name: the title, the year and the status, said once. */
@@ -97,21 +91,6 @@ export function drawCards(document: Document, cards: Card[], options: DrawOption
     button.appendChild(box);
     button.addEventListener('click', () => options.choose(card));
     drawn.push({ card, button });
-    list.appendChild(button);
-  }
-  if (options.link) {
-    const { label, open } = options.link;
-    const button = element('button', `${JELLYFIN_CLASSES.card} jellypass-tv-card jellypass-tv-card-link${tv ? ` ${JELLYFIN_CLASSES.cardTv}` : ''}`) as HTMLButtonElement;
-    button.type = 'button';
-    button.setAttribute(LINK_ATTRIBUTE, '');
-    button.setAttribute('aria-label', label);
-    const box = element('div', 'cardBox cardBox-bottompadded');
-    const frame = element('div', 'cardScalable');
-    frame.appendChild(element('div', 'cardPadder cardPadder-overflowPortrait'));
-    frame.appendChild(element('div', 'cardImageContainer coveredImage cardContent jellypass-tv-card-link-face', label));
-    box.appendChild(frame);
-    button.appendChild(box);
-    button.addEventListener('click', open);
     list.appendChild(button);
   }
   scroller.appendChild(list);

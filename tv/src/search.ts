@@ -6,8 +6,8 @@ import { SessionWatch } from './session-watch.js';
 
 /**
  * The JellyPass row on Jellyfin web's Search page: what the member searched for that can be had, from the app API's
- * Search answer, drawn as one "Discover" section below Jellyfin's own results, in the same cards as the Home row
- * (cards.ts). Only titles that are Available to get are drawn (as on Home: one in the member's library is in Jellyfin's
+ * Search answer, drawn as one "Discover" section below Jellyfin's own results, in the add-on's own row cards
+ * (cards.ts). Only titles that are Available to get are drawn (one in the member's library is in Jellyfin's
  * own results, one Requested belongs to My requests, one that can't be requested is no use); if none is left, or there
  * is no query, nothing is drawn.
  *

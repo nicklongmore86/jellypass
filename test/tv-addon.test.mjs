@@ -1,7 +1,8 @@
 // The TV add-on (docs/tv-addon.md): its build (one ES2017 classic script and a stylesheet for the TVs' Chromium 63), how
 // the household gateway adds it to Jellyfin web's page (only on the households it is on for, never on the admin host,
-// never on anything but that page, once), how it serves its files, and the row itself, run from the built bundle in a
-// simulated Jellyfin web (linkedom) against the real app API, and the title page with "Get this" it opens on the page host.
+// never on anything but that page, once), how it serves its files, and what it draws (nothing on Home; the Search row, the
+// Discover page and the pages it opens on the page host, the title page with "Get this" among them), run from the built
+// bundle in a simulated Jellyfin web (linkedom) against the real app API.
 // Real-TV
 // checks are listed in docs/tv-addon.md.
 import assert from 'node:assert/strict';
@@ -54,8 +55,11 @@ let LIVE_FOCUS;
   Object.defineProperty(Object.getPrototypeOf(parseHTML('<html><body></body></html>').document), 'activeElement', { configurable: true, get() { return live(this) ?? this.body ?? null; } });
   LIVE_FOCUS = live;
 }
-/** Whether a title is in the row: it is there only while Available to get (strings, never the card). */
-const onRow = (page, tmdbId) => (page.card(tmdbId) ? 'Available to get' : 'not in the row');
+/**
+ * Whether a title is on the Discover page with "New only" on (as it opens): there only while Available to get or Can't get,
+ * so for a title the household can get, whether it is still Available to get (strings, never the card).
+ */
+const onDiscover = (page, tmdbId) => (page.card(tmdbId) ? 'Available to get' : 'not on Discover');
 const webCalls = (app) => app.jellyfin.requests.filter((request) => /^\/(?:emby\/)?(?:web|jellypass\/tv)\b/i.test(request.pathname)).map((request) => `${request.method} ${request.path}`);
 
 /** The objects the page's globals hang off (a reference through one, or through a name bound to one, is a reference to the global). */
@@ -430,6 +434,8 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
   const held = new Map();
   const storage = new Proxy({}, { get: (_target, name) => (...args) => stored.push([name, ...args]) });
   const location = { href: `https://${host}/web/${startHash}`, origin: `https://${host}`, hash: startHash };
+  /** The address Jellyfin web's router last showed a page for. */
+  let shownHash = startHash;
   const windowListeners = [];
   /** The addresses the member came from, newest last: Jellyfin web's history. */
   const trail = [];
@@ -541,6 +547,7 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
     },
     /** Jellyfin web's router going to `hash`: the address changes and `hashchange` reaches the window's listeners. */
     goTo(hash) {
+      shownHash = hash;
       location.hash = hash;
       location.href = `https://${host}/web/${hash}`;
       for (const [type, listener] of windowListeners) if (type === 'hashchange') listener(new Event('hashchange'));
@@ -550,21 +557,23 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
     /** Every call as made, for comparing two runs: address, method, body and headers. */
     trace: (from = 0) => requests.slice(from).map(({ url, init }) => JSON.stringify({ url, method: init.method ?? 'GET', body: init.body ?? null, credentials: init.credentials ?? null, headers: { ...init.headers } })),
     posts: () => requests.filter((request) => request.init.method === 'POST'),
-    card: (tmdbId) => document.querySelector(`[data-jellypass-tv-row] button[data-tmdb-id="${tmdbId}"]`),
+    /** The Discover page's first card for a title (the first row it is in: Trending, for the world's titles). */
+    card: (tmdbId) => document.querySelector(`[data-jellypass-tv-discover] .jellypass-tv-discover-row button[data-tmdb-id="${tmdbId}"]`),
     view: () => document.querySelector('[data-jellypass-tv-title]'),
     focused: () => LIVE_FOCUS(document),
     /** A key pressed on what has focus (or the page), as a remote sends it: `keyCode` only, as Chromium 63 has it. */
     key(keyCode) {
       const event = new Event('keydown', { bubbles: true, cancelable: true });
       Object.defineProperty(event, 'keyCode', { value: keyCode });
-      (FOCUSED.get(document) ?? document.body).dispatchEvent(event);
+      // On what has focus, or the page's body when that has left the page (as a browser's focus does).
+      (LIVE_FOCUS(document) ?? document.body).dispatchEvent(event);
       return event;
     },
     click: (element) => element.dispatchEvent(new Event('click')),
     /** A pointer (or touch) press on what has focus (or the page). */
     press(type) {
       const event = new Event(type, { bubbles: true, cancelable: true });
-      (FOCUSED.get(document) ?? document.body).dispatchEvent(event);
+      (LIVE_FOCUS(document) ?? document.body).dispatchEvent(event);
       return event;
     },
     /** Jellyfin web laying out Home's sections (its home tab does this on first show and on a settings change). */
@@ -576,10 +585,17 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
     shown() {
       document.getElementById('indexPage').dispatchEvent(new CustomEvent('viewshow', { bubbles: true, detail: { params: {} } }));
     },
-    rows: () => [...document.querySelectorAll('[data-jellypass-tv-row]')],
-    cards: () => [...document.querySelectorAll('[data-jellypass-tv-row] button[data-tmdb-id]')],
-    /** The Discover row's last card, "My requests" (not a title). */
-    requestsLink: () => document.querySelector('[data-jellypass-tv-row] [data-jellypass-tv-link]'),
+    /** The Discover page's rows (the add-on draws none on Home). */
+    rows: () => [...document.querySelectorAll('[data-jellypass-tv-discover] .jellypass-tv-discover-row')],
+    /** The cards of the Discover page's first row (Trending under All). */
+    cards: () => {
+      const first = document.querySelector('[data-jellypass-tv-discover] .jellypass-tv-discover-row');
+      return first ? [...first.querySelectorAll('button[data-tmdb-id]')] : [];
+    },
+    /** The Discover page's "My requests" link, beside its chips. */
+    requestsLink: () => document.querySelector('[data-jellypass-tv-discover] [data-jellypass-tv-discover-requests]'),
+    /** Anything the add-on put on Jellyfin web's Home (there is nothing since the Home row was removed). */
+    homeAdded: () => [...document.querySelectorAll('#indexPage [data-jellypass-tv-row], #indexPage [class*="jellypass-tv"]')],
     /** Every call answered and every page change seen (the add-on gathers changes for 50 ms). */
     async settled() {
       for (let round = 0; round < 3; round += 1) {
@@ -593,8 +609,13 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
    * Home laid out again and shown, or some other page, with Home hidden).
    */
   const show = (hash) => {
+    // From one JellyPass address to another, Jellyfin web's router keeps the fallback page it is showing (both are addresses
+    // it has no page for), as the page host's router test has it: only the address changes.
+    const keep = /^#\/jellypass\//.test(hash) && /^#\/jellypass\//.test(shownHash) && document.querySelector('[data-title]');
+    shownHash = hash;
     location.href = `https://${host}/web/${hash}`;
     for (const [type, listener] of windowListeners) if (type === 'hashchange') listener(new Event('hashchange'));
+    if (keep) return;
     leaveFallback(document);
     const index = document.getElementById('indexPage');
     if (/^#\/home/.test(hash)) {
@@ -616,289 +637,69 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
 }
 
 /**
- * Home laid out with Trending's answer changed by `change` (the cards as the API gave them); `override` answers any other
+ * Jellyfin web under its header, Home laid out, then the Discover page opened from it (as its compass button does), every
+ * call answered. `override` answers any call, as `openJellyfinWeb`'s does.
+ */
+const atDiscover = async (t, app, options) => {
+  const page = await openJellyfinWeb(t, app, options);
+  page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+  page.home();
+  await page.settled();
+  page.route('#/jellypass/discover');
+  await page.settled();
+  assert.ok(page.document.querySelector('[data-jellypass-tv-discover]'), 'the Discover page is open');
+  return page;
+};
+
+/**
+ * The Discover page with Trending's answer changed by `change` (the cards as the API gave them); `override` answers any other
  * call, as `openJellyfinWeb`'s does.
  */
 const withTrending = async (t, app, change, override) => {
   const real = (await app.get('/jellypass/app/v1/discover/trending')).json();
   const body = JSON.stringify({ ...real, results: change(real.results) });
-  const page = await openJellyfinWeb(t, app, { override: (pathname, init) => (pathname === '/jellypass/app/v1/discover/trending' ? { status: 200, body } : override?.(pathname, init)) });
-  page.home();
-  await page.settled();
-  return page;
+  return atDiscover(t, app, { override: (pathname, init) => (pathname === '/jellypass/app/v1/discover/trending' ? { status: 200, body } : override?.(pathname, init)) });
 };
 
-describe('TV add-on: the Home row', { timeout: 60_000 }, () => {
-  it('waits for Home, then adds one JellyPass row after Home\'s first section with the household\'s Trending, in one call', async (t) => {
+describe('TV add-on: Home', { timeout: 60_000 }, () => {
+  it('adds nothing to Jellyfin web\'s Home and asks nothing there, however often Home is laid out or shown, signed in or not', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
-    const page = await openJellyfinWeb(t, app);
-    await page.settled();
-    assert.deepEqual(page.requests, [], 'asked before Home was laid out');
-    page.home();
-    await page.settled();
-    assert.deepEqual(page.calls(), BUDGET.screens['tv-home-row'].atOnce);
-    assert.equal(page.requests.length, BUDGET.screens['tv-home-row'].calls);
-    const [request] = page.requests;
-    assert.equal(request.url, 'https://jelly-grove.example.test/jellypass/app/v1/discover/trending');
-    assert.equal(request.init.credentials, 'omit');
-    assert.deepEqual({ ...request.init.headers }, { Accept: 'application/json', Authorization: `MediaBrowser Token="${TOKENS[ALICE]}"` });
-
-    const rows = page.rows();
-    assert.equal(rows.length, 1);
-    const [row] = rows;
-    assert.ok(row.previousElementSibling.classList.contains('section0'), 'after Home\'s first section');
-    assert.ok(row.classList.contains('verticalSection'));
-    assert.equal(row.querySelector('h2.sectionTitle').textContent, 'Discover');
-    // The household's own view, exactly as the API answers it, but only what is Available to get: Synthetic Movie Three
-    // is `in_library` and is left out.
-    const answer = (await app.get('/jellypass/app/v1/discover/trending')).json();
-    assert.ok(answer.results.some((card) => card.state === 'in_library'), 'the world has a title in the library');
-    const shown = answer.results.slice(0, 20).filter((card) => card.state === 'get_this');
-    assert.ok(shown.length > 0);
-    assert.deepEqual(page.cards().map((card) => [card.querySelector('.jellypass-tv-card-title').textContent, card.getAttribute('aria-label').split(', ').pop()]), shown.map((card) => [card.title, 'Available to get']));
-    assert.equal(page.document.querySelectorAll('[data-jellypass-tv-row] .jellypass-tv-card-status').length, 0, 'no badge');
-    assert.deepEqual(page.cards().map((card) => card.querySelector('img')?.getAttribute('src') ?? null), shown.map((card) => card.posterUrl));
-    // Remote-control focus: plain buttons in a row Jellyfin web's focus manager keeps Left and Right within.
-    assert.ok(row.querySelector('.jellypass-tv-row-list').classList.contains('focuscontainer-x'));
-    for (const card of page.cards()) {
-      assert.equal(card.tagName, 'BUTTON');
-      assert.equal(card.getAttribute('type'), 'button');
-      assert.equal(card.getAttribute('tabindex'), null);
-      assert.ok(card.getAttribute('aria-label').startsWith(card.querySelector('.jellypass-tv-card-title').textContent));
+    assert.equal(BUDGET.screens['tv-home-row'], undefined, 'no Home budget: Home costs no call');
+    for (const user of [ALICE, null]) {
+      const page = await openJellyfinWeb(t, app, { user });
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.home();
+      await page.settled();
+      page.shown();
+      page.clock.now += 120_000;
+      page.home();
+      page.shown();
+      await page.settled();
+      assert.deepEqual(page.requests, [], `${user ?? 'signed out'}: no call at Home`);
+      assert.deepEqual(page.homeAdded(), [], 'nothing of the add-on\'s on Home');
+      assert.equal(page.document.querySelectorAll('#homeTab .verticalSection').length, 3, 'Home itself is untouched');
+      // Its stylesheet, next to the script, is still added once (the header button, Search row and pages use it).
+      assert.deepEqual([...page.document.querySelectorAll('link[data-jellypass-tv]')].map((link) => link.getAttribute('href')), [`https://jelly-grove.example.test/jellypass/tv/${STYLESHEET}`]);
     }
-    // Its stylesheet, next to the script.
-    const links = [...page.document.querySelectorAll('link[data-jellypass-tv]')];
-    assert.deepEqual(links.map((link) => link.getAttribute('href')), [`https://jelly-grove.example.test/jellypass/tv/${STYLESHEET}`]);
   });
 
-  it('shows only Available to get: what is in the caller\'s library or Requested is left out, with no badge, and nothing but the caller\'s own answer decides it', async (t) => {
-    const app = await startApp(t, webWorld(), tvOn());
-    const real = (await app.get('/jellypass/app/v1/discover/trending')).json().results;
-    const library = real.filter((card) => card.state === 'in_library').map((card) => card.title);
-    assert.ok(library.length > 0 && real.length > library.length + 1);
-    // The first card is Requested for the caller: it is not in the row, nor is the one in the library.
-    const requested = real[0].title;
-    const page = await withTrending(t, app, (results) => results.map((card, index) => (index === 0 ? { ...card, state: 'requested' } : card)));
-    const titles = page.cards().map((card) => card.querySelector('.jellypass-tv-card-title').textContent);
-    assert.deepEqual(titles, real.slice(1).filter((card) => card.state === 'get_this').map((card) => card.title));
-    assert.ok(titles.length > 0 && !titles.includes(requested), 'Requested is not in the row');
-    for (const title of library) assert.ok(!titles.includes(title), `${title} is in the library, so not in the row`);
-    assert.equal(page.document.querySelectorAll('.jellypass-tv-card-status').length, 0, 'no badge');
-    assert.equal(page.requests.length, 1, 'no second page is asked for');
-    // Jellyfin web's own card markup, so its classes size, type and focus them.
-    for (const card of page.cards()) {
-      assert.ok(['card', 'overflowPortraitCard', 'card-hoverable'].every((name) => card.classList.contains(name)), 'card classes');
-      assert.ok(card.querySelector('.cardBox .cardScalable .cardPadder-overflowPortrait') && card.querySelector('.cardScalable .cardImageContainer'));
-      assert.ok(card.querySelector('.cardText.cardText-first') && card.querySelector('.cardText.cardText-secondary'));
-    }
-    // The same cards whatever other households hold: the filter reads only the caller's own `state`.
-    const labels = async (state) => {
-      const other = await openJellyfinWeb(t, await startApp(t, Object.assign(state, { webPage: {} }), tvOn()));
-      other.home();
-      await other.settled();
-      return other.cards().map((card) => card.getAttribute('aria-label'));
-    };
-    const baseline = await labels(world());
-    assert.ok(baseline.length > titles.length, 'what the caller has Requested in the baseline answer is not counted');
-    assert.deepEqual(baseline.map((label) => label.split(', ').pop()), baseline.map(() => 'Available to get'));
-    for (const [name, state] of Object.entries(otherHouseholdWorlds())) assert.deepEqual(await labels(state), baseline, name);
-  });
-
-  it('draws the TV layout\'s focus ring and zoom classes only on a TV, and no row at all when nothing is left to show', async (t) => {
-    const app = await startApp(t, webWorld(), tvOn());
-    const desktop = await withTrending(t, app, (results) => results);
-    assert.ok(desktop.cards().every((card) => !card.classList.contains('show-focus') && !card.classList.contains('show-animation')));
-    const tv = await openJellyfinWeb(t, app);
-    tv.document.documentElement.classList.add('layout-tv');
-    tv.home();
-    await tv.settled();
-    assert.ok(tv.cards().length > 0 && tv.cards().every((card) => card.classList.contains('show-focus') && card.classList.contains('show-animation')));
-    // Jellyfin web sizes a row's cards on a TV by `.itemsContainer-tv > .overflowPortraitCard` (card.scss): the list has the class there only.
-    for (const link of [desktop.rows()[0], tv.rows()[0]]) assert.equal(link.querySelector('.jellypass-tv-row-list').classList.contains('itemsContainer-tv'), link === tv.rows()[0]);
-    assert.ok(tv.cards().every((card) => card.parentNode.classList.contains('itemsContainer-tv') && card.classList.contains('overflowPortraitCard') && card.getAttribute('style') === null));
-    // Nothing left to show: no title cards, no second call, and only the "My requests" card in a small row of the same look.
-    const empty = await withTrending(t, app, (results) => results.map((card, index) => ({ ...card, state: index % 2 ? 'requested' : 'in_library' })));
-    assert.deepEqual([empty.rows().length, empty.requests.length, empty.cards().length], [1, 1, 0]);
-    assert.equal(empty.document.querySelectorAll('.verticalSection').length, 4, 'Home itself is untouched, with the one row added');
-  });
-
-  describe('the fallback row (only the My requests card)', () => {
-    const links = (page) => [...page.document.querySelectorAll('[data-jellypass-tv-link]')];
-    const sameLook = (page) => page.rows()[0].className;
-
-    it('is drawn, with the same look and place, when nothing is left to get, and nothing is asked for it', async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
-      const full = await withTrending(t, app, (results) => results);
-      const empty = await withTrending(t, app, () => []);
-      assert.equal(empty.rows().length, 1);
-      assert.equal(sameLook(empty), sameLook(full));
-      assert.equal(links(empty).length, 1);
-      assert.equal(empty.cards().length, 0);
-      assert.equal(empty.rows()[0].previousElementSibling === empty.document.querySelector('.verticalSection.section0'), true, 'after Home\'s first section, as the Discover row is');
-      assert.equal(links(empty)[0].tagName, 'BUTTON');
-      assert.equal(links(empty)[0].getAttribute('aria-label'), 'My requests');
-      assert.equal(empty.requests.length, BUDGET.screens['tv-home-row'].calls, 'the budget is unchanged: one call, the Discover row\'s');
-      // Choosing it opens the page, as the Discover row's end card does.
-      const from = empty.location.hash;
-      empty.click(links(empty)[0]);
-      assert.equal(empty.location.hash, '#/jellypass/requests');
-      assert.notEqual(empty.location.hash, from);
-    });
-
-    it('is drawn when the Discover row\'s load failed, and the next Home visit within a minute asks nothing', async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
-      const page = await openJellyfinWeb(t, app, { override: (pathname) => (pathname === '/jellypass/app/v1/discover/trending' ? { status: 500, body: '{}' } : undefined) });
-      page.home();
-      await page.settled();
-      assert.deepEqual([page.rows().length, links(page).length, page.cards().length, page.requests.length], [1, 1, 0, 1]);
-      page.home();
-      await page.settled();
-      assert.deepEqual([page.rows().length, page.requests.length], [1, 1]);
-    });
-
-    it('is never drawn with the Discover row: its own end card stays, and there is one row and one link', async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
-      const page = await withTrending(t, app, (results) => results);
-      assert.deepEqual([page.rows().length, links(page).length], [1, 1]);
-      assert.ok(page.cards().length > 0);
-    });
-
-    it('becomes the Discover row\'s end card and back as titles are asked for or run out, without a call', async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
-      const page = await withTrending(t, app, (results) => results.slice(0, 1).map((card) => ({ ...card, state: 'get_this' })));
-      assert.deepEqual([page.cards().length, links(page).length], [1, 1]);
-      const calls = page.requests.length;
-      page.session.token = null;
-      page.home();
-      await page.settled();
-      assert.deepEqual([page.rows().length, links(page).length], [0, 0], 'signed out: nothing left behind');
-      assert.equal(page.requests.length, calls);
-    });
-
-    it('is drawn for no one signed out, nor on another member, and nothing is left behind', async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
-      const page = await withTrending(t, app, () => []);
-      assert.equal(page.rows().length, 1);
-      page.session.user = ANN;
-      page.session.token = TOKENS[ANN];
-      page.home();
-      await page.settled();
-      assert.equal(page.rows().length <= 1, true, 'never two rows');
-      page.session.token = null;
-      page.session.user = null;
-      page.home();
-      await page.settled();
-      assert.deepEqual([page.rows().length, links(page).length], [0, 0]);
-    });
-
-    it('is not drawn, and asks nothing, until Jellyfin web\'s Home is laid out as expected', async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
-      const page = await openJellyfinWeb(t, app, { override: (pathname) => (pathname === '/jellypass/app/v1/discover/trending' ? { status: 200, body: JSON.stringify({ results: [] }) } : undefined) });
-      await page.settled();
-      assert.deepEqual([page.rows().length, links(page).length, page.requests.length], [0, 0, 0]);
-    });
-  });
-
-  it('keeps within its budget: Home redrawn or shown again within a minute asks nothing; shown again after one, it asks once', async (t) => {
-    const app = await startApp(t, webWorld(), tvOn());
-    const page = await openJellyfinWeb(t, app);
-    page.home();
-    await page.settled();
-    assert.equal(page.requests.length, 1);
-    page.home();
-    await page.settled();
-    assert.equal(page.rows().length, 1, 'put back once Jellyfin web redrew Home');
-    page.shown();
-    page.clock.now += 59_000;
-    page.shown();
-    await page.settled();
-    assert.equal(page.requests.length, 1);
-    // Staying on Home asks nothing, however the page changes.
-    page.clock.now += 120_000;
-    page.document.querySelector('.section1').appendChild(page.document.createElement('div'));
-    await page.settled();
-    assert.equal(page.requests.length, 1);
-    page.shown();
-    await page.settled();
-    assert.deepEqual(page.calls(1), BUDGET.screens['tv-home-row'].atOnce);
-    assert.equal(page.rows().length, 1);
-  });
-
-  it('draws only the household\'s own view: the same row whatever other households hold or asked for', async (t) => {
-    const snapshot = async (state) => {
-      const app = await startApp(t, Object.assign(state, { webPage: {} }), tvOn());
-      const page = await openJellyfinWeb(t, app);
-      page.home();
-      await page.settled();
-      const [row] = page.rows();
-      assertNoCanaries(row.outerHTML, 'the row shows Seerr data planted as a canary');
-      return row.outerHTML;
-    };
-    const baseline = await snapshot(world());
-    for (const [name, state] of Object.entries(otherHouseholdWorlds())) assert.ok(await snapshot(state) === baseline, name);
-  });
-
-  it('draws nothing and asks nothing when no one is signed in, Jellyfin web is signed in elsewhere, or Home is not shown', async (t) => {
-    const app = await startApp(t, webWorld(), tvOn());
-    const signedOut = await openJellyfinWeb(t, app, { user: null });
-    signedOut.home();
-    await signedOut.settled();
-    const elsewhere = await openJellyfinWeb(t, app, { serverAddress: 'https://jelly-mill.example.test' });
-    elsewhere.home();
-    await elsewhere.settled();
-    const hidden = await openJellyfinWeb(t, app);
-    hidden.document.getElementById('indexPage').classList.add('hide');
-    hidden.home();
-    await hidden.settled();
-    for (const page of [signedOut, elsewhere, hidden]) {
-      assert.deepEqual([page.requests.length, page.rows().length], [0, 0]);
-    }
-    // Shown, it appears.
-    hidden.document.getElementById('indexPage').classList.remove('hide');
-    hidden.shown();
-    await hidden.settled();
-    assert.deepEqual([hidden.requests.length, hidden.rows().length], [1, 1]);
-  });
-
-  it('fails closed: a refused token draws no row, and is not asked again until Home is next shown after a minute', async (t) => {
-    const app = await startApp(t, webWorld(), tvOn());
-    const page = await openJellyfinWeb(t, app);
-    page.session.token = 'not-a-token';
-    page.home();
-    await page.settled();
-    assert.deepEqual([page.requests.length, page.rows().length, page.cards().length], [1, 0, 0], 'a refused token draws no row at all');
-    page.home();
-    page.shown();
-    await page.settled();
-    assert.equal(page.requests.length, 1);
-    assert.deepEqual(page.document.querySelectorAll('.verticalSection').length, 3, 'Home itself is untouched, with no row added');
-  });
-
-  it('follows the member signed in: another member\'s row goes at once and is read again with their token', async (t) => {
-    const app = await startApp(t, webWorld(), tvOn());
-    const page = await openJellyfinWeb(t, app);
-    page.home();
-    await page.settled();
-    page.session.user = ANN;
-    page.session.token = TOKENS[ANN];
-    page.home();
-    await page.settled();
-    assert.equal(page.requests.length, 2);
-    assert.equal(page.requests[1].init.headers.Authorization, `MediaBrowser Token="${TOKENS[ANN]}"`);
-    assert.equal(page.rows().length, 1);
-    page.session.token = null;
-    page.home();
-    await page.settled();
-    assert.equal(page.rows().length, 0, 'signed out');
-  });
-
-  it('runs once however often it is loaded', async (t) => {
+  it('runs once however often it is loaded, and still asks nothing at Home', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await openJellyfinWeb(t, app);
     page.run();
     page.home();
     await page.settled();
-    assert.deepEqual([page.requests.length, page.rows().length, page.document.querySelectorAll('link[data-jellypass-tv]').length], [1, 1, 1]);
+    assert.deepEqual([page.requests.length, page.homeAdded().length, page.document.querySelectorAll('link[data-jellypass-tv]').length], [0, 0, 1]);
+  });
+
+  it('has no Home row in its bundle: no Trending call, no row marker, nothing that reads Home\'s sections', () => {
+    const source = readFileSync(path.join(DIST_TV, SCRIPT), 'utf8');
+    lacks(source, /\/discover\/trending/, 'a Trending call of its own');
+    lacks(source, /data-jellypass-tv-row(?![-\w])/, 'the Home row\'s marker');
+    lacks(source, /data-jellypass-tv-link\b/, 'the Home row\'s My requests card');
+    lacks(source, /homeSectionsContainer|#homeTab|indexPage/, 'a reader of Home\'s sections');
+    // The Search row keeps its own marker.
+    assert.ok(source.includes('data-jellypass-tv-search-row'));
   });
 });
 
@@ -983,7 +784,7 @@ describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
     assert.ok(BUDGET.screens.search.atOnce.includes('GET /search?q={query}&page=1'));
   });
 
-  it('draws one Discover row below Jellyfin\'s results with only what can be had, in the Home row\'s cards, in one call', async (t) => {
+  it('draws one Discover row below Jellyfin\'s results with only what can be had, in the add-on\'s own cards, in one call', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await open(t, app);
     mount(page, '');
@@ -1013,7 +814,7 @@ describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
     // Never Jellyfin's itemsContainer (it is paused through a custom element's method), and Left/Right stay in the row.
     assert.equal(row(page).querySelector('.itemsContainer'), null);
     assert.ok(row(page).querySelector('.jellypass-tv-row-list').classList.contains('focuscontainer-x'));
-    // Cards in Jellyfin web's own markup and classes (the next test compares them with the Home row's), no badge.
+    // Cards in Jellyfin web's own markup and classes, no badge.
     const searchCard = row(page).querySelector('button');
     for (const name of ['card', 'overflowPortraitCard', 'card-hoverable', 'jellypass-tv-card']) assert.ok(searchCard.classList.contains(name), name);
     assert.ok(searchCard.querySelector('.cardBox .cardScalable .cardPadder-overflowPortrait') && searchCard.querySelector('.cardImageContainer img'));
@@ -1021,18 +822,6 @@ describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
     assert.equal(page.document.querySelectorAll('.jellypass-tv-card-status').length, 0);
     assert.deepEqual([...row(page).querySelectorAll('img')].map((img) => img.getAttribute('src')), shown.map((card) => card.posterUrl));
     assertFocusRing(page, searchCard.querySelector('.cardImageContainer'), 'Search title card');
-  });
-
-  it('draws a Home card and a Search card from one component: the same markup for the same title', async (t) => {
-    const app = await startApp(t, webWorld(), tvOn());
-    const page = await open(t, app);
-    const home = page.cards()[0].outerHTML;
-    const first = (await canBeHad(app, 'x'))[0];
-    const trending = (await app.get('/jellypass/app/v1/discover/trending')).json().results[0];
-    assert.equal(first.tmdbId, trending.tmdbId, 'the fake answers both with the same titles');
-    mount(page, 'x');
-    await settle(page);
-    assert.equal(row(page).querySelector('button').outerHTML, home);
   });
 
   it('asks nothing while the field is empty or blank, and once per settled query however many keys were pressed', async (t) => {
@@ -1424,20 +1213,17 @@ describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
 describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () => {
   const CONFIRMATION = "Thanks — we'll get this for your household.";
   const text = (page, selector) => page.view()?.querySelector(selector)?.textContent ?? null;
-  // (Not interested is the title page's one more button on a server with hiding; the hiding tests are their own.)
-  const buttons = (page) => [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => `${button.textContent}${button.disabled ? ' (disabled)' : ''}`);
-  /** Home laid out with the row drawn, under Jellyfin web's header, and every call answered. */
-  const atHome = async (t, app, options) => {
-    const page = await openJellyfinWeb(t, app, options);
-    page.document.body.insertAdjacentHTML('afterbegin', HEADER);
-    page.home();
-    await page.settled();
-    assert.equal(page.rows().length, 1);
-    return page;
-  };
-  /** Chooses the row's card for `tmdbId`, Jellyfin web's router follows the address it opened, and the page is read and drawn. */
+  // (Not interested is the title page's one more button on a server with hiding, and "Part of …" on a film in a collection on one
+  // with collections; the hiding and collection tests are their own.)
+  const buttons = (page) => [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => `${button.textContent}${button.disabled ? ' (disabled)' : ''}`);
+  /** The Discover page open, under Jellyfin web's header, and every call answered: its cards open the title pages here. */
+  const atHome = atDiscover;
+  /** Chooses the Discover page's card for `tmdbId`, Jellyfin web's router follows the address it opened, and the page is read and drawn. */
   const choose = async (page, tmdbId) => {
     const from = page.location.hash;
+    // The remote moves focus to the card, and OK chooses it (so Back can return focus to it).
+    page.press('keydown');
+    page.card(tmdbId).focus();
     page.click(page.card(tmdbId));
     assert.notEqual(page.location.hash, from, 'the card opened an address');
     page.follow(from);
@@ -1452,8 +1238,15 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     t.after(async () => { release(); await app.background.settled(); });
     return app;
   };
-  /** Back to Home (Jellyfin web's history), the row drawn there again. */
+  /** Back to the Discover page (Jellyfin web's history), drawn there again from what it kept. */
   const home = async (page) => {
+    page.back();
+    await page.settled();
+  };
+  /** The Discover page left for Home and opened again with Back: drawn again from what it kept, no call. */
+  const redrawDiscover = async (page) => {
+    page.route('#/home.html');
+    await page.settled();
     page.back();
     await page.settled();
   };
@@ -1499,11 +1292,12 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.deepEqual(found, expected);
   });
 
-  it('names the page and the row apart: no class of ours is on both, each keeps to its own prefix, and no rule for one reaches the other', async (t) => {
+  it('names the title page and the Discover page apart: no class of ours is on both, each keeps to its own prefix, and no rule for one reaches the other', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await atHome(t, app);
     page.document.documentElement.classList.add('layout-tv');
-    const [row] = page.rows();
+    // The Discover page, as it was drawn: its rows draw the add-on's shared cards (`jellypass-tv-card*`, `jellypass-tv-row-*`).
+    const row = page.document.querySelector('[data-jellypass-tv-discover]').cloneNode(true);
     const rowElements = [row, ...row.querySelectorAll('*')];
     // Class names only (strings), never the elements, in what is compared and reported.
     const classes = (elements) => [...new Set(elements.flatMap((element) => [...element.classList]))].sort();
@@ -1516,7 +1310,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     // The service and studio pages (tv/src/discover-source.ts) are the Discover page's family: they share its classes.
     const isDiscover = (name) => /^jellypass-tv-(?:discover|source)(?:-|$)/.test(name);
     assert.ok(rowClasses.includes('jellypass-tv-card-title'));
-    assert.deepEqual(ours(rowClasses).filter((name) => !isRow(name)), [], 'the row\'s classes outside jellypass-tv-row-* and jellypass-tv-card-*');
+    assert.deepEqual(ours(rowClasses).filter((name) => !isRow(name) && !isDiscover(name)), [], 'the Discover page\'s classes outside jellypass-tv-discover-*, jellypass-tv-row-* and jellypass-tv-card-*');
     // A movie's page, and a series' with its seasons, toggles and Select all.
     const css = readFileSync(path.join(DIST_TV, STYLESHEET), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     const rules = [...css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)].flatMap(([, selectors, body]) => selectors.split(',').map((selector) => ({ selector: selector.trim(), body })));
@@ -1533,10 +1327,10 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
       const viewClasses = classes(viewElements);
       assert.ok(viewClasses.includes('jellypass-tv-title-page') && viewClasses.includes('jellypass-tv-title-status'), String(tmdbId));
       if (tmdbId === T_TV) assert.ok(viewClasses.includes('jellypass-tv-title-season-pick'));
-      assert.deepEqual(ours(viewClasses).filter((name) => rowClasses.includes(name)), [], `classes of ours on both the page and the row (${tmdbId})`);
+      assert.deepEqual(ours(viewClasses).filter((name) => rowClasses.includes(name)), [], `classes of ours on both the title page and the Discover page (${tmdbId})`);
       assert.deepEqual(ours(viewClasses).filter((name) => !isView(name)), [], `the page's classes outside jellypass-tv-title-* (${tmdbId})`);
       assert.deepEqual(rules.filter(({ selector }) => matching(selector, viewElements) && matching(selector, rowElements)).map(({ selector }) => selector), [], `rules that match both (${tmdbId})`);
-      assert.deepEqual(rules.filter(({ selector, body }) => /position:\s*fixed/.test(body) && matching(selector, rowElements)).map(({ selector }) => selector), [], 'fixed rules that match the row');
+      assert.deepEqual(rules.filter(({ selector, body }) => /position:\s*fixed/.test(body) && matching(selector, rowElements)).map(({ selector }) => selector), [], 'fixed rules that match the Discover page');
       // The one fixed box on the page is its backdrop, behind everything: nothing of the page's content is fixed.
       assert.deepEqual(rules.filter(({ selector, body }) => /position:\s*fixed/.test(body)).map(({ selector }) => selector), ['.jellypass-tv-title-backdrop']);
       await home(page);
@@ -1555,20 +1349,13 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     lacks(css, /jellypass-tv-title-view|jellypass-tv-title-scroller/, 'the overlay\'s classes');
   });
 
-  it('draws the row\'s list without Jellyfin web\'s itemsContainer class: Home calls .pause() on every such element when it is left', async (t) => {
-    const app = await startApp(t, webWorld(), tvOn());
-    const page = await atHome(t, app);
-    assert.equal(page.document.querySelectorAll('[data-jellypass-tv-row] .itemsContainer').length, 0);
-    assert.equal(page.document.querySelectorAll('[data-jellypass-tv-row] .jellypass-tv-row-list').length, 1);
-  });
-
   it('opens a movie\'s page at its own address from the card, a history entry in Jellyfin web\'s page under its header, in the app\'s words, with Get this focused, in the budget\'s calls', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await atHome(t, app);
     const before = page.requests.length;
     await choose(page, T_MOVIE);
     assert.equal(page.location.hash, `#/jellypass/title/movie/${T_MOVIE}`);
-    assert.deepEqual(page.trail, ['#/home.html'], 'a history entry, so Jellyfin\'s Back returns to Home');
+    assert.deepEqual(page.trail, ['#/home.html', '#/jellypass/discover'], 'a history entry, so Jellyfin\'s Back returns to the Discover page');
     assert.deepEqual(page.calls(before), BUDGET.screens['tv-movie'].atOnce);
     assert.equal(page.requests.length - before, BUDGET.screens['tv-movie'].calls);
     for (const request of page.requests.slice(before)) {
@@ -1665,7 +1452,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     lacks(readFileSync(path.join(DIST_TV, SCRIPT), 'utf8'), /enableBackdrops|withBackdrop|backdropContainer|backgroundContainer/);
   });
 
-  it('returns to Home on Back with the title\'s card focused, and handles no key of its own: Back is Jellyfin web\'s', async (t) => {
+  it('returns to the Discover page on Back with the title\'s card focused, and handles no key of its own: Back is Jellyfin web\'s', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await atHome(t, app);
     for (const tmdbId of [T_MOVIE, T_TV, T_MOVIE]) {
@@ -1677,8 +1464,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
       page.back();
       await page.settled();
       assert.equal(page.view() === null, true);
-      assert.equal(page.location.hash, '#/home.html');
-      assert.ok(!hosting(page));
+      assert.equal(page.location.hash, '#/jellypass/discover');
       assert.ok(page.focused() === page.card(tmdbId), `focus is back on the card of ${tmdbId}`);
     }
   });
@@ -1696,50 +1482,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     }
   });
 
-  describe('focus after Back', () => {
-    /** Home with the title's card focused by Back, then focus moved off it (to Jellyfin web's own card), as a redraw would find it. */
-    const backed = async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
-      const page = await atHome(t, app);
-      await choose(page, T_MOVIE);
-      await home(page);
-      assert.ok(page.focused() === page.card(T_MOVIE), 'Back focused the card');
-      page.document.querySelector('.verticalSection .card').focus();
-      assert.ok(page.focused() !== page.card(T_MOVIE), 'focus has left the card');
-      return page;
-    };
-    const redraw = async (page) => {
-      page.home();
-      await page.settled();
-    };
-
-    it('is given back to the card when Jellyfin web redraws Home within the window and the member has pressed nothing', async (t) => {
-      const page = await backed(t);
-      await redraw(page);
-      assert.ok(page.focused() === page.card(T_MOVIE));
-    });
-
-    for (const [name, press] of [
-      ['a key press', (page) => page.key(40)],
-      ['a pointer press', (page) => page.press('pointerdown')],
-    ]) {
-      it(`is not given back to the card after ${name}`, async (t) => {
-        const page = await backed(t);
-        press(page);
-        await redraw(page);
-        assert.ok(page.focused() !== page.card(T_MOVIE), 'focus stays where the member left it');
-      });
-    }
-
-    it('is not given back to the card once the window has run out', async (t) => {
-      const page = await backed(t);
-      page.advance(4_001);
-      await redraw(page);
-      assert.ok(page.focused() !== page.card(T_MOVIE), 'focus stays where it is');
-    });
-  });
-
-  it('drops what is in flight when Jellyfin web goes to another page, and Back through it returns to the title page, then Home with the card', async (t) => {
+  it('drops what is in flight when Jellyfin web goes to another page, and Back through it returns to the title page, then Discover with the card', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     let release;
     const held = new Promise((resolve) => { release = resolve; });
@@ -1753,6 +1496,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     // Jellyfin web goes to another page while the title is still being read: the answer is dropped.
     slow = true;
     const from = page.location.hash;
+    page.press('keydown');
+    page.card(T_MOVIE).focus();
     page.click(page.card(T_MOVIE));
     page.follow(from);
     await pause(60);
@@ -1764,7 +1509,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(page.view() === null, true, 'left with Jellyfin web\'s page');
     assert.ok(!hosting(page));
     assert.equal(page.document.querySelectorAll('[data-jellypass-tv-page]').length, 0);
-    // Back: the title page, read again; Back once more: Home, the card focused.
+    // Back: the title page, read again; Back once more: the Discover page, the card focused.
     slow = false;
     page.back();
     await page.settled();
@@ -1775,11 +1520,10 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
 
   it('plays a title in the library through Jellyfin web\'s own details page on this host, and nothing else; Back returns to the page', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
-    // The row leaves out what is in the library, so its card is one Trending still called Available to get when the
+    // "New only" leaves out what is in the library, so its card is one Trending still called Available to get when the
     // title was read: the page says what is true now.
     const page = await withTrending(t, app, (results) => results.map((card) => (card.tmdbId === OWN_MOVIE ? { ...card, state: 'get_this' } : card)));
-    page.document.body.insertAdjacentHTML('afterbegin', HEADER);
-    assert.ok(page.card(OWN_MOVIE), 'the household\'s own title is in the row');
+    assert.ok(page.card(OWN_MOVIE), 'the household\'s own title is on the Discover page');
     await choose(page, OWN_MOVIE);
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Ready to watch');
     assert.deepEqual(buttons(page), ['Play']);
@@ -1802,7 +1546,6 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     for (const url of [`https://jelly-mill.example.test/web/#/details?id=${ITEMS.ownMovie}`, `https://jelly-grove.example.test/web/#/details?id=${ITEMS.ownMovie}&x=1`]) {
       const real = (await app.get(`/jellypass/app/v1/movie/${OWN_MOVIE}`)).json();
       const forged = await withTrending(t, app, (results) => results.map((card) => (card.tmdbId === OWN_MOVIE ? { ...card, state: 'get_this' } : card)), (pathname) => (pathname === `/jellypass/app/v1/movie/${OWN_MOVIE}` ? { status: 200, body: JSON.stringify({ ...real, play: { itemId: ITEMS.ownMovie, url } }) } : undefined));
-      forged.document.body.insertAdjacentHTML('afterbegin', HEADER);
       await choose(forged, OWN_MOVIE);
       assert.deepEqual(buttons(forged), [], url);
     }
@@ -1866,10 +1609,10 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Requested');
     assert.equal(text(page, '.jellypass-tv-title-note'), 'Follow it in My requests.');
     assert.deepEqual(buttons(page), ['My requests'], 'nothing left that could send again');
-    // The Home row says so too, when Home is shown again.
+    // The Discover page says so too, when it is shown again: with "New only" on, the title has left it.
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'not in the row');
-    assert.ok(page.focused() === page.cards()[0], 'its card left the row, so focus goes to the row\'s first card');
+    assert.equal(onDiscover(page, T_MOVIE), 'not on Discover');
+    assert.ok(page.document.querySelector('[data-jellypass-tv-discover]').contains(page.focused()), 'its card left the page, so focus goes elsewhere on it, never off it');
     await app.background.settled();
   });
 
@@ -1911,11 +1654,11 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     // The season asked for is not offered again; the others still are.
     assert.deepEqual([...page.view().querySelectorAll('.jellypass-tv-title-season-pick')].map((toggle) => Number(toggle.getAttribute('data-season'))), pickable.filter((_, index) => index !== 1).map((season) => season.seasonNumber));
     await home(page);
-    assert.equal(onRow(page, T_TV), 'not in the row');
+    assert.equal(onDiscover(page, T_TV), 'not on Discover');
     await app.background.settled();
   });
 
-  it('shows Requested while the server records it, on the page and by the title leaving the row, for two minutes at most, and only for the member who asked', async (t) => {
+  it('shows Requested while the server records it, on the page and by the title leaving the Discover page, for two minutes at most, and only for the member who asked', async (t) => {
     const app = await startHeld(t);
     const page = await atHome(t, app);
     await choose(page, T_MOVIE);
@@ -1926,23 +1669,21 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Requested');
     assert.deepEqual(buttons(page), ['My requests']);
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'not in the row', 'Requested leaves the row');
-    // Within the two minutes, and Home redrawn: still Requested, so still not in the row.
+    assert.equal(onDiscover(page, T_MOVIE), 'not on Discover', 'Requested leaves the Discover page ("New only")');
+    // Within the two minutes, and the Discover page drawn again: still Requested, so still not on it.
     page.clock.now += 100_000;
-    page.home();
-    await page.settled();
-    assert.equal(onRow(page, T_MOVIE), 'not in the row');
-    // After two minutes the server's own word stands again: back in the row, and on the page, with Get this.
+    await redrawDiscover(page);
+    assert.equal(onDiscover(page, T_MOVIE), 'not on Discover');
+    // After two minutes the server's own word stands again: back on the Discover page, and on the title page, with Get this.
     page.clock.now += 20_000;
-    page.home();
-    await page.settled();
-    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    await redrawDiscover(page);
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
     await choose(page, T_MOVIE);
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Available to get');
     assert.deepEqual(buttons(page), ['Get this']);
     await home(page);
 
-    // Asked again; then another member signs in: their row and page are their own, and the overlay is gone for good.
+    // Asked again; then another member signs in: their Discover and title pages are their own, and the overlay is gone for good.
     await choose(page, T_MOVIE);
     page.click(page.view().querySelector('.jellypass-tv-title-get'));
     await page.settled();
@@ -1953,13 +1694,15 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     await page.settled();
     assert.equal(page.view() === null, true, 'the page is emptied for another member');
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
     page.session.user = ALICE;
     page.session.token = TOKENS[ALICE];
     page.home();
     await page.settled();
-    assert.equal(onRow(page, T_MOVIE), 'Available to get', 'forgotten, not kept for Alice');
-    // Signed out: no row and no page.
+    // The Discover page was emptied for the member who left; opened again, it is Alice's.
+    await redrawDiscover(page);
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get', 'forgotten, not kept for Alice');
+    // Signed out: no Discover cards and no page.
     await choose(page, T_MOVIE);
     page.session.token = null;
     page.home();
@@ -2012,7 +1755,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Available to get', 'the old session\'s Get this does not mark the new session as Requested');
     assert.deepEqual(buttons(page), ['Get this']);
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
     await app.background.settled();
   });
 
@@ -2024,7 +1767,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     await pause(40);
     page.back();
     await page.settled();
-    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
   });
 
   for (const status of [401, 429, 502]) {
@@ -2041,7 +1784,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     });
   }
 
-  it('lets Requested run out on a page and a row left alone after two minutes, with no call, and clears its timer on sign-out', async (t) => {
+  it('lets Requested run out on a title page and the Discover page left alone after two minutes, with no call, and clears its timer on sign-out', async (t) => {
     const app = await startHeld(t);
     const page = await atHome(t, app);
     await choose(page, T_MOVIE);
@@ -2063,12 +1806,12 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(page.timers(), 0);
     await page.settled();
     assert.equal(page.requests.length, before, 'no call after');
-    // The row behind it, when Home is shown again, has the title back in it.
+    // The Discover page behind it, when it is shown again, has the title back on it.
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'Available to get', 'the row');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get', 'the row');
     assert.ok(page.card(T_MOVIE).getAttribute('aria-label').endsWith(', Available to get'));
 
-    // A series' seasons, the page left: the row alone runs out, and seasons ticked on a page left open stay ticked.
+    // A series' seasons, the page left: the Discover page alone runs out, and seasons ticked on a page left open stay ticked.
     await choose(page, T_TV);
     const toggles = () => [...page.view().querySelectorAll('.jellypass-tv-title-season-pick')];
     const [first, second] = toggles().map((toggle) => Number(toggle.getAttribute('data-season')));
@@ -2083,14 +1826,14 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(page.view().querySelector(`[data-season="${second}"]`).getAttribute('aria-pressed'), 'true');
     assert.ok(page.focused() === page.view().querySelector(`[data-season="${second}"]`), 'focus');
     await home(page);
-    assert.equal(onRow(page, T_TV), 'Available to get');
+    assert.equal(onDiscover(page, T_TV), 'Available to get');
     await choose(page, T_MOVIE);
     page.click(page.view().querySelector('.jellypass-tv-title-get'));
     await page.settled();
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'not in the row');
+    assert.equal(onDiscover(page, T_MOVIE), 'not on Discover');
     page.advance(120_000);
-    assert.equal(onRow(page, T_MOVIE), 'Available to get', 'the row, with no page open');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get', 'the Discover page, with no title page open');
 
     // Signing out (or another member signing in) forgets the overlay, and its timer with it.
     await choose(page, T_MOVIE);
@@ -2132,7 +1875,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(page.timers(), 0);
     assert.equal(page.requests.length, before, 'no call');
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'Available to get', 'the row');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get', 'the row');
 
     // The wall clock set back an hour: the monotonic clock still ends it at two minutes, no sooner and no later.
     await choose(page, T_MOVIE);
@@ -2145,10 +1888,10 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Available to get');
     assert.equal(page.timers(), 0);
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
   });
 
-  it('is byte-for-byte the same whatever other households hold or asked for: the calls, the page and the row', async (t) => {
+  it('is byte-for-byte the same whatever other households hold or asked for: the calls, the title page and the Discover page\'s first row', async (t) => {
     // What the server says about the title afterwards is its own matter (tested against the API); the add-on is held to
     // what it does with an accepted call, so every read of the title after it gets the same answer here, as in the app's test.
     const fresh = await startApp(t, webWorld(), tvOn());
@@ -2195,8 +1938,9 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
       [{ status: 404, body: '{"error":"not_found"}' }, "We couldn't send that just now. Try again in a moment."],
       ['offline', "You're offline. Check your connection, then try again."],
     ];
-    const app = await startApp(t, webWorld(), tvOn());
     for (const [answer, words] of cases) {
+      // A server per case: each opens the Discover page, whose reads would otherwise meet the address's own budget.
+      const app = await startApp(t, webWorld(), tvOn());
       const page = await atHome(t, app, {
         override: (_pathname, init) => {
           if (init.method !== 'POST') return undefined;
@@ -2217,7 +1961,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
       assert.equal(text(page, '.jellypass-tv-title-status'), 'Available to get');
       lacks(page.view().outerHTML, /canary|upstream/i);
       await home(page);
-      assert.equal(onRow(page, T_MOVIE), 'Available to get', 'nothing marked requested');
+      assert.equal(onDiscover(page, T_MOVIE), 'Available to get', 'nothing marked requested');
     }
   });
 
@@ -2288,7 +2032,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.deepEqual(page.calls(before), BUDGET.screens['tv-series'].atOnce, 'the retry only reads');
     assert.equal(posts, 2);
     await home(page);
-    assert.equal(onRow(page, T_TV), 'Available to get');
+    assert.equal(onDiscover(page, T_TV), 'Available to get');
   });
 
   it('shows a fixed error when the title can\'t be read, with a retry that reads it again; a refused token says sign in and forgets the overlay', async (t) => {
@@ -2307,18 +2051,18 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     await page.settled();
     assert.equal(page.requests.length - before, BUDGET.screens['tv-movie'].calls);
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Available to get');
-    // Asked for, then Jellyfin web's token refused: the page says so, and Requested is forgotten on the row.
+    // Asked for, then Jellyfin web's token refused: the page says so, and Requested is forgotten on the Discover page.
     page.click(page.view().querySelector('.jellypass-tv-title-get'));
     await page.settled();
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'not in the row');
+    assert.equal(onDiscover(page, T_MOVIE), 'not on Discover');
     failing = 401;
-    await choose(page, T_TV); // another title: the one asked for has left the row
+    await choose(page, T_TV); // another title: the one asked for has left the Discover page
     assert.equal(text(page, '.jellypass-tv-title-error'), 'Sign in to continue');
     assert.deepEqual(buttons(page), []);
     await page.settled();
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
     await app.background.settled();
   });
 
@@ -2337,103 +2081,144 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     page.click(page.view().querySelector('.jellypass-tv-title-get'));
     await page.settled();
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'not in the row');
+    assert.equal(onDiscover(page, T_MOVIE), 'not on Discover');
     failing = true;
-    await choose(page, T_TV); // another title: the one asked for has left the row
+    await choose(page, T_TV); // another title: the one asked for has left the Discover page
     assert.equal(text(page, '.jellypass-tv-title-error'), 'Sign in to continue');
     assert.deepEqual(buttons(page), []);
     await page.settled();
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
     assert.equal(page.timers(), 0);
   });
 
-  it('keeps focus on the card it is on when another title\'s Requested runs out and the row is drawn again', async (t) => {
+  it('keeps focus on a card in another row when a title\'s Requested runs out and the rows holding it are drawn again', async (t) => {
     const app = await startHeld(t);
     const page = await atHome(t, app);
     await choose(page, T_MOVIE);
     page.click(page.view().querySelector('.jellypass-tv-title-get'));
     await page.settled();
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'not in the row');
-    const other = page.card(T_TV);
+    assert.equal(onDiscover(page, T_MOVIE), 'not on Discover');
+    // The series' card in a row that never holds the film: drawing the film's rows again does not touch it.
+    const rowOf = (card) => card.closest('.jellypass-tv-discover-row');
+    const other = [...page.document.querySelectorAll(`[data-jellypass-tv-discover] .jellypass-tv-discover-row button[data-tmdb-id="${T_TV}"]`)]
+      .find((card) => /series/i.test(rowOf(card).querySelector('.sectionTitle').textContent));
+    assert.ok(other, 'the series is in a row of its own kind');
+    const key = other.getAttribute('data-jellypass-tv-focus');
+    // The member moves focus there with the remote (a key press: from then on, focus is theirs).
+    page.press('keydown');
     other.focus();
     assert.ok(page.focused() === other, 'focus');
     page.advance(120_000);
-    assert.equal(onRow(page, T_MOVIE), 'Available to get');
-    assert.ok(page.focused() === page.card(T_TV), 'the same title is focused');
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
+    assert.equal(page.focused()?.getAttribute('data-jellypass-tv-focus'), key, 'the same card is focused');
     assert.ok(page.document.documentElement.contains(page.focused()), 'and in the page');
   });
 
-  /** Trending answering one title only, Available to get. */
-  const soleTitle = (app) => async (pathname) => {
-    if (pathname !== '/jellypass/app/v1/discover/trending') return undefined;
-    const real = (await app.get(pathname)).json();
-    const only = real.results.find((card) => card.tmdbId === T_MOVIE);
-    return { status: 200, body: JSON.stringify({ ...real, results: [{ ...only, state: 'get_this' }] }) };
-  };
-
-  it('gives focus to the My requests card on returning Home when the title opened has left the row', async (t) => {
-    const app = await startHeld(t);
-    const trending = await soleTitle(app)('/jellypass/app/v1/discover/trending');
-    const page = await atHome(t, app, { override: (pathname) => (pathname === '/jellypass/app/v1/discover/trending' ? trending : undefined) });
-    assert.equal(page.cards().length, 1);
-    await choose(page, T_MOVIE);
-    page.click(page.view().querySelector('.jellypass-tv-title-get'));
-    await page.settled();
-    await home(page);
-    assert.equal(page.cards().length, 0, 'only the My requests card is left');
-    assert.equal(page.requestsLink() !== null, true);
-    assert.equal(page.focused() === page.requestsLink(), true, 'the link has focus');
-  });
-
-  it('keeps focus on the My requests card when the row is drawn again under it', async (t) => {
+  it('keeps focus on the same title when its own row is drawn again around it (another title\'s Requested runs out there)', async (t) => {
     const app = await startHeld(t);
     const page = await atHome(t, app);
     await choose(page, T_MOVIE);
     page.click(page.view().querySelector('.jellypass-tv-title-get'));
     await page.settled();
     await home(page);
-    assert.equal(onRow(page, T_MOVIE), 'not in the row');
+    assert.equal(onDiscover(page, T_MOVIE), 'not on Discover');
+    // A card in a row the film comes back to: that row is drawn again, under the focus.
+    const rowOf = (card) => card.closest('.jellypass-tv-discover-row');
+    const rowsWithFilm = new Set([...page.document.querySelectorAll('[data-jellypass-tv-discover] .jellypass-tv-discover-row')].filter((row) => /movie|film|trending/i.test(row.querySelector('.sectionTitle').textContent)));
+    const mine = [...page.document.querySelectorAll('[data-jellypass-tv-discover] .jellypass-tv-discover-row button[data-tmdb-id]')]
+      .find((card) => rowsWithFilm.has(rowOf(card)) && card.getAttribute('data-tmdb-id') !== String(T_MOVIE));
+    assert.ok(mine, 'a card that shares a row with the film');
+    const key = mine.getAttribute('data-jellypass-tv-focus');
+    const section = rowOf(mine);
+    page.press('keydown');
+    mine.focus();
+    page.advance(120_000);
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
+    const focused = page.focused();
+    assert.ok(page.document.documentElement.contains(focused), 'focus is still in the page');
+    assert.notEqual(focused, page.document.body, 'not dropped to the page');
+    assert.equal(focused.getAttribute('data-jellypass-tv-focus'), key, 'the same title has focus');
+    assert.ok(section.contains(focused) || rowOf(focused), 'in a Discover row');
+  });
+
+  /**
+   * The Discover page with Trending's cards set to `states` (in order) and "New only" turned off, so held titles show; the remote's
+   * focus put on Trending's card at `at`, then "New only" turned on again (a click, so focus stays on the card), which takes the
+   * held cards out of the row and draws it again under the focus.
+   */
+  const hideUnderFocus = async (t, states, at) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    let ids = [];
+    const page = await withTrending(t, app, (results) => {
+      const kept = results.slice(0, states.length).map((card, index) => ({ ...card, state: states[index] }));
+      assert.equal(kept.length, states.length, 'Trending has the cards the test needs');
+      ids = kept.map((card) => String(card.tmdbId));
+      return kept;
+    });
+    const chip = page.document.querySelector('[data-jellypass-tv-discover] [data-jellypass-tv-focus="chip:hide"]');
+    assert.equal(chip?.getAttribute('aria-pressed'), 'true', '"New only" is on as the page opens');
+    page.click(chip);
+    await page.settled();
+    assert.deepEqual(page.cards().map((card) => card.getAttribute('data-tmdb-id')), ids, 'with "New only" off, every card shows');
+    const section = page.cards()[0].closest('.jellypass-tv-discover-row');
+    page.press('keydown');
+    page.cards()[at].focus();
+    assert.ok(page.focused() === page.cards()[at], 'focus');
+    page.click(chip);
+    await page.settled();
+    assert.equal(chip.getAttribute('aria-pressed'), 'true', '"New only" is on again');
+    return { page, ids, section };
+  };
+
+  it('moves focus to the nearest card left when the focused title leaves its row as the row is drawn again', async (t) => {
+    // The focused card is the second of three, and the only held one: the card now in its place is the third.
+    const { page, ids, section } = await hideUnderFocus(t, ['get_this', 'in_library', 'get_this'], 1);
+    assert.deepEqual(page.cards().map((card) => card.getAttribute('data-tmdb-id')), [ids[0], ids[2]], 'the held title is gone');
+    const focused = page.focused();
+    assert.ok(page.document.documentElement.contains(focused), 'focus is still in the page');
+    assert.ok(focused === page.cards()[1], 'on the card now in its place');
+    assert.equal(focused.getAttribute('data-tmdb-id'), ids[2]);
+    assert.ok(section.contains(focused), 'in the same row');
+    // The last card focused and gone: the row's last card left takes it.
+    const last = await hideUnderFocus(t, ['get_this', 'get_this', 'requested'], 2);
+    assert.deepEqual(last.page.cards().map((card) => card.getAttribute('data-tmdb-id')), last.ids.slice(0, 2));
+    assert.ok(last.page.focused() === last.page.cards()[1], 'on the row\'s last card left');
+  });
+
+  it('moves focus to the row\'s heading button when the focused title was the row\'s last and the row is drawn empty', async (t) => {
+    const { page, section } = await hideUnderFocus(t, ['in_library', 'requested'], 0);
+    assert.deepEqual(page.cards(), [], 'the row has no card left');
+    assert.ok(section.querySelector('.jellypass-tv-discover-row-note-text'), 'and says so');
+    const focused = page.focused();
+    assert.ok(page.document.documentElement.contains(focused), 'focus is still in the page');
+    assert.notEqual(focused, page.document.body, 'not dropped to the page');
+    assert.ok(focused === section.querySelector('button'), 'on the row\'s heading button (See all)');
+    assert.ok(section.querySelector('.sectionTitleContainer').contains(focused), 'in the heading, above where the cards were');
+  });
+
+  it('keeps focus on the Discover page\'s My requests link when its rows are drawn again', async (t) => {
+    const app = await startHeld(t);
+    const page = await atHome(t, app);
+    await choose(page, T_MOVIE);
+    page.click(page.view().querySelector('.jellypass-tv-title-get'));
+    await page.settled();
+    await home(page);
+    assert.equal(onDiscover(page, T_MOVIE), 'not on Discover');
+    // The member moves focus there with the remote (a key press: from then on, focus is theirs).
+    page.press('keydown');
     page.requestsLink().focus();
     assert.equal(page.focused() === page.requestsLink(), true);
-    page.advance(120_000); // the Requested runs out: the title is back in the row, which is drawn again
-    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    page.advance(120_000); // the Requested runs out: the title is back on the page, whose rows are drawn again
+    assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
     assert.equal(page.focused() === page.requestsLink(), true, 'the link still has focus');
     assert.equal(page.document.documentElement.contains(page.focused()), true, 'and is in the page');
   });
 
-  it('moves focus to the My requests card, never off the page, when a redraw removes the only title card that has it', async (t) => {
-    const app = await startHeld(t);
-    let gone = false;
-    const page = await atHome(t, app, {
-      override: async (pathname) => {
-        if (pathname !== '/jellypass/app/v1/discover/trending') return undefined;
-        const real = (await app.get(pathname)).json();
-        const only = real.results.find((card) => card.tmdbId === T_MOVIE);
-        return { status: 200, body: JSON.stringify({ ...real, results: gone ? [] : [{ ...only, state: 'get_this' }] }) };
-      },
-    });
-    assert.equal(page.cards().length, 1);
-    page.card(T_MOVIE).focus();
-    assert.equal(page.focused() === page.card(T_MOVIE), true, 'the only title card has focus');
-    // The title leaves the answer (asked for elsewhere); Home is shown again after the answer is old: the row is drawn again.
-    gone = true;
-    page.advance(60_001); // the row's REUSE_MS
-    page.shown();
-    await page.settled();
-    assert.equal(page.cards().length, 0, 'the title card is gone');
-    assert.equal(page.requestsLink() !== null, true, 'the My requests card is drawn');
-    assert.equal(page.focused() === page.requestsLink(), true, 'the My requests card has focus');
-    assert.equal(page.document.documentElement.contains(page.focused()), true, 'and it is in the page');
-  });
-
-  it('draws a ring on the focused My requests card and on a Discover title card in the stylesheet: inside, from :focus, in the page\'s text colour', async (t) => {
+  it('draws a ring on a focused Discover title card in the stylesheet: inside, from :focus, in the page\'s text colour', async (t) => {
     const page = await atHome(t, await startApp(t, webWorld(), tvOn()));
-    const face = page.requestsLink().querySelector('.jellypass-tv-card-link-face');
-    assert.equal(face !== null, true, 'the card has its face');
-    assertFocusRing(page, face, 'My requests face');
-    assertFocusRing(page, page.card(T_MOVIE).querySelector('.cardImageContainer'), 'Home title card');
+    assertFocusRing(page, page.card(T_MOVIE).querySelector('.cardImageContainer'), 'Discover title card');
   });
 
   it('calls only the origin it came from: signed in elsewhere, the page is emptied and nothing is sent there; a card chosen then opens nothing', async (t) => {
@@ -2500,6 +2285,26 @@ const hosted = (page) => page.document.querySelector('[data-jellypass-tv-page]')
 const headerTitle = (page) => page.document.querySelector('.skinHeader .pageTitle').textContent;
 const headerTitleOf = (box) => box.document.querySelector('.skinHeader .pageTitle').textContent;
 
+/**
+ * The add-on still runs: its Discover page, opened from Home (which asks nothing), asks the household app API for its lists, as
+ * sent (none is capped), and draws its cards. Returns the calls it made.
+ */
+const discoverRuns = async (page) => {
+  if (!page.document.querySelector('.skinHeader')) page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+  const before = page.requests.length;
+  page.home();
+  await page.settled();
+  const from = page.requests.length;
+  assert.equal(from, before, 'Home asks nothing');
+  page.route('#/jellypass/discover');
+  await page.settled();
+  assert.ok(page.cards().length > 0, 'the Discover page is drawn');
+  const calls = page.calls(from);
+  assert.ok(calls.length > 0 && calls.every((call) => call.startsWith('GET /discover/')), calls.join('; '));
+  for (const request of page.requests.slice(from)) assert.ok(request.url.startsWith('https://jelly-grove.example.test/jellypass/app/v1/discover/') && !/[?&]limit=/.test(request.url), 'sent as the add-on made it');
+  return calls;
+};
+
 describe('TV add-on: the page host', { timeout: 60_000 }, () => {
   const open = async (t, options) => {
     const app = await startApp(t, webWorld(), tvOn());
@@ -2529,7 +2334,7 @@ describe('TV add-on: the page host', { timeout: 60_000 }, () => {
     assert.ok(hosting(page));
     assert.ok(page.document.querySelector('#fallbackPage > .padded-left h1'));
     assert.equal(page.requests.length, calls, 'no call is made');
-    assert.equal(page.rows().length, 1, 'Home\'s row is as it was, not copied into the page');
+    assert.deepEqual(page.homeAdded(), [], 'Home is as it was: nothing of the add-on\'s on it');
     assert.equal(page.document.querySelectorAll('[data-jellypass-tv-page] [data-jellypass-tv-row]').length, 0);
   });
 
@@ -2618,11 +2423,12 @@ describe('TV add-on: the page host', { timeout: 60_000 }, () => {
     await page.settled();
     assert.equal(hosted(page), null);
     assert.ok(!hosting(page));
-    // Home is Home again: the row is drawn by the add-on as before.
+    // Home is Home again, Jellyfin web's own: the add-on adds nothing to it and asks nothing.
+    const calls = page.requests.length;
     page.home();
     page.shown();
     await page.settled();
-    assert.equal(page.rows().length, 1);
+    assert.deepEqual([page.homeAdded().length, page.requests.length], [0, calls]);
   });
 
   it('draws the page again when Jellyfin web returns to it (history Back), on its new page', async (t) => {
@@ -3524,7 +3330,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       for (const entryOf of page.listeners.filter((listener) => /^(?:keydown|keyup|keypress) /.test(listener))) assert.equal(entryOf, 'keydown {"capture":true,"passive":true}');
     });
 
-    it('confirming sends one POST with an empty object, drops the entry, says Request cancelled, reads the list again, and puts the title back to Get this on Home with no call', async (t) => {
+    it('confirming sends one POST with an empty object, drops the entry, says Request cancelled, reads the list again, and puts the title back to Get this on the Discover page with no call', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
       // The server still lists the movie as requested everywhere: the cancel is settled in the background.
       const asRequested = async (pathname) => {
@@ -3534,11 +3340,14 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       const state = {
         cancel: 202,
         list: [entry(A, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' }), tvEntry(B, T_TV, [[1, 'requested']], { cancellable: true, requestedOn: '2026-10-26' })],
-        other: (pathname) => (pathname === '/jellypass/app/v1/discover/trending' ? asRequested(pathname) : undefined),
+        // Every Discover list the page reads (not its sources) says requested for the movie.
+        other: (pathname) => (pathname.startsWith('/jellypass/app/v1/discover/') && pathname !== '/jellypass/app/v1/discover/sources' ? asRequested(pathname) : undefined),
         titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` ? asRequested(pathname) : undefined),
       };
       const page = await open(t, app, state);
-      assert.equal(onRow(page, T_MOVIE), 'not in the row', 'Requested is not in the Discover row');
+      page.route('#/jellypass/discover');
+      await page.settled();
+      assert.equal(onDiscover(page, T_MOVIE), 'not on Discover', 'Requested is not on the Discover page ("New only")');
       await goToRequests(page);
       const [item, other] = items(page);
       let release;
@@ -3566,12 +3375,12 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       assert.ok(page.focused() === message(page), 'the confirmation has focus');
       assert.equal(part(items(page)[0], '.jellypass-tv-request-name'), 'Synthetic Series Two', 'the other request stays named, with no title call');
       assert.ok(other.isConnected === false || items(page)[0] !== other, 'drawn again from the list read');
-      // Home: the title is Available to get again, with no call (the trending answer is kept).
+      // Back on the Discover page: the title is Available to get again, with no call (its answers are kept).
       const home = page.requests.length;
       page.back();
       await page.settled();
-      assert.equal(onRow(page, T_MOVIE), 'Available to get');
-      assert.deepEqual(page.calls(home), [], 'Home\'s row, from the overlay, made no call');
+      assert.equal(onDiscover(page, T_MOVIE), 'Available to get');
+      assert.deepEqual(page.calls(home), [], 'the Discover page, from the overlay, made no call');
     });
 
     it('shows the title as Get this on its page after a cancel, while the server still says requested', async (t) => {
@@ -3591,7 +3400,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       page.route(`#/jellypass/title/movie/${T_MOVIE}`);
       await page.settled();
       assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Available to get');
-      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => button.textContent), ['Get this']);
+      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => button.textContent), ['Get this']);
       // After two minutes the server's word stands again.
       page.advance(120_000);
       assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested');
@@ -3801,43 +3610,93 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
   });
 
   describe('how it is reached', () => {
-    it('adds a "My requests" card at the end of the Discover row that opens the page, and Back returns focus to it', async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
-      const state = { cancel: 202, list: [entry(A, T_MOVIE)] };
+    /** My requests' state, Jellyfin web's Home, then the Discover page opened from its compass button. */
+    const atDiscoverPage = async (t, app, state) => {
       const page = await open(t, app, state);
       page.document.documentElement.classList.add('layout-tv');
+      page.route('#/jellypass/discover');
+      await page.settled();
+      assert.ok(page.document.querySelector('[data-jellypass-tv-discover]'), 'the Discover page is open');
+      return page;
+    };
+
+    it('draws nothing on Home: the way in is the Discover page\'s "My requests" link, after its chips in the same Left/Right row, a real button with a focus key', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const state = { cancel: 202, list: [entry(A, T_MOVIE)] };
+      const home = await open(t, app, state);
+      assert.deepEqual([home.homeAdded().length, home.requests.length, home.document.querySelectorAll('[data-jellypass-tv-link]').length], [0, 0, 0], 'no link, card or call on Home');
+      const page = await atDiscoverPage(t, app, state);
       const link = page.requestsLink();
-      assert.ok(link, 'the link card');
+      assert.ok(link, 'the link');
+      assert.equal(page.document.querySelectorAll('[data-jellypass-tv-discover-requests]').length, 1, 'one link');
       assert.equal(link.tagName, 'BUTTON');
       assert.equal(link.getAttribute('type'), 'button');
-      assert.equal(link.getAttribute('aria-label'), 'My requests');
       assert.equal(link.textContent, 'My requests');
-      const list = page.rows()[0].querySelector('.jellypass-tv-row-list');
-      assert.ok(list.lastElementChild === link, 'the last card of the strip');
-      assert.ok(list.classList.contains('focuscontainer-x'));
+      assert.equal(link.getAttribute('data-jellypass-tv-focus'), 'requests', 'Back returns focus to it by its key');
+      // A remote reaches it as it reaches the chips: an enabled button Jellyfin web's focus manager sees, with its TV focus classes.
+      assert.deepEqual([link.disabled, link.getAttribute('tabindex'), link.hidden], [false, null, false]);
+      assert.ok(link.classList.contains('emby-button') && link.classList.contains('show-focus'), 'Jellyfin\'s button, with the TV layout\'s focus ring');
+      assert.equal(link.hasAttribute('aria-pressed'), false, 'a link, not a filter');
+      // After the chips, in the row the remote's Left and Right keep to (focuscontainer-x), between the hero and the rows.
+      const bar = link.parentNode;
+      assert.ok(bar.classList.contains('jellypass-tv-discover-bar') && bar.classList.contains('focuscontainer-x'));
+      const chips = bar.querySelector('.jellypass-tv-discover-chips');
+      assert.equal(chips.getAttribute('role'), 'group');
+      assert.ok(link.previousElementSibling === chips && !chips.contains(link), 'after the chips\' group, not in it');
+      assert.ok(chips.lastElementChild.getAttribute('data-jellypass-tv-focus') === 'chip:hide', '"New only" is the chip before it');
+      assert.ok(bar.nextElementSibling.classList.contains('jellypass-tv-discover-body'), 'above the rows');
       assert.equal(page.cards().includes(link), false, 'not a title\'s card');
-      assert.equal(page.rows()[0].querySelectorAll('.jellypass-tv-card-link').length, 1);
+    });
+
+    it('opens My requests from the Discover page\'s link, and Back returns to the Discover page with the link focused and no call', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await atDiscoverPage(t, app, { cancel: 202, list: [entry(A, T_MOVIE)] });
       const calls = page.requests.length;
       const from = page.location.hash;
-      page.click(link);
+      // The remote moves focus to the link, and OK chooses it.
+      page.press('keydown');
+      page.requestsLink().focus();
+      page.click(page.requestsLink());
       assert.equal(page.location.hash, '#/jellypass/requests');
       page.follow(from);
       await page.settled();
-      assert.ok(root(page));
-      assert.equal(page.requests.length > calls, true);
+      assert.ok(root(page), 'My requests is open');
+      assert.equal(headerTitle(page), 'My requests');
+      assert.deepEqual(page.calls(calls).filter((call) => !call.startsWith('GET /movie/')), ['GET /requests'], 'the link itself costs nothing: only My requests\' own calls');
+      const back = page.requests.length;
       page.back();
       await page.settled();
-      assert.ok(page.focused() === page.requestsLink(), 'Back to Home focuses the link');
-      assert.equal(page.rows().length, 1);
+      assert.equal(page.location.hash, '#/jellypass/discover');
+      assert.ok(page.focused() === page.requestsLink(), 'Back to the Discover page focuses the link');
+      assert.deepEqual(page.calls(back), [], 'the Discover page is drawn from what it kept');
     });
 
-    it('opens nothing from the link while Jellyfin web is signed in elsewhere', async (t) => {
+    it('opens nothing from the link while Jellyfin web is signed in elsewhere, nor from a link drawn for an earlier token', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
-      const page = await open(t, app, { cancel: 202, list: [] });
+      const page = await atDiscoverPage(t, app, { cancel: 202, list: [] });
       const from = page.location.hash;
+      const kept = page.requestsLink();
       page.session.serverAddress = 'https://other.example.test';
-      page.click(page.requestsLink());
-      assert.equal(page.location.hash, from);
+      page.click(kept);
+      assert.equal(page.location.hash, from, 'signed in elsewhere');
+      page.session.serverAddress = `https://${HOST_A}`;
+      // The same member under a new token: the link drawn for the old one opens nothing, at once and once the page is drawn again.
+      page.session.token = 'a-new-token-for-alice';
+      page.click(kept);
+      assert.equal(page.location.hash, from, 'before the page has seen the new token');
+      page.document.body.appendChild(page.document.createElement('i'));
+      await page.settled();
+      const drawn = page.requestsLink();
+      assert.ok(drawn && drawn !== kept, 'a new link for the new token');
+      page.click(kept);
+      assert.equal(page.location.hash, from, 'the earlier token\'s link');
+      // Another member: the page is emptied, and nothing is left to press.
+      page.session.user = ANN;
+      page.session.token = TOKENS[ANN];
+      page.document.body.appendChild(page.document.createElement('i'));
+      await page.settled();
+      page.click(drawn);
+      assert.equal(page.location.hash, from, 'another member');
     });
 
     it('links the title page to My requests where the household is following the title, and nowhere else', async (t) => {
@@ -3851,7 +3710,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       };
       for (const [state, linked] of [['requested', true], ['get_this', false], ['in_library', false], ['unavailable', false]]) {
         const page = await of(state, T_MOVIE);
-        const texts = [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => button.textContent);
+        const texts = [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => button.textContent);
         assert.equal(texts.includes('My requests'), linked, state);
         if (state === 'requested') {
           assert.equal(part(page.view(), '.jellypass-tv-title-note'), 'Follow it in My requests.');
@@ -3877,10 +3736,10 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       await page.settled();
       page.route(`#/jellypass/title/movie/${T_MOVIE}`);
       await page.settled();
-      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => button.textContent), ['Get this']);
+      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => button.textContent), ['Get this']);
       page.click(page.view().querySelector('.jellypass-tv-title-get'));
       await page.settled();
-      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => button.textContent), ['My requests']);
+      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => button.textContent), ['My requests']);
     });
   });
 
@@ -5172,13 +5031,11 @@ describe('TV add-on: the Discover page', { timeout: 480_000 }, () => {
       assert.equal(entries(page).length, 1);
     });
 
-    it('is the only way in: Home\'s row has no Discover heading link and no Discover card', async (t) => {
+    it('is the only way in: the add-on draws nothing on Home, so there is no other link or card to the page there', async (t) => {
       const page = await open(t, await startApp(t, webWorld(), tvOn()), { hide: 'off' });
-      const [row] = page.rows();
-      assert.equal(row.querySelector('h2').children.length, 0, 'the heading is text');
-      assert.equal(row.querySelectorAll('a, h2 button').length, 0);
-      assert.deepEqual([...row.querySelectorAll('[data-jellypass-tv-link]')].map((link) => link.getAttribute('aria-label')), ['My requests']);
-      assert.ok([...row.querySelectorAll('button')].every((button) => !/discover/i.test(button.getAttribute('aria-label') ?? '')), 'no card that says Discover');
+      assert.deepEqual(page.homeAdded(), [], 'nothing of the add-on\'s on Home');
+      assert.equal(page.document.querySelectorAll(`a[href*="jellypass/discover"]`).length, 0, 'no link to the page');
+      assert.equal(page.requests.length, 0, 'and no call');
     });
 
     it('is in the desktop layout\'s toolbar, before its Search link, in the toolbar\'s own classes and icon, whose Search page state it does not copy', async (t) => {
@@ -6621,16 +6478,16 @@ assert.equal(connected(page), tab(page, 'films'), 'the Films tab has focus');
       assertFocusRing(page, cardsOf(rowNamed(page, 'Trending'))[0].querySelector('.cardImageContainer'), 'Discover poster card');
       assertFocusRing(page, cardsOf(rowNamed(page, 'Popular movies'))[0].querySelector('.cardImageContainer'), 'Discover backdrop card');
       const rules = rulesOf();
-      for (const selector of ['.jellypass-tv-discover-button:focus', '.jellypass-tv-discover-chip:focus', '.jellypass-tv-discover-foot:focus', '.jellypass-tv-discover-entry:focus', '.jellypass-tv-discover-link:focus', '.jellypass-tv-discover-logo:focus']) {
+      for (const selector of ['.jellypass-tv-discover-button:focus', '.jellypass-tv-discover-chip:focus', '.jellypass-tv-discover-foot:focus', '.jellypass-tv-discover-entry:focus', '.jellypass-tv-discover-link:focus', '.jellypass-tv-discover-logo:focus', '.jellypass-tv-discover-requests:focus']) {
         const found = rules.filter((rule) => rule.selector === selector);
         assert.equal(found.length >= 1 && found.every((rule) => /box-shadow:\s*(?:inset\s+)?0\s+0\s+0\s+0?\.\d+em/.test(rule.body)), true, `${selector} draws a ring`);
       }
-      // Every focusable element of the page is one of those: chips, hero buttons, retry, the foot, a card, a service's heading link or a studio's tile.
+      // Every focusable element of the page is one of those: chips, the My requests link, hero buttons, retry, the foot, a card, a service's heading link or a studio's tile.
       const focusable = [...root(page).querySelectorAll('button, a, [tabindex]')];
       assert.ok(focusable.length > 20);
       for (const element of focusable) {
         const classes = element.className.split(/\s+/);
-        assert.equal(classes.includes('jellypass-tv-card') || classes.includes('jellypass-tv-discover-chip') || classes.includes('jellypass-tv-discover-button') || classes.includes('jellypass-tv-discover-foot') || classes.includes('jellypass-tv-discover-link') || classes.includes('jellypass-tv-discover-logo'), true, element.className);
+        assert.equal(classes.includes('jellypass-tv-card') || classes.includes('jellypass-tv-discover-chip') || classes.includes('jellypass-tv-discover-button') || classes.includes('jellypass-tv-discover-foot') || classes.includes('jellypass-tv-discover-link') || classes.includes('jellypass-tv-discover-logo') || classes.includes('jellypass-tv-discover-requests'), true, element.className);
       }
     });
 
@@ -6655,11 +6512,14 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
   const json = (body, status = 200) => ({ status, body: JSON.stringify(body) });
   const part = (node, selector) => node.querySelector(selector)?.textContent ?? null;
   const generic = (call) => call.replace(/\/hidden\/(movie|tv)\/[0-9]+$/, '/hidden/{mediaType}/{tmdbId}').replace(/^(GET|POST|DELETE) \/(movie|tv)\/[0-9]+/, '$1 /$2/{tmdbId}');
+  /** Jellyfin web on a TV, then the Discover page: its answers are the first to show the server has hiding (Home asks nothing). */
   const open = async (t, app, options) => {
     const page = await openJellyfinWeb(t, app, options);
     page.document.documentElement.classList.add('layout-tv');
     page.document.body.insertAdjacentHTML('afterbegin', HEADER);
     page.home();
+    await page.settled();
+    page.route('#/jellypass/discover');
     await page.settled();
     return page;
   };
@@ -6692,7 +6552,7 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
   });
 
   describe('the title page', () => {
-    it('offers Not interested among the page\'s buttons with what it does; one press is one POST, then Unhide stays focused, and Home\'s row leaves the title with no call', async (t) => {
+    it('offers Not interested among the page\'s buttons with what it does; one press is one POST, then Unhide stays focused, and the Discover page leaves the title with no call', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
       const page = await open(t, app);
       assert.ok(rowTitles(page).includes('Synthetic Movie One'));
@@ -6726,13 +6586,13 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       assert.equal(hideMessage(page), 'Hidden from Discover. Choose Unhide to undo.');
       assert.equal(part(page.view(), '.jellypass-tv-title-hidden-fact'), 'Hidden from Discover');
       assert.equal(page.view().querySelector('.jellypass-tv-title-hide-message').getAttribute('role'), 'status');
-      // Back to Home: the row is drawn from the answer it holds, without the title and without a call.
+      // Back to the Discover page: its first row is drawn from the answer it holds, without the title and without a call.
       page.back();
       await page.settled();
       assert.ok(!rowTitles(page).includes('Synthetic Movie One'));
       assert.equal(page.requests.length, before + 1, 'nothing was read to leave it out');
       assert.ok(page.requests.length > rowCalls);
-      // Unhide: one DELETE, the label comes back, and the row has the title again.
+      // Unhide: one DELETE, the label comes back, and the Discover page has the title again.
       await toTitle(page, T_MOVIE);
       const after = page.requests.length;
       assert.equal(hideButton(page).textContent, 'Unhide', 'a hidden title opens with Unhide');
@@ -6747,7 +6607,7 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       assert.ok(after > 0);
       page.back();
       await page.settled();
-      assert.ok(rowTitles(page).includes('Synthetic Movie One'), 'the row has it again');
+      assert.ok(rowTitles(page).includes('Synthetic Movie One'), 'the Discover page has it again');
       assert.equal(page.logged.length, 0);
     });
 
@@ -6762,7 +6622,6 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
     });
 
     it('says each failure in fixed words, offers the button again with focus on it, and never repeats a call or shows upstream text', async (t) => {
-      const app = await startApp(t, webWorld(), tvOn());
       const cases = [
         [409, "You've hidden as many titles as you can (2,000). Unhide some to hide more."],
         [429, 'Too many tries, try again in a few minutes.'],
@@ -6770,6 +6629,8 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
         [500, "We couldn't change that just now. Try again in a moment."],
       ];
       for (const [status, words] of cases) {
+        // A server per case: each opens the Discover page, whose reads would otherwise meet the address's own budget.
+        const app = await startApp(t, webWorld(), tvOn());
         const seen = [];
         const page = await open(t, app, { override: (pathname, init) => {
           if (!pathname.startsWith(HIDDEN)) return undefined;
@@ -6786,12 +6647,12 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
         assert.equal(page.focused(), hideButton(page));
         assert.deepEqual(seen, [`POST ${HIDDEN}/movie/${T_MOVIE}`], 'sent once');
         lacks(page.document.documentElement.outerHTML, /private/);
-        // Nothing left the row, because nothing was hidden.
+        // Nothing left the Discover page, because nothing was hidden.
         page.back();
         await page.settled();
         assert.ok(rowTitles(page).includes('Synthetic Movie One'));
       }
-      const offline = await open(t, app, { override: (pathname) => { if (pathname.startsWith(HIDDEN)) throw new TypeError('Failed to fetch'); return undefined; } });
+      const offline = await open(t, await startApp(t, webWorld(), tvOn()), { override: (pathname) => { if (pathname.startsWith(HIDDEN)) throw new TypeError('Failed to fetch'); return undefined; } });
       await toTitle(offline, T_MOVIE);
       offline.click(hideButton(offline));
       await offline.settled();
@@ -6822,7 +6683,7 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       page.document.dispatchEvent(new page.Event('pageshow'));
       release();
       await page.settled();
-      // The old answer is ignored; the page is ended (another member) and the Home row still holds every title.
+      // The old answer is ignored; the page is ended (another member).
       assert.equal(page.view(), null);
       assert.equal(page.requests.filter((request) => request.init.method === 'POST').length, 1);
     });
@@ -6855,7 +6716,7 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       release();
       await page.settled();
       assert.equal(part(page.view(), '.jellypass-tv-title-error'), 'Sign in to continue', 'nothing said over it');
-      page.route('#/home');
+      page.route('#/jellypass/discover');
       await page.settled();
       assert.ok(rowTitles(page).includes('Synthetic Movie One'), 'the late hide was not written');
     });
@@ -7016,7 +6877,7 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       page.route('#/jellypass/requests');
       await page.settled();
       const bar = page.document.querySelector('[data-jellypass-tv-views]');
-      assert.ok(bar, 'the bar is drawn (the Home row already showed hiding)');
+      assert.ok(bar, 'the bar is drawn (the Discover page already showed hiding)');
       assert.equal(bar.getAttribute('aria-label'), 'My requests views');
       assert.ok(bar.classList.contains('focuscontainer-x'));
       const buttons = [...bar.querySelectorAll('button')];
@@ -7074,18 +6935,21 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       assert.deepEqual(named(page), []);
       assert.equal(page.document.querySelector('.jellypass-tv-requests-note:not([hidden])').textContent.slice(0, 14), 'Nothing hidden');
       assert.equal(page.focused()?.classList.contains('jellypass-tv-view'), true, 'focus is never lost');
-      // Home\'s row was read while they were hidden: nothing is fetched to put them back (rows may be shorter) until it is read again.
+      // The Discover page was read while they were hidden: nothing is fetched to put them back (rows may be shorter) until it is read again.
       const trendingCalls = () => page.requests.filter((request) => new URL(request.url).pathname === `${APP}/discover/trending`).length;
       const reads = trendingCalls();
-      page.route('#/home');
+      page.route('#/jellypass/discover');
       await page.settled();
       assert.ok(!rowTitles(page).includes('Synthetic Movie One'));
       assert.equal(trendingCalls(), reads);
-      page.advance(61_000);
-      page.shown();
+      // Its answers are kept ten minutes: opened after that, it reads them again.
+      page.route('#/home.html');
+      await page.settled();
+      page.advance(10 * 60_000 + 1_000);
+      page.route('#/jellypass/discover');
       await page.settled();
       assert.equal(trendingCalls(), reads + 1);
-      assert.ok(rowTitles(page).includes('Synthetic Movie One'), 'the row read again has it');
+      assert.ok(rowTitles(page).includes('Synthetic Movie One'), 'the Discover page read again has it');
     });
 
     it('names ten at a time, four calls at once, and reads the next page only when the 50 read are all shown (the pinned budget)', async (t) => {
@@ -7544,11 +7408,8 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
     // An init object is never read, so even a plain `{ method: 'GET' }` is sent as it was (the fetch wrap is a backup).
     assert.deepEqual(sent.map((request) => request.url), [CAPPED[SEARCH_ITEMS], SEARCH_PERSONS, SEARCH_ITEMS, UNTOUCHED[0]]);
     assert.deepEqual(sent[1].init, { method: 'GET', headers: { Accept: 'application/json' } }, 'init is passed on as it was');
-    // The Home row on a TV: its call is the same as anywhere.
-    page.home();
-    await page.settled();
-    assert.deepEqual(page.calls(from + sent.length), BUDGET.screens['tv-home-row'].atOnce);
-    assert.ok(page.cards().length > 0, 'the Home row is drawn');
+    // The Discover page on a TV: its calls are the same as anywhere, none of them capped.
+    await discoverRuns(page);
   });
 
   it('on a TV, the JellyPass Search row still asks for the same words in one call and draws its cards', async (t) => {
@@ -7597,22 +7458,16 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
     let from = first.page.requests.length;
     await first.page.window.fetch(SEARCH_ITEMS);
     assert.deepEqual(first.page.requests.slice(from).map((request) => request.url), [CAPPED[SEARCH_ITEMS]]);
-    first.page.home();
-    await first.page.settled();
-    assert.ok(first.page.cards().length > 0, 'the Home row is drawn');
+    await discoverRuns(first.page);
     // An XMLHttpRequest whose prototype throws when read, and a navigator whose user agent throws: nothing breaks.
     const hostile = new Proxy(function XMLHttpRequest() {}, { get: (target, key) => { if (key === 'prototype') throw new Error('no'); return target[key]; } });
     const second = await openJellyfinWeb(t, app, { scopeExtras: { tizen: {}, XMLHttpRequest: hostile, navigator: { get userAgent() { throw new Error('no'); } } } });
-    second.home();
-    await second.settled();
-    assert.ok(second.cards().length > 0, 'the Home row is drawn');
+    await discoverRuns(second);
     // No XMLHttpRequest at all, on a TV.
     const third = await openJellyfinWeb(t, app, { scopeExtras: { tizen: {}, navigator: { userAgent: TIZEN_UA } } });
     from = third.requests.length;
-    third.home();
-    await third.settled();
-    assert.ok(third.cards().length > 0, 'the Home row is drawn');
-    assert.deepEqual(third.calls(from), BUDGET.screens['tv-home-row'].atOnce);
+    const calls = await discoverRuns(third);
+    assert.deepEqual(third.calls(from), calls, 'Home asked nothing, the Discover page what it always asks');
   });
 
   it('on a TV, a fetch that fails is the page\'s own failure, and a rewrite that cannot be made sends the original', async (t) => {
@@ -7773,5 +7628,306 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
     assert.ok(source.includes("'searchterm'") || source.includes('"searchterm"'), 'the searchTerm check');
     assert.ok(/\bXMLHttpRequest\b/.test(source));
     assert.doesNotThrow(() => parse(source, { ecmaVersion: 2017, sourceType: 'script' }));
+  });
+});
+
+describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_000 }, () => {
+  const CONFIRMATION = "Thanks — we'll get this for your household.";
+  const COLLECTION = 900100;
+  const view = (page) => page.document.querySelector('[data-jellypass-tv-title], [data-jellypass-tv-collection]');
+  const text = (page, selector) => view(page)?.querySelector(selector)?.textContent ?? null;
+  /** A JellyPass page opened at its address directly, under Jellyfin web's header, every call answered. */
+  const openAt = async (t, app, hash, options) => {
+    const page = await openJellyfinWeb(t, app, options);
+    page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+    page.goTo(hash);
+    showFallback(page.document);
+    await page.settled();
+    return page;
+  };
+  /** As `METHOD /path`, a title's ID as `{tmdbId}` and a collection's as `{id}`, sorted. */
+  const calls = (page, from = 0) => page.calls(from).map((call) => call.replace(/\/collection\/[0-9]+$/, '/collection/{id}'));
+  const posted = (page, from = 0) => page.requests.slice(from).filter((request) => request.init.method === 'POST').map((request) => `${new URL(request.url).pathname.replace('/jellypass/app/v1', '')} ${request.init.body}`);
+  const films = (page) => [...view(page).querySelectorAll('.jellypass-tv-title-film')].map((film) => ({
+    title: film.querySelector('.jellypass-tv-title-film-name').textContent,
+    status: film.querySelector('.jellypass-tv-title-status').textContent,
+    note: film.querySelector('.jellypass-tv-title-film-note')?.textContent ?? null,
+    pick: film.matches('button') ? film.getAttribute('aria-pressed') : null,
+  }));
+  const toggle = (page, tmdbId) => view(page).querySelector(`.jellypass-tv-title-film-pick[data-tmdb-id="${tmdbId}"]`);
+  const getButton = (page) => view(page).querySelector('.jellypass-tv-title-collection-get');
+
+  describe('the season picker', () => {
+    it('asks for every season the household can ask for in the one call Select all and Get this make', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await openAt(t, app, `#/jellypass/title/tv/${T_TV}`);
+      const all = view(page).querySelector('.jellypass-tv-title-get-all');
+      assert.equal(all.textContent, 'Get all missing seasons');
+      assert.ok(all.parentNode.querySelector('.jellypass-tv-title-select-all'), 'beside Select all');
+      assert.ok(all.closest('.jellypass-tv-title-seasons'), 'next to the season picker');
+      const before = page.requests.length;
+      page.click(all);
+      assert.equal(all.disabled, true);
+      page.click(all);
+      await page.settled();
+      assert.deepEqual(posted(page, before), [`/tv/${T_TV}/get {"seasons":[1,2]}`], 'one call, every season, once');
+      assert.deepEqual(page.calls(before), BUDGET.screens['tv-series'].getThis);
+      assert.equal(text(page, '.jellypass-tv-title-message'), CONFIRMATION);
+      assert.equal(view(page).querySelector('.jellypass-tv-title-get-all, .jellypass-tv-title-get, .jellypass-tv-title-season-pick'), null, 'nothing left that could send again');
+      await app.background.settled();
+    });
+
+    it('leaves out a season the household has or asked for, shows with one season left, and none when nothing is left', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const real = (await app.get(`/jellypass/app/v1/tv/${T_TV}`)).json();
+      const withStates = (states) => JSON.stringify({ ...real, seasons: real.seasons.map((season, index) => ({ ...season, state: states[index] })) });
+      let states = ['requested', 'get_this'];
+      const override = (pathname, init) => (pathname === `/jellypass/app/v1/tv/${T_TV}` && (init.method ?? 'GET') === 'GET' ? { status: 200, body: withStates(states) } : undefined);
+      const page = await openAt(t, app, `#/jellypass/title/tv/${T_TV}`, { override });
+      const all = view(page).querySelector('.jellypass-tv-title-get-all');
+      assert.ok(all, 'shown for one season');
+      assert.equal(view(page).querySelector('.jellypass-tv-title-select-all'), null);
+      const before = page.requests.length;
+      page.click(all);
+      await page.settled();
+      assert.deepEqual(posted(page, before), [`/tv/${T_TV}/get {"seasons":[2]}`]);
+      states = ['in_library', 'requested'];
+      const done = await openAt(t, app, `#/jellypass/title/tv/${T_TV}`, { override });
+      assert.equal(view(done).querySelector('.jellypass-tv-title-get-all'), null);
+      await app.background.settled();
+    });
+
+    it('says how long to wait when the limits refuse it, and offers it again', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const override = (pathname, init) => (init.method === 'POST' ? { status: 429, body: '{"error":"too_many_requests","retryAfterSeconds":150}', headers: { 'retry-after': '150' } } : undefined);
+      const page = await openAt(t, app, `#/jellypass/title/tv/${T_TV}`, { override });
+      const all = view(page).querySelector('.jellypass-tv-title-get-all');
+      page.click(all);
+      await page.settled();
+      assert.equal(text(page, '.jellypass-tv-title-message'), 'Too many tries. Try again in 3 minutes.');
+      assert.equal(all.disabled, false);
+      assert.equal(all.textContent, 'Get all missing seasons');
+      assert.ok(page.focused() === all, 'focus back on the button');
+    });
+  });
+
+  describe('the link from a film', () => {
+    it('links a film to its collection\'s page, which opens at its own address in the budget\'s one call', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`);
+      assert.deepEqual(calls(page), BUDGET.screens['tv-movie'].atOnce, 'the link costs no call');
+      const link = view(page).querySelector('.jellypass-tv-title-collection');
+      assert.equal(link.textContent, 'Part of Synthetic Collection');
+      assert.equal(link.tagName, 'BUTTON', 'a remote reaches it');
+      const before = page.requests.length;
+      const from = page.location.hash;
+      page.click(link);
+      assert.equal(page.location.hash, `#/jellypass/collection/${COLLECTION}`);
+      page.follow(from);
+      await page.settled();
+      // Only the collection's own call (the budget's count is pinned opened directly, below: going from one JellyPass page to
+      // another, this harness replaces Jellyfin's fallback page after the hash change, which opens the route a second time).
+      assert.deepEqual([...new Set(calls(page, before))], BUDGET.screens['tv-collection'].atOnce);
+      assert.equal(headerTitle(page), 'Synthetic Collection');
+      assert.equal(text(page, 'h1'), 'Synthetic Collection');
+      // Back returns to the film.
+      page.back();
+      await page.settled();
+      assert.equal(text(page, 'h1'), 'Synthetic Movie One');
+    });
+
+    it('shows no link for a film in no collection, or from a server before apiVersion 6 (no field)', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const real = (await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`)).json();
+      const { collection: _, ...old } = real;
+      for (const [name, body] of [['old server', old], ['no collection', { ...real, collection: null }], ['unusable', { ...real, collection: { id: 0, name: 'x' } }]]) {
+        const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`, { override: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` ? { status: 200, body: JSON.stringify(body) } : undefined) });
+        assert.equal(text(page, 'h1'), 'Synthetic Movie One', name);
+        assert.equal(view(page).querySelector('.jellypass-tv-title-collection'), null, name);
+        assert.ok(view(page).querySelector('.jellypass-tv-title-get'), name);
+      }
+      // A series has none either.
+      const series = await openAt(t, app, `#/jellypass/title/tv/${T_TV}`);
+      assert.equal(view(series).querySelector('.jellypass-tv-title-collection'), null);
+    });
+  });
+
+  describe('the collection page', () => {
+    it('lists each film with its state; the films out and missing ticked, one not released yet shown but not ticked', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`);
+      assert.deepEqual(calls(page), BUDGET.screens['tv-collection'].atOnce);
+      assert.equal(text(page, '.jellypass-tv-title-overview'), 'A synthetic film series used only in tests.');
+      assert.equal(view(page).querySelector('.jellypass-tv-title-backdrop img').getAttribute('src'), 'https://image.tmdb.org/t/p/w780/synthetic-backdrop-900100.jpg');
+      assert.deepEqual(films(page), [
+        { title: 'Synthetic Movie One', status: 'Available to get', note: null, pick: 'true' },
+        { title: 'Synthetic Movie Three', status: 'Ready to watch', note: null, pick: null },
+        { title: 'Synthetic Movie Five', status: 'Available to get', note: 'Not released yet · 2999-12-31', pick: 'false' },
+        { title: 'Synthetic Movie Six', status: 'Available to get', note: 'Not released yet', pick: 'false' },
+      ]);
+      const get = getButton(page);
+      assert.equal(get.textContent, 'Get all missing films');
+      assert.ok(page.focused() === get, 'focus on the button');
+      // Ticking by hand changes the button's words; nothing is sent by choosing.
+      page.click(toggle(page, 900005));
+      assert.equal(get.textContent, 'Get selected (2)');
+      page.click(toggle(page, 900005));
+      assert.equal(get.textContent, 'Get all missing films');
+      page.click(toggle(page, T_MOVIE));
+      assert.equal(get.textContent, 'Get selected (0)');
+      assert.equal(get.disabled, true);
+      await page.settled();
+      assert.equal(page.posts().length, 0);
+      // The d-pad reaches the films: they are buttons, with the season cards' focus ring.
+      const css = readFileSync(path.join(DIST_TV, STYLESHEET), 'utf8');
+      assert.ok(toggle(page, T_MOVIE).classList.contains('jellypass-tv-title-season-pick') && css.includes('.jellypass-tv-title-season-pick:focus'));
+      assertNoCanaries(view(page).outerHTML);
+      lacks(view(page).textContent, /download/i);
+    });
+
+    it('asks for the films ticked one call each, one after another in order, then reads the collection again', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let open = 0;
+      let most = 0;
+      const override = async (pathname, init) => {
+        if (init.method !== 'POST') return undefined;
+        open += 1;
+        most = Math.max(most, open);
+        await pause(30);
+        open -= 1;
+        return undefined;
+      };
+      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
+      page.click(toggle(page, 900005));
+      const before = page.requests.length;
+      page.click(getButton(page));
+      assert.equal(getButton(page).textContent, 'Sending…');
+      page.click(getButton(page));
+      await page.settled();
+      assert.equal(most, 1, 'one call at a time');
+      assert.deepEqual(posted(page, before), [`/movie/${T_MOVIE}/get {}`, '/movie/900005/get {}']);
+      assert.deepEqual(calls(page, before), BUDGET.screens['tv-collection'].getTwo);
+      const message = view(page).querySelector('.jellypass-tv-title-message');
+      assert.equal(message.querySelector('.jellypass-tv-title-collection-result').textContent, CONFIRMATION);
+      assert.equal(message.querySelector('.jellypass-tv-title-collection-asked').textContent, 'Asked for: Synthetic Movie One, Synthetic Movie Five.');
+      assert.equal(message.querySelector('.jellypass-tv-title-collection-not-asked'), null);
+      assert.ok(page.focused() === message, 'focus on what was done');
+      assert.deepEqual(films(page).map((film) => [film.status, film.pick]), [['Requested', null], ['Ready to watch', null], ['Requested', null], ['Available to get', 'false']]);
+      assert.equal(getButton(page).textContent, 'Get selected (0)', 'only the film not out is left, not ticked');
+      await app.background.settled();
+      // Each film is its own request in My requests.
+      const listed = (await app.get('/jellypass/app/v1/requests')).json().results.map((entry) => entry.tmdbId).sort();
+      assert.deepEqual(listed, [T_MOVIE, 900005]);
+    });
+
+    it('stops at the first refusal: says which films were asked for and which were not, with the wait, and reads again', async (t) => {
+      const parts = [900040, 900041, 900042, 900043].map((id, index) => ({ id, title: `Synthetic Part ${index + 1}`, release_date: `200${index}-01-01` }));
+      const app = await startApp(t, webWorld({ tmdbCollections: { 900170: { name: 'Synthetic Parts', parts } } }), { ...tvOn(), getThisLimits: { perUser: 2, perClient: 100, perHousehold: 100, windowMs: 120_000 } });
+      t.mock.method(console, 'warn', () => undefined);
+      const page = await openAt(t, app, '#/jellypass/collection/900170');
+      assert.equal(getButton(page).textContent, 'Get all missing films');
+      const before = page.requests.length;
+      page.click(getButton(page));
+      await page.settled();
+      // The third was refused (the caller's two used up); the fourth was never sent.
+      assert.deepEqual(posted(page, before), ['/movie/900040/get {}', '/movie/900041/get {}', '/movie/900042/get {}']);
+      const message = view(page).querySelector('.jellypass-tv-title-message');
+      assert.ok(message.classList.contains('jellypass-tv-title-error'));
+      assert.equal(message.querySelector('.jellypass-tv-title-collection-result').textContent, 'Too many tries. Try again in 2 minutes.');
+      assert.equal(message.querySelector('.jellypass-tv-title-collection-asked').textContent, 'Asked for: Synthetic Part 1, Synthetic Part 2.');
+      assert.equal(message.querySelector('.jellypass-tv-title-collection-not-asked').textContent, 'Not asked for: Synthetic Part 3, Synthetic Part 4.');
+      // Read again: the two asked for are requested, the two not asked for are offered (and ticked) again.
+      assert.equal(calls(page, before).filter((call) => call === 'GET /collection/{id}').length, 1);
+      assert.deepEqual(films(page).map((film) => [film.status, film.pick]), [['Requested', null], ['Requested', null], ['Available to get', 'true'], ['Available to get', 'true']]);
+      assert.equal(getButton(page).textContent, 'Get all missing films');
+      await app.background.settled();
+    });
+
+    it('stops at a failure that is not a refusal too, and says so in the fixed words', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let posts = 0;
+      const override = (pathname, init) => {
+        if (init.method !== 'POST') return undefined;
+        posts += 1;
+        return posts === 1 ? { status: 502, body: '{"error":"unavailable"}' } : undefined;
+      };
+      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
+      page.click(toggle(page, 900006));
+      page.click(getButton(page));
+      await page.settled();
+      assert.equal(posts, 1);
+      const message = view(page).querySelector('.jellypass-tv-title-message');
+      assert.equal(message.querySelector('.jellypass-tv-title-collection-result').textContent, "We couldn't send that just now. Try again in a moment.");
+      assert.equal(message.querySelector('.jellypass-tv-title-collection-asked'), null);
+      assert.equal(message.querySelector('.jellypass-tv-title-collection-not-asked').textContent, 'Not asked for: Synthetic Movie One, Synthetic Movie Six.');
+    });
+
+    it('shows the sign-in when My requests refuses the member, even when the collection read failed too', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let failing = true;
+      const override = (pathname, init) => {
+        if (!failing || (init.method ?? 'GET') !== 'GET') return undefined;
+        if (pathname === `/jellypass/app/v1/collection/${COLLECTION}`) return { status: 503, body: '{"error":"unavailable"}' };
+        if (pathname === '/jellypass/app/v1/requests') return { status: 401, body: '{"error":"unauthorized"}' };
+        return undefined;
+      };
+      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
+      assert.equal(text(page, '.jellypass-tv-title-error'), 'Sign in to continue');
+      assert.equal(view(page).querySelector('.jellypass-tv-title-retry'), null, 'no Try again');
+      // The same after the button: the read again after a film was asked for fails both ways at once.
+      failing = false;
+      const again = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
+      failing = true;
+      again.click(toggle(again, 900006));
+      again.click(getButton(again));
+      await again.settled();
+      assert.equal(text(again, '.jellypass-tv-title-error'), 'Sign in to continue');
+      assert.equal(view(again).querySelector('.jellypass-tv-title-retry'), null, 'no Try again');
+    });
+
+    it('says Not found with no call for an address that names no collection, and for one the server does not know', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      for (const id of ['abc', '0', '01', '2147483648']) {
+        const page = await openAt(t, app, `#/jellypass/collection/${id}`);
+        assert.equal(text(page, '.jellypass-tv-title-error'), 'Not found', id);
+        assert.equal(page.requests.length, 0, id);
+      }
+      const unknown = await openAt(t, app, '#/jellypass/collection/404404');
+      assert.equal(text(unknown, '.jellypass-tv-title-error'), 'Not found');
+      // The collection, and My requests read with it.
+      assert.equal(unknown.requests.length, 2);
+    });
+
+    it('is written in the budget file', () => {
+      const screen = BUDGET.screens['tv-collection'];
+      assert.deepEqual(screen.atOnce, ['GET /collection/{id}', 'GET /requests']);
+      assert.equal(screen.calls, screen.atOnce.length);
+      assert.deepEqual(screen.getTwo, ['GET /collection/{id}', 'GET /requests', 'POST /movie/{tmdbId}/get', 'POST /movie/{tmdbId}/get']);
+    });
+
+    it('shows a film whose request failed as such, never offers or ticks it, and so never sends it as newly asked for', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const failedList = JSON.stringify({ results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: T_MOVIE, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] });
+      const override = (pathname) => (pathname === '/jellypass/app/v1/requests' ? { status: 200, body: failedList } : undefined);
+      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
+      assert.deepEqual(films(page)[0], { title: 'Synthetic Movie One', status: "We couldn't get this", note: null, pick: null });
+      assert.equal(toggle(page, T_MOVIE), null);
+      // Only the films not out yet are left, none ticked.
+      assert.equal(getButton(page).textContent, 'Get selected (0)');
+      assert.equal(getButton(page).disabled, true);
+      page.click(getButton(page));
+      await page.settled();
+      assert.equal(page.posts().length, 0);
+    });
+
+    it('marks a film the member hid as Not interested and leaves it unticked, though it can be ticked by hand', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      assert.equal((await app.post(`/jellypass/app/v1/hidden/movie/${T_MOVIE}`, undefined)).status, 200);
+      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`);
+      assert.deepEqual(films(page)[0], { title: 'Synthetic Movie One', status: 'Available to get', note: 'Not interested', pick: 'false' });
+      assert.equal(getButton(page).textContent, 'Get selected (0)');
+      page.click(toggle(page, T_MOVIE));
+      assert.equal(getButton(page).textContent, 'Get selected (1)');
+    });
   });
 });

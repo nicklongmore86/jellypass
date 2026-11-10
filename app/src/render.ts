@@ -1,6 +1,6 @@
 import type { ApiErrorKind, Profile, SignInErrorKind } from './api.js';
 import { icon } from './icons.js';
-import type { Card, CoarseStatus, HiddenEntry, HouseholdState, Movie, Page, RequestEntry, Season, SeasonSummary, Series, Source, SourceKind } from './types.js';
+import type { Card, CoarseStatus, Collection, CollectionFilm, HiddenEntry, HouseholdState, Movie, Page, RequestEntry, Season, SeasonSummary, Series, Source, SourceKind } from './types.js';
 
 /**
  * Rendering: DTOs in, DOM out. Everything shown is a fixed string or a DTO field set with `textContent`; nothing is
@@ -35,6 +35,8 @@ export const GET_THIS_TEXT = {
   chooseBelow: 'Choose the seasons you want below.',
   selectAll: 'Select all',
   clearAll: 'Clear all',
+  /** Asks at once for every season the household does not have and has not asked for: the same one call as Select all, then Get this. */
+  allMissingSeasons: 'Get all missing seasons',
   confirmation: "Thanks — we'll get this for your household.",
   failedNote: 'Ask your JellyPass admin to try again.',
   rate_limited: 'Too many tries, try again in a few minutes.',
@@ -58,6 +60,27 @@ export const CANCEL_TEXT = {
   offline: "You're offline. Check your connection, then try again.",
   unavailable: "We couldn't cancel that just now. Try again in a moment.",
   requestedOn: (day: string) => `Requested on ${day}`,
+} as const;
+
+/**
+ * A collection (film series) page. Each film is its own "Get this", sent one after another; when one is refused the
+ * rest are not sent, and the page says which films were asked for and which were not.
+ */
+export const COLLECTION_TEXT = {
+  partOf: (name: string) => `Part of ${name}`,
+  films: 'Films',
+  chooseFilms: 'Choose the films you want',
+  getAll: 'Get all missing films',
+  getSelected: (count: number) => `Get selected (${count})`,
+  sending: (done: number, total: number) => `Sending ${done} of ${total}…`,
+  notReleased: 'Not released yet',
+  /** A film the member hid from Discover: still listed, still tickable, never ticked at first. */
+  hidden: 'Not interested',
+  noneMissing: 'Your household has every released film here, or has asked for it.',
+  asked: (count: number) => `Thanks — we'll get ${count === 1 ? 'this film' : `these ${count} films`} for your household.`,
+  askedList: 'Asked for',
+  notAskedList: 'Not asked for',
+  none: 'No films listed.',
 } as const;
 
 /** A Get this or Cancel the "Get this" budgets refused, saying how long to wait, in whole seconds. */
@@ -464,7 +487,7 @@ function heroSlide(doc: Document, card: Card, index: number, total: number): HTM
  * and the round bubbles under the card (each a labelled button) do the same for those who cannot swipe, and scroll
  * smoothly unless the member prefers reduced motion.
  */
-export function heroCarousel(doc: Document, cards: readonly Card[], filter: HomeFilter = 'all'): HTMLElement | undefined {
+export function heroCarousel(doc: Document, cards: readonly Card[], filter: DiscoverFilter = 'all'): HTMLElement | undefined {
   const shown = cards.slice(0, HERO_MAX);
   if (shown.length === 0) return undefined;
   const slides = shown.map((card, index) => heroSlide(doc, card, index, shown.length));
@@ -539,33 +562,63 @@ function accentClass(accent: RowAccent | undefined): string {
   return accent && accent !== 'default' ? ` water-${accent}` : '';
 }
 
-/** Home's filter: everything, only films, or only series. */
-export type HomeFilter = 'all' | 'movies' | 'tv';
-export const HOME_FILTERS: readonly HomeFilter[] = ['all', 'movies', 'tv'];
-export const HOME_TEXT = {
+/** The Discover page's filter: everything, only films, or only series. */
+export type DiscoverFilter = 'all' | 'movies' | 'tv';
+export const DISCOVER_FILTERS: readonly DiscoverFilter[] = ['all', 'movies', 'tv'];
+export const DISCOVER_TEXT = {
   label: 'Show',
   filters: { all: 'All', movies: 'Movies', tv: 'TV' },
   shown: { all: 'All shown.', movies: 'Movies shown.', tv: 'TV shown.' },
 } as const;
 
-/** The address of Home under a filter: All has none (`#/`), the others say so in the query (`?kind=movies`, `?kind=tv`). */
-export function homeHref(filter: HomeFilter): string {
-  return filter === 'all' ? '#/' : `#/?kind=${filter}`;
+/** The address of the Discover page under a filter: All has none (`#/discover`), the others say so in the query (`?kind=movies`, `?kind=tv`). */
+export function discoverHref(filter: DiscoverFilter): string {
+  return filter === 'all' ? '#/discover' : `#/discover?kind=${filter}`;
+}
+
+/** Home's words: a short page that leads to Discover, Search and My requests (it asks the API for nothing). */
+export const HOME_TEXT = {
+  title: 'Home',
+  links: [
+    { name: 'discover', href: '#/discover', label: 'Discover', note: 'Trending, popular and new films and series, by service and studio.' },
+    { name: 'search', href: '#/search', label: 'Search', note: 'Find a film or series by name.' },
+    { name: 'requests', href: '#/requests', label: 'My requests', note: 'What your household asked for, and what is ready to watch.' },
+  ],
+} as const;
+
+/**
+ * Home: its heading and one link each to Discover, Search and My requests, each with an icon, its name and a line on what it
+ * holds. Plain links (`<a href>`), so they work as any link does; nothing here is fetched.
+ */
+export function homeView(doc: Document): HTMLElement {
+  return el(doc, 'article', { class: 'home-screen' }, [
+    el(doc, 'h1', { class: 'screen-title visually-hidden', text: HOME_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }),
+    el(doc, 'ul', { class: 'home-links', attrs: { role: 'list' } }, HOME_TEXT.links.map((link) => el(doc, 'li', {}, [
+      el(doc, 'a', { class: 'home-link', attrs: { href: link.href, 'data-home-link': link.name } }, [
+        el(doc, 'span', { class: 'home-link-icon' }, [icon(doc, link.name)]),
+        el(doc, 'span', { class: 'home-link-text' }, [
+          el(doc, 'span', { class: 'home-link-label', text: link.label }),
+          el(doc, 'span', { class: 'home-link-note', text: link.note }),
+        ]),
+        el(doc, 'span', { class: 'home-link-chevron' }, [icon(doc, 'next')]),
+      ]),
+    ]))),
+  ]);
 }
 
 /**
- * Home's All | Movies | TV control: a radio group of real buttons (one choice, shown ticked and tinted), the chosen one `aria-checked`
+ * The Discover page's All | Movies | TV control: a radio group of real buttons (one choice, shown ticked and tinted), the chosen one `aria-checked`
  * and the only one in the tab order (arrow keys, Home and End move and choose; see main.ts). It is a row of outlined chips
- * that sticks under the header while Home scrolls.
+ * that sticks under the header while the Discover page scrolls.
  */
-export function homeSwitch(doc: Document, selected: HomeFilter, panelId: string): HTMLElement {
-  const buttons = HOME_FILTERS.map((filter) => el(doc, 'button', {
+export function discoverSwitch(doc: Document, selected: DiscoverFilter, panelId: string): HTMLElement {
+  const buttons = DISCOVER_FILTERS.map((filter) => el(doc, 'button', {
     class: 'segment',
-    text: HOME_TEXT.filters[filter],
+    text: DISCOVER_TEXT.filters[filter],
     attrs: {
       type: 'button',
       role: 'radio',
-      id: `home-filter-${filter}`,
+      id: `discover-filter-${filter}`,
       'data-filter': filter,
       'aria-checked': String(filter === selected),
       'aria-controls': panelId,
@@ -574,8 +627,8 @@ export function homeSwitch(doc: Document, selected: HomeFilter, panelId: string)
   }));
   // The tick is drawn on every chip and shown (by the stylesheet) only on the chosen one; it is hidden from assistive technology.
   for (const button of buttons) button.prepend(icon(doc, 'check'));
-  return el(doc, 'div', { class: 'home-switch' }, [
-    el(doc, 'div', { class: 'segmented segmented-home', attrs: { role: 'radiogroup', 'aria-label': HOME_TEXT.label } }, buttons),
+  return el(doc, 'div', { class: 'discover-switch' }, [
+    el(doc, 'div', { class: 'segmented segmented-discover', attrs: { role: 'radiogroup', 'aria-label': DISCOVER_TEXT.label } }, buttons),
   ]);
 }
 
@@ -796,6 +849,8 @@ export interface TitleHiding {
 
 /** What a "Get this" control needs from the screen that shows it. */
 export interface GetThisExtras {
+  /** A movie's link to its collection: only from a server that has collections (`apiVersion` 6). */
+  collections?: boolean;
   /** Offered only by a server that has hiding (`apiVersion` 3). */
   hiding?: TitleHiding;
   /** Asks for the given seasons (empty for a movie). Never rejects: it resolves to `accepted` or the kind of failure. */
@@ -830,6 +885,8 @@ export interface GetThisParts {
   boxes: Map<number, HTMLInputElement>;
   /** Checks or clears every season's box and nothing else: it asks for nothing. Only when there is more than one to pick. */
   selectAll?: HTMLButtonElement;
+  /** Asks for every season offered, at once: Select all and Get this in one press (a series page only). */
+  allMissing?: HTMLButtonElement;
 }
 
 /**
@@ -861,6 +918,13 @@ export function getThisParts(doc: Document, subject: string, choices: Choice[], 
   const selectAll = picking && inputs.length > 1
     ? el(doc, 'button', { class: 'button button-small button-secondary select-all', text: GET_THIS_TEXT.selectAll, attrs: { type: 'button' } })
     : undefined;
+  const allMissing = picking && inputs.length > 0
+    ? el(doc, 'button', {
+      class: 'button button-small button-secondary get-all-seasons',
+      text: GET_THIS_TEXT.allMissingSeasons,
+      attrs: { type: 'button', 'aria-label': `${GET_THIS_TEXT.allMissingSeasons}: ${subject}` },
+    })
+    : undefined;
   const update = () => {
     button.disabled = picking && chosen().length === 0;
     hint.hidden = !picking || chosen().length > 0;
@@ -874,12 +938,12 @@ export function getThisParts(doc: Document, subject: string, choices: Choice[], 
     for (const input of inputs) if (!input.disabled) input.checked = next;
     update();
   });
-  button.addEventListener('click', () => {
-    if (button.disabled) return;
+  const send = () => {
     const seasons = chosen();
     button.disabled = true;
     for (const input of inputs) input.disabled = true;
     if (selectAll) selectAll.disabled = true;
+    if (allMissing) allMissing.disabled = true;
     button.textContent = GET_THIS_TEXT.sending;
     button.setAttribute('aria-busy', 'true');
     message.className = 'get-message';
@@ -894,6 +958,7 @@ export function getThisParts(doc: Document, subject: string, choices: Choice[], 
       button.remove();
       hint.remove();
       selectAll?.remove();
+      allMissing?.remove();
       for (const input of inputs) input.remove();
       message.focus({ preventScroll: true });
     }).then((outcome) => {
@@ -915,13 +980,26 @@ export function getThisParts(doc: Document, subject: string, choices: Choice[], 
       button.removeAttribute('aria-busy');
       for (const input of inputs) input.disabled = false;
       if (selectAll) selectAll.disabled = false;
+      if (allMissing) allMissing.disabled = false;
       update();
     });
+  };
+  button.addEventListener('click', () => {
+    if (button.disabled) return;
+    send();
+  });
+  // Every season offered (those the household has neither got nor asked for), checked and asked for in one call: exactly
+  // what Select all, then Get this, sends.
+  allMissing?.addEventListener('click', () => {
+    if (allMissing.disabled) return;
+    for (const input of inputs) input.checked = true;
+    update();
+    send();
   });
   box.append(button);
   if (picking) box.append(hint);
   box.append(message);
-  return { action: box, boxes, ...(selectAll ? { selectAll } : {}) };
+  return { action: box, boxes, ...(selectAll ? { selectAll } : {}), ...(allMissing ? { allMissing } : {}) };
 }
 
 /** The title's backdrop as an inset rounded card (nothing drawn over it); a plain navy gradient when a title has none. */
@@ -1008,6 +1086,7 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
       el(doc, 'h1', { class: 'screen-title detail-title', text: title.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }),
       detailChips(doc, title),
       genres,
+      title.mediaType === 'movie' && extras.collections ? collectionLink(doc, title.collection) : undefined,
       el(doc, 'div', { class: 'actions' }, [failedMovie ? requestBadge(doc, 'failed') : stateBadge(doc, title.state)]),
       stateNote(doc, title.state),
       failedAny ? failedNote(doc) : undefined,
@@ -1021,6 +1100,158 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
   ]);
   if (title.mediaType === 'tv') main.append(seasonList(doc, title, extras.failed, parts));
   return el(doc, 'article', { class: 'detail' }, [detailHero(doc, title.backdropUrl), main]);
+}
+
+/** "Part of …": a film's link to its collection page, when it belongs to one. */
+function collectionLink(doc: Document, collection: Movie['collection']): HTMLElement | undefined {
+  if (!collection || !Number.isSafeInteger(collection.id) || collection.id < 1 || typeof collection.name !== 'string' || !collection.name) return undefined;
+  return el(doc, 'p', { class: 'collection-link' }, [
+    el(doc, 'a', { class: 'link', text: COLLECTION_TEXT.partOf(collection.name), attrs: { href: `#/collection/${collection.id}` } }),
+  ]);
+}
+
+/** What one press of a collection page's button asked for: the films asked for, those not sent, and why it stopped. */
+export interface CollectionOutcome {
+  asked: CollectionFilm[];
+  notAsked: CollectionFilm[];
+  /** Why the rest were not sent: the first refusal. Undefined when every film was asked for. */
+  failure?: ApiErrorKind | RateLimitedOutcome;
+}
+
+/**
+ * Asks for the given films one after another (one "Get this" each), stopping at the first refusal; `progress` is called
+ * before each. Never rejects.
+ */
+export type CollectionHandler = (films: CollectionFilm[], progress: (done: number, total: number) => void) => Promise<CollectionOutcome | 'unauthorized'>;
+
+export interface CollectionExtras {
+  onGet?: CollectionHandler;
+  /**
+   * Films the household asked for that could not be got (My requests' failed entries, as the film page reads them):
+   * shown as such and never offered, since asking again changes nothing until an administrator acts.
+   */
+  failed?: ReadonlySet<number>;
+  /** What the last press asked for and did not, shown at the top until the page is left. */
+  outcome?: CollectionOutcome;
+}
+
+/**
+ * The films a collection page ticks at first: every released film the household can still ask for, but not one the
+ * member hid ("Not interested", as Discover leaves it out) or one whose request failed.
+ */
+export function defaultFilms(collection: Collection, failed: ReadonlySet<number> = new Set()): CollectionFilm[] {
+  return pickableFilms(collection, failed).filter((film) => film.released && film.hidden !== true);
+}
+
+/** The films a member can tick: every one the household can still ask for, released or not, hidden or not, but not a failed one. */
+function pickableFilms(collection: Collection, failed: ReadonlySet<number>): CollectionFilm[] {
+  return collection.films.filter((film) => film.state === 'get_this' && !failed.has(film.tmdbId));
+}
+
+/** The summary of the last press: what was asked for, and what was not with the reason in fixed words. */
+function collectionSummary(doc: Document, outcome: CollectionOutcome): HTMLElement {
+  const names = (films: CollectionFilm[]) => films.map((film) => (film.year ? `${film.title} (${film.year})` : film.title)).join(', ');
+  const box = el(doc, 'div', { class: `get-message collection-outcome${outcome.failure ? ' get-error' : ''}`, attrs: { role: 'status', tabindex: '-1' } });
+  if (!outcome.failure) {
+    box.textContent = COLLECTION_TEXT.asked(outcome.asked.length);
+    return box;
+  }
+  if (outcome.asked.length) box.append(el(doc, 'p', { class: 'collection-asked', text: `${COLLECTION_TEXT.askedList}: ${names(outcome.asked)}.` }));
+  box.append(
+    el(doc, 'p', { class: 'collection-not-asked', text: `${COLLECTION_TEXT.notAskedList}: ${names(outcome.notAsked)}.` }),
+    el(doc, 'p', { class: 'collection-reason', text: failureText(GET_THIS_TEXT, outcome.failure) }),
+  );
+  return box;
+}
+
+/**
+ * A collection's page: its backdrop, name and overview, then its films oldest first, each with a link to its own page,
+ * its state and, for one the household can still ask for, a checkbox. Released films are ticked at first; one not out
+ * yet is not (it can be ticked by hand). One button asks for the ticked films, one "Get this" each: "Get all missing
+ * films" while the ticks are the first ones, "Get selected (N)" otherwise.
+ */
+export function collectionView(doc: Document, collection: Collection, origin: string, extras: CollectionExtras = {}): HTMLElement {
+  const failed = extras.failed ?? new Set<number>();
+  const pickable = extras.onGet ? pickableFilms(collection, failed) : [];
+  const preset = new Set(defaultFilms(collection, failed).map((film) => film.tmdbId));
+  const boxes = new Map<number, HTMLInputElement>();
+  for (const film of pickable) {
+    const input = el(doc, 'input', { attrs: { type: 'checkbox', value: String(film.tmdbId) } });
+    input.checked = preset.has(film.tmdbId);
+    boxes.set(film.tmdbId, input);
+  }
+  const items = collection.films.map((film) => {
+    const facts = [film.year ?? '', film.released ? '' : COLLECTION_TEXT.notReleased, film.hidden === true ? COLLECTION_TEXT.hidden : ''].filter(Boolean).join(' · ');
+    const failedHere = film.state === 'get_this' && failed.has(film.tmdbId);
+    const input = boxes.get(film.tmdbId);
+    const play = film.state === 'in_library' ? playButton(doc, film, origin, 'button button-small') : undefined;
+    return el(doc, 'li', { class: `collection-film${input ? ' season-pick' : ''}${film.released ? '' : ' film-unreleased'}` }, [
+      poster(doc, film.posterUrl, '', 'thumb'),
+      el(doc, 'a', { class: 'season-link', attrs: { href: href(film) } }, [
+        el(doc, 'span', { class: 'season-name', text: film.title }),
+        el(doc, 'span', { class: 'card-meta', text: facts }),
+      ]),
+      failedHere ? requestBadge(doc, 'failed') : stateBadge(doc, film.state),
+      play,
+      input ? el(doc, 'label', { class: 'choice' }, [input, el(doc, 'span', { class: 'visually-hidden', text: film.title })]) : undefined,
+    ]);
+  });
+  const list = items.length ? el(doc, 'ul', { class: 'season-list collection-films' }, items) : el(doc, 'p', { class: 'muted', text: COLLECTION_TEXT.none });
+  const message = extras.outcome ? collectionSummary(doc, extras.outcome) : undefined;
+  let action: HTMLElement | undefined;
+  const onGet = extras.onGet;
+  if (onGet && boxes.size > 0) {
+    const inputs = [...boxes.values()];
+    const button = el(doc, 'button', { class: 'button button-primary get-films', attrs: { type: 'button' } });
+    const ticked = () => pickable.filter((film) => boxes.get(film.tmdbId)?.checked === true);
+    const update = () => {
+      const chosen = ticked();
+      const asPreset = preset.size > 0 && chosen.length === preset.size && chosen.every((film) => preset.has(film.tmdbId));
+      button.textContent = asPreset ? COLLECTION_TEXT.getAll : COLLECTION_TEXT.getSelected(chosen.length);
+      button.disabled = chosen.length === 0;
+    };
+    update();
+    for (const input of inputs) input.addEventListener('change', update);
+    button.addEventListener('click', () => {
+      if (button.disabled) return;
+      const chosen = ticked();
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      for (const input of inputs) input.disabled = true;
+      void onGet(chosen, (done, total) => {
+        button.textContent = COLLECTION_TEXT.sending(done, total);
+      }).then((outcome) => {
+        // Accepted or not, the page is drawn again with what happened; a refused sign-in replaces it.
+        if (outcome === 'unauthorized') return;
+        button.removeAttribute('aria-busy');
+        for (const input of inputs) input.disabled = false;
+        update();
+      });
+    });
+    action = el(doc, 'div', { class: 'get-this' }, [button]);
+  } else if (extras.onGet && collection.films.length) {
+    action = el(doc, 'p', { class: 'muted', text: COLLECTION_TEXT.noneMissing });
+  }
+  const head = el(doc, 'div', { class: 'detail-head detail-head-poster' }, [
+    poster(doc, collection.posterUrl, `Poster for ${collection.name}`, 'detail'),
+    el(doc, 'div', { class: 'detail-text' }, [
+      el(doc, 'h1', { class: 'screen-title detail-title', text: collection.name, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }),
+      message,
+      action,
+    ]),
+  ]);
+  const films = el(doc, 'section', { class: 'seasons collection' }, [
+    el(doc, 'h2', { class: 'row-heading', text: COLLECTION_TEXT.films }),
+    boxes.size > 0 ? el(doc, 'fieldset', { class: 'get-seasons' }, [el(doc, 'legend', { text: COLLECTION_TEXT.chooseFilms }), list]) : list,
+  ]);
+  return el(doc, 'article', { class: 'detail collection-view' }, [
+    detailHero(doc, collection.backdropUrl),
+    el(doc, 'div', { class: 'detail-main' }, [
+      head,
+      collection.overview ? el(doc, 'p', { class: 'overview', text: collection.overview }) : undefined,
+      films,
+    ]),
+  ]);
 }
 
 /** A title the household asked for that failed is not asked for again from here: the backend holds the failed record. */
@@ -1052,7 +1283,11 @@ export function seasonList(doc: Document, series: Series, failed?: ReadonlySet<n
   return el(doc, 'section', { class: 'seasons' }, [
     el(doc, 'h2', { class: 'row-heading', text: 'Seasons' }),
     picking
-      ? el(doc, 'fieldset', { class: 'get-seasons' }, [el(doc, 'legend', { text: GET_THIS_TEXT.chooseSeasons }), parts?.selectAll, list])
+      ? el(doc, 'fieldset', { class: 'get-seasons' }, [
+        el(doc, 'legend', { text: GET_THIS_TEXT.chooseSeasons }),
+        el(doc, 'div', { class: 'season-tools' }, [parts?.allMissing, parts?.selectAll]),
+        list,
+      ])
       : list,
   ]);
 }

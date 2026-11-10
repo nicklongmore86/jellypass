@@ -981,6 +981,85 @@ describe('household app "Get this": input, budgets, shutdown and metrics', { tim
   });
 });
 
+describe('household app "Get this": a collection\'s films', { timeout: 60_000 }, () => {
+  /** A collection of eight films nobody holds, and the film T, which household B may hold. */
+  const FILMS = Array.from({ length: 8 }, (_, index) => 900030 + index);
+  const collectionWorld = (extra = {}) => world({
+    tmdbMovies: Object.fromEntries(FILMS.map((tmdbId) => [tmdbId, { title: `Synthetic Film ${tmdbId}`, release_date: '2010-01-01' }])),
+    tmdbCollections: { 900170: { name: 'Synthetic Eight', parts: [T_MOVIE, ...FILMS].map((id) => ({ id, title: `Synthetic Film ${id}`, release_date: '2010-01-01' })) } },
+    ...extra,
+  });
+  const getFilm = (app, tmdbId, options) => app.post(`${APP}/movie/${tmdbId}/get`, undefined, options);
+
+  it('asks for each film with its own "Get this": eight films count eight, each its own entry, cancelled one at a time', async (t) => {
+    t.mock.method(console, 'warn', () => undefined);
+    const app = await start(t, collectionWorld(), { getThisLimits: { perUser: 9, perClient: 100, perHousehold: 100 } });
+    for (const tmdbId of FILMS) assert.equal((await getFilm(app, tmdbId)).text, ACCEPTED);
+    await app.background.settled();
+    // One Seerr request per film, as Seerr models a collection.
+    assert.deepEqual(app.seerr.posts.map((post) => [post.body.mediaType, post.body.mediaId]).sort(), FILMS.map((tmdbId) => ['movie', tmdbId]));
+    const listed = (await app.get(`${APP}/requests`)).json().results;
+    assert.deepEqual(listed.map((entry) => entry.tmdbId).sort(), FILMS);
+    assert.ok(listed.every((entry) => entry.mediaType === 'movie' && entry.status === 'requested' && entry.cancellable));
+    // Each film of the collection page is requested now.
+    const films = (await app.get(`${APP}/collection/900170`)).json().films;
+    assert.deepEqual(films.map((film) => film.state), ['get_this', ...FILMS.map(() => 'requested')]);
+    // The ninth "Get this" uses the last of the caller's nine; a tenth is refused.
+    assert.equal((await getFilm(app, T_MOVIE)).status, 202);
+    assert.equal((await getFilm(app, T_MOVIE)).status, 429);
+    await app.background.settled();
+    // Cancelling one film leaves the others asked for; a cancel counts against the same budgets (refused here).
+    const before = app.seerr.calls.filter((call) => call.method === 'DELETE').length;
+    const refused = await app.post(`${APP}/requests/${listed[0].id}/cancel`, undefined);
+    assert.equal(refused.status, 429);
+    await app.background.settled();
+    assert.equal(app.seerr.calls.filter((call) => call.method === 'DELETE').length, before);
+    assert.equal((await app.get(`${APP}/requests`)).json().results.length, 9);
+  });
+
+  it('stops at the limit mid-way: the films before it are asked for, the rest are not, and the 429 says how long to wait', async (t) => {
+    t.mock.method(console, 'warn', () => undefined);
+    const clock = Date.parse('2026-11-10T12:00:00Z');
+    const app = await start(t, collectionWorld(), { getThisLimits: { perUser: 5, perClient: 100, perHousehold: 100, windowMs: 600_000 }, now: () => clock });
+    const statuses = [];
+    let refusal;
+    for (const tmdbId of FILMS) {
+      const answer = await getFilm(app, tmdbId);
+      statuses.push(answer.status);
+      if (answer.status === 429) refusal ??= answer;
+    }
+    assert.deepEqual(statuses, [202, 202, 202, 202, 202, 429, 429, 429]);
+    assert.equal(refusal.headers['retry-after'], '600');
+    assert.equal(refusal.text, '{"error":"too_many_requests","retryAfterSeconds":600}');
+    await app.background.settled();
+    assert.deepEqual((await app.get(`${APP}/requests`)).json().results.map((entry) => entry.tmdbId).sort(), FILMS.slice(0, 5));
+    assert.deepEqual((await app.get(`${APP}/collection/900170`)).json().films.map((film) => film.state),
+      ['get_this', 'requested', 'requested', 'requested', 'requested', 'requested', 'get_this', 'get_this', 'get_this']);
+  });
+
+  it('shows a film another household holds privately, asked for or not, as Get this, byte for byte, and handles it as any title', async (t) => {
+    const worlds = getThisWorlds({ tmdbCollections: collectionWorld().tmdbCollections, tmdbMovies: { ...tmdbMovies, ...collectionWorld().tmdbMovies } });
+    let expected;
+    for (const [name, { state, branch }] of Object.entries(worlds)) {
+      const app = await start(t, state);
+      const page = serialized(await app.get(`${APP}/collection/900170`));
+      if (branch !== 'visible') {
+        expected ??= page;
+        assert.equal(page, expected, name);
+        assertNoCanaries(page, name);
+        assert.doesNotMatch(page, /mill|bob|11110000/i, name);
+      } else {
+        // In household A's own libraries: playable.
+        assert.match(page, /"state":"in_library"/, name);
+      }
+      // Asked for from the collection page, the film runs the branch the doc gives the world, as from its own page.
+      await getThis(app);
+      assert.equal(app.store.listAppRequests().length > 0, branch !== 'none' && branch !== 'visible', name);
+      if (branch === 'none' || branch === 'visible') assert.deepEqual(app.seerr.posts, [], name);
+    }
+  });
+});
+
 describe('"Get this" records in the store', () => {
   const record = (overrides = {}) => ({
     householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'interest', status: 'pending',

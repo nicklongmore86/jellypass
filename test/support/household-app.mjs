@@ -84,7 +84,9 @@ export function authorization(userId) {
  * - `tmdbQuota`: `{ calls, windowMs }`, TMDB's own rate limit: a title call beyond `calls` in the last `windowMs` is
  *   answered `429` with `Retry-After: 1`;
  * - `tmdbRateLimited`: how many title calls TMDB answers `429` first, with `Retry-After: <tmdbRetryAfter>`;
- * - `tmdbMovies`: more movies TMDB knows, by TMDB ID, as `{ title, release_date }`; search lists them too;
+ * - `tmdbMovies`: more movies TMDB knows, by TMDB ID, as `{ title, release_date }` (and `belongs_to_collection`, which
+ *   otherwise is the fixture's); search lists them too;
+ * - `tmdbCollections`: more collections TMDB knows, by ID, as changes to the collection fixture (`{ name, parts }`);
  * - `tmdbHang`: TMDB never answers a title call; it only notices when JellyPass gives up on it.
  */
 export function world(options = {}) {
@@ -132,6 +134,7 @@ export function world(options = {}) {
     tmdbRateLimited: options.tmdbRateLimited ?? 0,
     tmdbRetryAfter: options.tmdbRetryAfter,
     tmdbMovies: { ...options.tmdbMovies },
+    tmdbCollections: { ...options.tmdbCollections },
     tmdbHang: options.tmdbHang ?? false,
     extraResults: options.extraResults ?? 0,
     // TMDB's discover lists page by page, if set: `(type, page)` gives that page's results ('movie' or 'tv'), or
@@ -572,7 +575,16 @@ export async function createFakeTmdb(state) {
       const tmdbId = Number(movie[1]);
       const listed = searchResults().find((entry) => entry.id === tmdbId && entry.media_type === 'movie');
       if (!listed) return send(response, 404, { status_code: 34, status_message: 'canary not found' });
-      return send(response, 200, { ...tmdbFixture('movie'), id: tmdbId, title: listed.title, release_date: listed.release_date, poster_path: listed.poster_path });
+      const collection = Object.hasOwn(listed, 'belongs_to_collection') ? { belongs_to_collection: listed.belongs_to_collection } : {};
+      return send(response, 200, { ...tmdbFixture('movie'), id: tmdbId, title: listed.title, release_date: listed.release_date, poster_path: listed.poster_path, ...collection });
+    }
+    const collection = /^\/3\/collection\/([0-9]+)$/.exec(url.pathname);
+    if (collection) {
+      const collectionId = Number(collection[1]);
+      const extra = state.tmdbCollections?.[collectionId];
+      if (extra) return send(response, 200, { ...tmdbFixture('collection'), id: collectionId, ...extra });
+      if (collectionId !== tmdbFixture('collection').id) return send(response, 404, { status_code: 34, status_message: 'canary not found' });
+      return send(response, 200, tmdbFixture('collection'));
     }
     const tv = /^\/3\/tv\/([0-9]+)$/.exec(url.pathname);
     if (tv) {

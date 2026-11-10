@@ -2,8 +2,8 @@
   "adult": false,
   "backdrop_path": "/synthetic-backdrop-900001.jpg",
   "belongs_to_collection": {
-    "id": 7300201,
-    "name": "canary collection",
+    "id": 900100,
+    "name": "Synthetic Collection",
     "poster_path": "/canary-collection.jpg",
     "backdrop_path": null
   },

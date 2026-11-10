@@ -1,11 +1,13 @@
 import { createAsked, type Asked } from './asked.js';
 import { createHiddenOverlay, type HiddenOverlay } from './hidden.js';
 import { createTitleCache, type TitleCache, type TitleDetails } from './titles.js';
-import type { DiscoverList, HiddenList, MediaType, Me, Movie, Page, RequestEntry, RequestList, Season, Series, SourceKind, Sources } from './types.js';
+import type { Collection, DiscoverList, HiddenList, MediaType, Me, Movie, Page, RequestEntry, RequestList, Season, Series, SourceKind, Sources } from './types.js';
 
 export const API_PREFIX = '/jellypass/app/v1';
 /** The revision of the contract that has hiding titles ("Not interested"); a server before it has none of it. */
 export const HIDING_API_VERSION = 3;
+/** The revision of the contract that has collections (film series); a server before it shows no link to one. */
+export const COLLECTIONS_API_VERSION = 6;
 
 /** The only failures the app tells apart, each with a fixed message (see render.ts); upstream text is never shown. */
 export type ApiErrorKind = 'app_access_disabled' | 'unauthorized' | 'rate_limited' | 'not_found' | 'unavailable' | 'offline' | 'hidden_limit_reached';
@@ -69,6 +71,8 @@ export interface Api {
    */
   source(kind: SourceKind, id: number, page: number, signal?: AbortSignal, list?: 'all' | 'films'): Promise<Page>;
   movie(tmdbId: number, signal?: AbortSignal): Promise<Movie>;
+  /** A film series and its films, each with the household's state. Needs `apiVersion` 6 (see {@link COLLECTIONS_API_VERSION}). */
+  collection(id: number, signal?: AbortSignal): Promise<Collection>;
   tv(tmdbId: number, signal?: AbortSignal): Promise<Series>;
   season(tmdbId: number, seasonNumber: number, signal?: AbortSignal): Promise<Season>;
   /** "Get this": resolves once the API accepted the call (it always answers the same), and says nothing about what follows. */
@@ -235,6 +239,14 @@ export function createApi(options: ApiOptions): Api {
     source: (kind, id, page, signal, list) =>
       read(() => get<Page>(`/discover/${kind}/${id}${list ? `/${list}` : ''}${page > 1 ? `?page=${page}` : ''}`, signal), (value, began) => hidden.list(asked.page(value), began)),
     movie,
+    // Each film as a card: what this member just asked for or hid is told over the answer, as on any list.
+    collection: (id, signal) => read(() => get<Collection>(`/collection/${id}`, signal), (value, began) => ({
+      ...value,
+      films: value.films.map((film) => {
+        const shown = hidden.flagged(asked.card(film), began);
+        return { ...film, state: shown.state, hidden: shown.hidden === true };
+      }),
+    })),
     tv,
     season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal).then(seen(asked.season)),
     getThis: async (mediaType, tmdbId, seasons, signal) => {

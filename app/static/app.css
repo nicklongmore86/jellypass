@@ -47,7 +47,7 @@
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, 'Segoe UI', Roboto, sans-serif;
   --gutter: max(1rem, env(safe-area-inset-left));
   --gutter-end: max(1rem, env(safe-area-inset-right));
-  /* The solid header (below the status bar) and Home's filter band under it: the fixed chrome at the top. Measured by the clearance script. */
+  /* The solid header (below the status bar) and the Discover page's filter band under it: the fixed chrome at the top. Measured by the clearance script. */
   --header-height: 3.75rem;
   --switch-height: 3.875rem; /* the fallback: main.ts measures the band's real height (chips wrap at large text) into this property on the root */
   /* The docked tab bar: its tabs and padding, without the home indicator's safe area; it touches the screen's foot, so no gap. */
@@ -92,7 +92,7 @@ main:focus { outline: none; }
 }
 .skip-link:focus { top: calc(0.5rem + env(safe-area-inset-top)); }
 
-/* The header is solid, one colour with the page; a hairline under it, except on Home where the filter band under it takes the line. It carries the Back button and the screen's title (nothing else): on Home, which has neither, it shrinks to the status bar's safe area. */
+/* The header is solid, one colour with the page; a hairline under it, except on Discover where the filter band under it takes the line. It carries the Back button and the screen's title (nothing else): with neither, it shrinks to the status bar's safe area. */
 .app-header {
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; gap: 0.75rem;
@@ -100,7 +100,7 @@ main:focus { outline: none; }
   background: var(--bg); box-shadow: 0 1px 0 var(--hairline);
 }
 .app-header[data-bare] { padding-top: env(safe-area-inset-top); padding-bottom: 0; box-shadow: none; }
-body[data-home-switch] .app-header { box-shadow: none; }
+body[data-discover-switch] .app-header { box-shadow: none; }
 .back-button, .icon-button, .hero-nav {
   display: inline-grid; place-items: center; flex: none;
   min-width: 2.75rem; min-height: 2.75rem; padding: 0;
@@ -237,7 +237,7 @@ main {
 .logo-link .logo-tile { width: 8.5rem; height: 4.5rem; padding: 0.75rem 1rem; border-radius: var(--radius-card); }
 .source-head { display: flex; align-items: center; gap: 0.85rem; margin-bottom: 0.75rem; }
 .source-head .screen-title { margin: 0; }
-/* Filter chips: outlined squircles of real buttons, the chosen one filled cyan-tint (Home's also ticked). A network page's All | Series | Films tabs and Home's All | Movies | TV radios share the look. */
+/* Filter chips: outlined squircles of real buttons, the chosen one filled cyan-tint (Discover's also ticked). A network page's All | Series | Films tabs and Discover's All | Movies | TV radios share the look. */
 .segmented { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
 .segment {
   display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
@@ -250,23 +250,23 @@ main {
 .segment[aria-checked='true'] .icon { display: block; }
 .segment[aria-pressed='true'] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-text); }
 .segment[aria-pressed='true'] .icon { display: block; }
-/* Home's All | Movies | TV: a solid band that sticks just under the header (and the status bar), so rows scroll away beneath it. */
-.home-switch {
+/* The Discover page's All | Movies | TV: a solid band that sticks just under the header (and the status bar), so rows scroll away beneath it. */
+.discover-switch {
   position: sticky; z-index: 5; top: var(--header-box);
   padding: 0.5rem max(var(--gutter-end), calc((100% - 72rem) / 2 + 1rem)) 0.625rem max(var(--gutter), calc((100% - 72rem) / 2 + 1rem));
   background: var(--bg); box-shadow: 0 1px 0 var(--hairline);
 }
 /* One row at any text size or zoom: the sticky band must stay short, so at large text the chips scroll sideways (focus brings the chosen one into view) instead of wrapping into a tall band that would fill the screen. The padding keeps the focus ring inside the scroller's clip. */
-.segmented-home { margin: -4px; padding: 4px; flex-wrap: nowrap; overflow-x: auto; scroll-padding-inline: 4px; scrollbar-width: none; overscroll-behavior-x: contain; }
-.segmented-home::-webkit-scrollbar { display: none; }
-.segmented-home .segment { flex: none; }
+.segmented-discover { margin: -4px; padding: 4px; flex-wrap: nowrap; overflow-x: auto; scroll-padding-inline: 4px; scrollbar-width: none; overscroll-behavior-x: contain; }
+.segmented-discover::-webkit-scrollbar { display: none; }
+.segmented-discover .segment { flex: none; }
 /* My requests' filters: Status, Type and Asked by me; at large text or zoom the chips wrap onto more lines (the page scrolls, nothing sticks). */
 .request-filters { display: grid; gap: 0.5rem; max-width: 46rem; margin-bottom: 1rem; }
 .request-filters .segmented { margin-bottom: 0; }
 .request-filters .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
-.segmented-home .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
+.segmented-discover .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
 /* While the switch is on the page (with or without a hero), a focused or scrolled-to card also clears the band. */
-:root:has(body[data-home-switch]) { scroll-padding-top: calc(var(--header-box) + var(--switch-height) + 0.5rem); }
+:root:has(body[data-discover-switch]) { scroll-padding-top: calc(var(--header-box) + var(--switch-height) + 0.5rem); }
 .source-note { margin: 0.25rem 0 1rem; font-size: 0.8rem; }
 /* Three columns on a phone, two on a very narrow one, more on a wide screen. */
 .grid, .skeleton-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem 0.6rem; margin-bottom: 1rem; }
@@ -334,6 +334,12 @@ main {
 .get-seasons legend { padding: 0; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.9rem; font-weight: 600; }
 .get-seasons .season:not(.season-pick)::after { content: ''; flex: none; width: 2.2rem; }
 .select-all { justify-self: start; margin-bottom: 0.25rem; }
+.season-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.25rem; }
+.season-tools .select-all { margin-bottom: 0; }
+.collection-link { margin: 0.25rem 0 0; }
+.collection-film .poster { flex: none; width: 2.75rem; }
+.film-unreleased .card-meta { color: var(--muted); }
+.collection-outcome p { margin: 0.25rem 0 0; }
 /* A round selection control that is still a real checkbox; the label around it is the tap target. */
 .choice { display: inline-flex; align-items: center; justify-content: center; flex: none; min-width: 2.75rem; min-height: 2.75rem; margin: -0.25rem -0.55rem -0.25rem 0; cursor: pointer; touch-action: manipulation; }
 .choice input {
@@ -412,6 +418,16 @@ main {
 .tmdb-logo { width: 9rem; height: auto; aspect-ratio: 273.42 / 35.52; }
 .about { display: grid; gap: 1.25rem; max-width: 40rem; }
 .group { display: grid; gap: 0.5rem; align-content: start; }
+/* Home: one link each to Discover, Search and My requests, as full-width rows (icon, name and a line on what it holds, chevron). */
+.home-links { display: grid; gap: 0.75rem; margin: 0; padding: 0; list-style: none; }
+.home-link { display: flex; align-items: center; gap: 0.9rem; min-height: 4.5rem; padding: 1rem; border-radius: var(--radius-card); background: var(--surface); border: 1px solid var(--hairline); color: var(--text); text-decoration: none; }
+.home-link:hover { background: var(--surface-raised); }
+.home-link:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 2px; }
+.home-link-icon { display: grid; place-items: center; width: 2.75rem; height: 2.75rem; border-radius: var(--radius-chip); background: var(--accent-tint); color: var(--accent-text); flex: none; }
+.home-link-text { display: grid; gap: 0.2rem; flex: 1; min-width: 0; }
+.home-link-label { font-weight: 700; font-size: 1.05rem; }
+.home-link-note { color: var(--muted); font-size: 0.85rem; line-height: 1.35; }
+.home-link-chevron { color: var(--muted); flex: none; }
 .group-label { padding: 0 0.25rem; color: var(--muted); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
 .inset-card { display: grid; gap: 0.75rem; justify-items: start; padding: 1rem; border-radius: var(--radius-card); background: var(--surface); border: 1px solid var(--hairline); }
 .account-name { font-weight: 600; font-size: 1.05rem; }
@@ -460,11 +476,11 @@ main {
 .skeleton-request .skeleton-lines { display: grid; gap: 0.5rem; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
-/* Home runs full width so its sticky filter band can; its hero and rows keep the page's own gutters. */
-body[data-chrome='home'] main { max-width: none; padding-top: 0; padding-left: 0; padding-right: 0; }
-body[data-chrome='home'] .home-row { max-width: 72rem; margin: 0 auto; padding: 0 var(--gutter-end) 0 var(--gutter); }
+/* Discover runs full width so its sticky filter band can; its hero and rows keep the page's own gutters. */
+body[data-chrome='discover'] main { max-width: none; padding-top: 0; padding-left: 0; padding-right: 0; }
+body[data-chrome='discover'] .discover-row { max-width: 72rem; margin: 0 auto; padding: 0 var(--gutter-end) 0 var(--gutter); }
 
-/* Home's hero: an inset rounded card per slide (4:5 on a phone, never full bleed) in a scroll-snap track that never moves by itself. The title, facts, overview and status chip sit in a navy panel inside the card, so their contrast never depends on the picture; the pager (round bubbles and Previous/Next, all real buttons) is under the card. */
+/* The Discover page's hero: an inset rounded card per slide (4:5 on a phone, never full bleed) in a scroll-snap track that never moves by itself. The title, facts, overview and status chip sit in a navy panel inside the card, so their contrast never depends on the picture; the pager (round bubbles and Previous/Next, all real buttons) is under the card. */
 .hero { max-width: 72rem; margin: 0.5rem auto 1.25rem; padding: 0 var(--gutter-end) 0 var(--gutter); }
 .hero-track {
   display: flex; overflow-x: auto; margin: 0 -0.375rem; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;

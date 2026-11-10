@@ -269,6 +269,11 @@ export class TmdbClient {
     return this.#get('/3/movie/:id', `/3/movie/${tmdbIdentifier(tmdbId)}`, {}, options);
   }
 
+  /** A TMDB collection (a film series such as a trilogy): its name, images and films (`parts`). */
+  public collection(collectionId: number, options: TmdbCallOptions = {}): Promise<unknown> {
+    return this.#get('/3/collection/:id', `/3/collection/${tmdbIdentifier(collectionId)}`, {}, options);
+  }
+
   public tv(tmdbId: number, options: TmdbCallOptions = {}): Promise<unknown> {
     return this.#get('/3/tv/:id', `/3/tv/${tmdbIdentifier(tmdbId)}`, {}, options);
   }

@@ -279,24 +279,47 @@
 .jellypass-tv-title-season .jellypass-tv-title-status {
   margin: 0;
 }
-
-/*
- * Home's "My requests" card, the last in the Discover strip: Jellyfin's own card (so its size and focus zoom apply) with
- * a plain face in place of a poster.
- */
-.jellypass-tv-card-link-face {
+/* "Get all missing seasons" and Select all, side by side above the season cards. */
+.jellypass-tv-title-season-actions {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.5em;
-  box-sizing: border-box;
-  background: rgba(255, 255, 255, 0.08);
-  font-weight: 600;
-  text-align: center;
+  flex-wrap: wrap;
 }
+/* The collection page's films: the season cards' look, with a small poster, the year and a note for a film not out yet. */
+.jellypass-tv-title-film-poster {
+  flex: 0 0 auto;
+  width: 3em;
+  height: 4.5em;
+  margin: 0 1em 0 0;
+  border-radius: 0.2em;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+.jellypass-tv-title-film-poster img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.jellypass-tv-title-film-name {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+.jellypass-tv-title-film-year,
+.jellypass-tv-title-film-note {
+  margin: 0 1em 0 1em;
+  opacity: 0.75;
+}
+.jellypass-tv-title-collection-result,
+.jellypass-tv-title-collection-asked,
+.jellypass-tv-title-collection-not-asked {
+  margin: 0 0 0.3em 0;
+}
+.jellypass-tv-title-collection-asked {
+  color: #7fe0a0;
+}
+
 /* Jellyfin web 12.3 draws no ring on a card in either layout (the TV layout only zooms it) and the card's button has no
-   outline, so each of the add-on's cards carries one, on its image container (a title card's poster, the My requests
-   card's face): the page's text colour, as the add-on's buttons use, far above 3:1 on Jellyfin's near-black. It is drawn
+   outline, so each of the add-on's cards carries one, on its image container (a title card's poster): the page's text colour, as the add-on's buttons use, far above 3:1 on Jellyfin's near-black. It is drawn
    inside the card: Jellyfin's `.card` contains its paint, so a ring outside it would be cut off at its edge in the desktop
    layout. A pseudo-element paints it, over a poster (an image child would hide a shadow on the container itself). One
    rule for every card of the add-on's (all have `jellypass-tv-card`; Jellyfin's own do not), so the two can't drift.
@@ -617,7 +640,8 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
   cursor: pointer;
 }
 .jellypass-tv-discover-button:focus,
-.jellypass-tv-discover-chip:focus {
+.jellypass-tv-discover-chip:focus,
+.jellypass-tv-discover-requests:focus {
   box-shadow: 0 0 0 0.25em var(--jf-palette-text-primary, #fff);
 }
 .jellypass-tv-discover-hero-step {
@@ -633,10 +657,13 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
   letter-spacing: 0.25em;
   opacity: 0.7;
 }
-.jellypass-tv-discover-chips {
+.jellypass-tv-discover-bar {
   padding-top: 1.2em;
   padding-bottom: 0.4em;
   white-space: nowrap;
+}
+.jellypass-tv-discover-chips {
+  display: inline-block;
 }
 .jellypass-tv-discover-chip {
   margin: 0 0.7em 0 0;
@@ -657,6 +684,16 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
 }
 .jellypass-tv-discover-chip-toggle[aria-pressed='true'] {
   border-color: #f3f3f3;
+}
+/* My requests: a link, not a filter, so it stands apart from the chips and is never pressed. */
+.jellypass-tv-discover-requests {
+  margin: 0 0 0 2em;
+  padding: 0.55em 1.3em;
+  border-radius: 2em;
+  border: 0.12em solid rgba(255, 255, 255, 0.35);
+  background: transparent;
+  font-size: 1.05em;
+  cursor: pointer;
 }
 .jellypass-tv-discover-row {
   margin-top: 1.6em;

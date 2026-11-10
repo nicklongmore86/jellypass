@@ -62,7 +62,7 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
       const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
       return (high + 0.05) / (low + 0.05);
     };
-    const { ROW_ACCENTS, NETWORK_ACCENTS, homeHref } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/render.js'))).href);
+    const { ROW_ACCENTS, NETWORK_ACCENTS, discoverHref } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/render.js'))).href);
     // Every accent but the default has a class and a colour token; the waterlines are decorative, but still stand out from the page and the card surface (3:1).
     assert.deepEqual([...ROW_ACCENTS].sort(), ['apple', 'default', 'disney', 'hbo', 'hulu', 'netflix', 'paramount', 'peacock', 'prime']);
     for (const accent of ROW_ACCENTS.filter((name) => name !== 'default')) {
@@ -85,8 +85,8 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     // No text is ever drawn in a waterline colour: it is a background, and only on a heading's ::after.
     for (const [, property] of css.matchAll(/([a-z-]+): var\(--water-/g)) assert.equal(property, 'background');
     // The filter: a solid band that sticks just under the solid header and the status bar, below the header's own layer.
-    matches(css, /\.home-switch \{[^}]*position: sticky;[^}]*z-index: 5;[^}]*top: var\(--header-box\)/);
-    matches(css, /\.home-switch \{[^}]*background: var\(--bg\)/);
+    matches(css, /\.discover-switch \{[^}]*position: sticky;[^}]*z-index: 5;[^}]*top: var\(--header-box\)/);
+    matches(css, /\.discover-switch \{[^}]*background: var\(--bg\)/);
     matches(css, /\.app-header \{[^}]*position: sticky;[^}]*z-index: 10;[^}]*background: var\(--bg\)/);
     // Outlined squircle chips; the chosen one is tinted cyan with an accent border and its tick, text on the tint at 4.5:1.
     matches(css, /\.segment \{[^}]*border: 1\.5px solid var\(--hairline\); border-radius: var\(--radius-chip\); background: transparent;/);
@@ -102,11 +102,11 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     matches(css, /--header-height: 3\.75rem;/);
     matches(css, /--switch-height: 3\.875rem;/);
     matches(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
-    matches(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\(var\(--header-box\) \+ var\(--switch-height\) \+ 0\.5rem\); \}/);
+    matches(css, /:root:has\(body\[data-discover-switch\]\) \{ scroll-padding-top: calc\(var\(--header-box\) \+ var\(--switch-height\) \+ 0\.5rem\); \}/);
     lacks(css, /backdrop-filter/, 'no glass');
-    assert.equal(homeHref('all'), '#/');
-    assert.equal(homeHref('movies'), '#/?kind=movies');
-    assert.equal(homeHref('tv'), '#/?kind=tv');
+    assert.equal(discoverHref('all'), '#/discover');
+    assert.equal(discoverHref('movies'), '#/discover?kind=movies');
+    assert.equal(discoverHref('tv'), '#/discover?kind=tv');
     // The scripts set no style attribute, as the CSP forbids: every waterline colour is a class. No style attributes are written via markup or setAttribute; the root's custom properties are set via the CSSOM, which style-src allows. The one exemption is the root-measurement helper in main.js (measure) and only the three properties --header-box, --tabbar-box and --switch-height.
     for (const file of FILES.filter((name) => name.startsWith('js/'))) {
       let rest = read(file);
@@ -131,7 +131,7 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     // No gradient on any control: the button is solid aqua with on-accent text; gradients are the waterline, the brand mark, scrims, skeletons and image fallbacks only.
     matches(css, /\.button \{[^}]*background: var\(--accent\); color: var\(--on-accent\)/);
     matches(css, /\.button-secondary \{ background: transparent; color: var\(--accent-text\); border: 1\.5px solid var\(--accent\); \}/);
-    lacks(css, /\.(?:button|segment|badge|chip|tabbar|home-switch)[^{]*\{[^}]*gradient/);
+    lacks(css, /\.(?:button|segment|badge|chip|tabbar|discover-switch)[^{]*\{[^}]*gradient/);
     // The tab bar is not a floating pill and carries no dot; the page has no glow behind it.
     lacks(css, /\.tabbar a\[aria-current='page'\]::after|body::before/);
     // Heavy titles and squircle radii.
@@ -756,7 +756,7 @@ describe('household app page: files', () => {
     matches(css, /\.tabbar \{[^}]*padding: 0\.5rem max\(0\.75rem, env\(safe-area-inset-right\)\) calc\(0\.5rem \+ env\(safe-area-inset-bottom\)\)/);
     matches(css, /--header-height: 3\.75rem;/);
     matches(css, /--switch-height: 3\.875rem;/);
-    matches(css, /\.home-switch \{[^}]*padding: 0\.5rem [^;]* 0\.625rem /);
+    matches(css, /\.discover-switch \{[^}]*padding: 0\.5rem [^;]* 0\.625rem /);
     matches(css, /main \{[^}]*padding: 0\.75rem var\(--gutter-end\) calc\(var\(--tabbar-box\) \+ 1\.5rem\)/);
   });
 
@@ -1996,6 +1996,45 @@ describe('household app page: rendering', () => {
       matches(css, /\.choice \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/);
     });
 
+    it('offers Get all missing seasons beside the seasons: one press asks once for every season still to get, and only those', async () => {
+      const { document, Event, titleDetail, GET_THIS_TEXT } = await renderer();
+      const asked = [];
+      let answer;
+      const detail = titleDetail(document, tv(), origin, { onGet: (seasons, onAccepted) => { asked.push(seasons); return new Promise((resolve) => { answer = () => { onAccepted(); resolve('accepted'); }; }); } });
+      const all = detail.querySelector('fieldset.get-seasons .season-tools button.get-all-seasons');
+      assert.equal(all.textContent, 'Get all missing seasons');
+      assert.equal(all.textContent, GET_THIS_TEXT.allMissingSeasons);
+      assert.equal(all.getAttribute('aria-label'), 'Get all missing seasons: Synthetic Series Two');
+      // Nothing ticked: it still asks for both seasons the household has neither got nor asked for, never a special,
+      // the one in the library or the requested one, in one call, as Select all then Get this would.
+      click(all, Event);
+      assert.deepEqual(asked, [[2, 3]]);
+      const boxes = [...detail.querySelectorAll('fieldset input[type="checkbox"]')];
+      assert.deepEqual(boxes.map((box) => [box.checked, box.disabled]), [[true, true], [true, true]]);
+      assert.equal(all.disabled, true, 'locked while in flight');
+      click(all, Event);
+      click(detail.querySelector('.detail-action button'), Event);
+      assert.equal(asked.length, 1, 'nothing sent twice');
+      answer();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(detail.querySelector('.get-all-seasons'), null, 'gone once accepted');
+      assert.equal(detail.querySelector('.get-message').textContent, GET_THIS_TEXT.confirmation);
+      // Seasons just asked for, or that failed, are not offered again; with one left it is still offered, for that one.
+      const one = titleDetail(document, tv(), origin, { onGet: async (seasons) => { asked.push(seasons); return 'accepted'; }, asked: new Set([2]) });
+      click(one.querySelector('.get-all-seasons'), Event);
+      assert.deepEqual(asked.at(-1), [3]);
+      assert.equal(titleDetail(document, tv(), origin, { onGet: async () => 'accepted', asked: new Set([2]), failed: new Set([3]) }).querySelector('.get-all-seasons'), null);
+      // Nothing to get, or no way to ask (a season page, a signed-out screen): none.
+      assert.equal(titleDetail(document, tv({ seasons: [{ seasonNumber: 1, name: 'Season 1', episodeCount: 8, state: 'in_library' }] }), origin, { onGet: async () => 'accepted' }).querySelector('.get-all-seasons'), null);
+      assert.equal(titleDetail(document, tv(), origin, {}).querySelector('.get-all-seasons'), null);
+      // A failure leaves it ready again, with the failure's words.
+      const failing = titleDetail(document, tv(), origin, { onGet: async () => ({ kind: 'rate_limited', retryAfterSeconds: 90 }) });
+      click(failing.querySelector('.get-all-seasons'), Event);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(failing.querySelector('.get-all-seasons').disabled, false);
+      assert.equal(failing.querySelector('.get-message').textContent, 'Too many tries. Try again in 2 minutes.');
+    });
+
     it('gives the hero and a detail page their own skeletons, hidden from assistive technology and free of controls', async () => {
       const { document, skeletonHero, skeletonDetail } = await renderer();
       for (const [name, node] of [['hero', skeletonHero(document)], ['detail', skeletonDetail(document)]]) {
@@ -2109,7 +2148,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
    * Loads the real page and client modules into a DOM, signed in as `user` with Jellyfin web's own stored sign-in, and
    * wires `fetch` to the real API on the test server. One page per test (the client keeps its state in module scope).
    */
-  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe, store: initialStore, storageFails = false, userAgent = '', clamp = false, intersection = true, rect } = {}) {
+  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '#/discover', holdMe, store: initialStore, storageFails = false, userAgent = '', clamp = false, intersection = true, rect } = {}) {
     const origin = `https://${host}`;
     const { document, Event, HTMLElement } = parseHTML(read('index.html'));
     // linkedom keeps no focus (it has no document.activeElement): the last element of this page focus() was called on stands in.
@@ -2197,7 +2236,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     };
     const ownBandRect = rect ? undefined : Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'getBoundingClientRect');
     if (!rect) {
-      HTMLElement.prototype.getBoundingClientRect = function () { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: this.classList.contains('home-switch') ? band.height : this.classList.contains('app-header') ? 76 : this.classList.contains('tabbar') ? 90 : 0, x: 0, y: 0 }; };
+      HTMLElement.prototype.getBoundingClientRect = function () { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: this.classList.contains('discover-switch') ? band.height : this.classList.contains('app-header') ? 76 : this.classList.contains('tabbar') ? 90 : 0, x: 0, y: 0 }; };
       t.after(() => {
         if (ownBandRect) Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', ownBandRect);
         else delete HTMLElement.prototype.getBoundingClientRect;
@@ -2521,13 +2560,13 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         perMember: { calls: MAX_APP_REQUESTS_PER_USER, windowSeconds: APP_BUDGET_WINDOW_MS / 1000 },
         perHousehold: { calls: MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST, windowSeconds: APP_BURST_WINDOW_MS / 1000 },
       });
-      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['home-all', 'home-movies', 'home-tv', 'movie', 'network', 'network-films', 'network-series', 'requests', 'search', 'season', 'series', 'studio', 'tv-discover', 'tv-discover-list', 'tv-discover-movies', 'tv-discover-network', 'tv-discover-studio', 'tv-discover-tv', 'tv-home-row', 'tv-movie', 'tv-requests', 'tv-search-row', 'tv-series']);
+      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['collection', 'home-all', 'home-movies', 'home-tv', 'movie', 'network', 'network-films', 'network-series', 'requests', 'search', 'season', 'series', 'studio', 'tv-collection', 'tv-discover', 'tv-discover-list', 'tv-discover-movies', 'tv-discover-network', 'tv-discover-studio', 'tv-discover-tv', 'tv-movie', 'tv-requests', 'tv-search-row', 'tv-series']);
       for (const [name, screen] of Object.entries(BUDGET.screens)) {
         assert.equal(screen.calls, screen.atOnce.length + (screen.belowTheFold?.length ?? 0), name);
       }
     });
 
-    for (const [name, hash] of [['home-all', '#/'], ['home-movies', '#/?kind=movies'], ['home-tv', '#/?kind=tv']]) {
+    for (const [name, hash] of [['home-all', '#/discover'], ['home-movies', '#/discover?kind=movies'], ['home-tv', '#/discover?kind=tv']]) {
       it(`Home (${name.slice(5)}), opened directly: the calls at once, then each lazy row once`, async (t) => {
         const app = await startApp(t);
         const page = await openApp(t, app, { hash });
@@ -2553,6 +2592,15 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(page.requests.length, BUDGET.screens[name].calls);
       });
     }
+
+    it('a collection page, opened directly', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: '#/collection/900100' });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      await settled(page);
+      assert.deepEqual(calls(page).map((call) => call.replace(/\/collection\/[0-9]+$/, '/collection/{id}')), BUDGET.screens.collection.atOnce);
+      assert.equal(page.requests.length, BUDGET.screens.collection.calls);
+    });
 
     it('Search, opened directly on a query', async (t) => {
       const app = await startApp(t);
@@ -3096,16 +3144,16 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const group = page.main().querySelector('[role="radiogroup"]');
       assert.equal(group.getAttribute('aria-label'), 'Show');
       assert.deepEqual(state(page), ['All true 0', 'Movies false -1', 'TV false -1']);
-      assert.deepEqual(radios(page).map((radio) => `${radio.tagName} ${radio.getAttribute('type')} ${radio.getAttribute('aria-controls')}`), Array(3).fill('BUTTON button home-panel'));
+      assert.deepEqual(radios(page).map((radio) => `${radio.tagName} ${radio.getAttribute('type')} ${radio.getAttribute('aria-controls')}`), Array(3).fill('BUTTON button discover-panel'));
       // Under the header and above the hero (a plain div) and the rows, as direct children of the page's main region so it can stick while the rows scroll.
       const order = [...page.main().children].map((node) => node.className || node.id || node.tagName);
-      assert.deepEqual(order.slice(-3), ['home-switch', 'DIV', 'home-panel']);
-      assert.equal(group.parentElement.className, 'home-switch');
+      assert.deepEqual(order.slice(-3), ['discover-switch', 'DIV', 'discover-panel']);
+      assert.equal(group.parentElement.className, 'discover-switch');
       assert.equal(group.parentElement.parentElement, page.main());
-      const panel = page.main().querySelector('#home-panel');
+      const panel = page.main().querySelector('#discover-panel');
       assert.equal(panel.getAttribute('role'), 'group');
-      assert.equal(panel.getAttribute('aria-labelledby'), 'home-filter-all');
-      assert.equal(page.document.getElementById('home-filter-all').textContent, 'All');
+      assert.equal(panel.getAttribute('aria-labelledby'), 'discover-filter-all');
+      assert.equal(page.document.getElementById('discover-filter-all').textContent, 'All');
       // Each chip carries a tick, drawn by the app and hidden from assistive technology, so a name is still the plain word; the stylesheet shows it on the chosen chip only.
       for (const radio of radios(page)) {
         const ticks = radio.querySelectorAll('svg.icon');
@@ -3127,10 +3175,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(headings(page), ['Trending', 'Popular movies', 'Popular series', 'New movie releases', 'Upcoming movies', 'Upcoming series',
         'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Studios']);
       // Rows in the order given: the services' rows come before the studios' strip, then the all-time lists, then the JustWatch credit.
-      const slots = [...page.main().querySelectorAll('#home-panel > *')].map((slot) => slot.getAttribute('data-key')
+      const slots = [...page.main().querySelectorAll('#discover-panel > *')].map((slot) => slot.getAttribute('data-key')
         ?? (slot.querySelector('[data-key^="row-network-"]') ? 'networks' : slot.querySelector('.source-note') ? 'credit' : slot.querySelector('.hero, ul.logo-list') ? 'studios' : slot.querySelector('ul.row-list') ? 'row' : 'empty'));
       assert.deepEqual(slots, ['row', 'row', 'row', 'row', 'row-upcoming', 'row-upcoming-tv', 'networks', 'studios', 'credit']);
-      assert.equal(page.main().querySelectorAll('#home-panel [data-key^="row-network-"]').length, 8);
+      assert.equal(page.main().querySelectorAll('#discover-panel [data-key^="row-network-"]').length, 8);
       assert.equal(page.main().querySelectorAll('.source-note').length, 1);
       assert.equal(slots.at(-1), 'credit', 'the credit closes Home');
       // The waterlines: cyan with a purple end-cap (no class) by default, a brand colour per service. A class, never a style.
@@ -3163,10 +3211,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const before = page.requests.length;
       radios(page)[1].dispatchEvent(new page.Event('click'));
       await page.until(() => page.document.querySelector('#row-trending-movies-heading') && page.document.querySelector('#row-upcoming-heading'), 'Movies');
-      assert.equal(page.location.hash, '#/?kind=movies');
+      assert.equal(page.location.hash, '#/discover?kind=movies');
       assert.equal(page.entries.length, entries, 'switching replaces the entry, so Back still leaves Home');
       assert.deepEqual(state(page), ['All false -1', 'Movies true 0', 'TV false -1']);
-      assert.equal(page.main().querySelector('#home-panel').getAttribute('aria-labelledby'), 'home-filter-movies');
+      assert.equal(page.main().querySelector('#discover-panel').getAttribute('aria-labelledby'), 'discover-filter-movies');
       assert.equal(page.main().querySelector('.hero').getAttribute('aria-label'), 'Trending movies');
       await revealAll(page);
       assert.deepEqual(headings(page), ['Trending movies', 'Popular movies', 'New movie releases', 'Upcoming movies',
@@ -3196,7 +3244,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const before = page.requests.length;
       radios(page)[2].dispatchEvent(new page.Event('click'));
       await page.until(() => page.document.querySelector('#row-trending-tv-heading') && page.document.querySelector('#row-upcoming-tv-heading'), 'TV');
-      assert.equal(page.location.hash, '#/?kind=tv');
+      assert.equal(page.location.hash, '#/discover?kind=tv');
       assert.deepEqual(state(page), ['All false -1', 'Movies false -1', 'TV true 0']);
       assert.equal(page.main().querySelector('.hero').getAttribute('aria-label'), 'Trending series');
       await revealAll(page);
@@ -3215,14 +3263,14 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
 
     it('opens on the filter named in the address, and anything else is All', async (t) => {
       const app = await startApp(t);
-      const movies = await openApp(t, app, { hash: '#/?kind=movies' });
+      const movies = await openApp(t, app, { hash: '#/discover?kind=movies' });
       await ready(movies, 'Movies');
       assert.deepEqual(state(movies), ['All false -1', 'Movies true 0', 'TV false -1']);
       assert.equal(movies.main().querySelectorAll('[data-lazy]').length, 8, 'the eight services wait');
-      const tv = await openApp(t, app, { hash: '#/?kind=tv' });
+      const tv = await openApp(t, app, { hash: '#/discover?kind=tv' });
       await ready(tv, 'TV', 3);
       assert.deepEqual(state(tv), ['All false -1', 'Movies false -1', 'TV true 0']);
-      for (const hash of ['#/?kind=bogus', '#/?kind=', '#/?kind=Movies', '#/?other=tv', '#/?kind=all']) {
+      for (const hash of ['#/discover?kind=bogus', '#/discover?kind=', '#/discover?kind=Movies', '#/discover?other=tv', '#/discover?kind=all']) {
         const other = await openApp(t, app, { hash });
         await ready(other, hash);
         assert.deepEqual(state(other), ['All true 0', 'Movies false -1', 'TV false -1'], hash);
@@ -3238,9 +3286,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         await pause(50);
         return tmdbCount(app);
       };
-      assert.equal(await first('', 4), 4);
-      assert.equal(await first('#/?kind=movies', 4), 4);
-      assert.equal(await first('#/?kind=tv', 3), 3);
+      assert.equal(await first('#/discover', 4), 4);
+      assert.equal(await first('#/discover?kind=movies', 4), 4);
+      assert.equal(await first('#/discover?kind=tv', 3), 3);
     });
 
     it('moves with the arrow keys, Home and End, choosing as it goes, and leaves other keys alone', async (t) => {
@@ -3249,25 +3297,25 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await ready(page, 'Home');
       radios(page)[0].focus();
       assert.equal(key(page, 'ArrowRight').defaultPrevented, true);
-      await page.until(() => page.location.hash === '#/?kind=movies', 'Movies');
+      await page.until(() => page.location.hash === '#/discover?kind=movies', 'Movies');
       assert.equal(page.focused().textContent, 'Movies', 'focus follows the choice');
       assert.deepEqual(state(page), ['All false -1', 'Movies true 0', 'TV false -1']);
       key(page, 'ArrowDown');
-      await page.until(() => page.location.hash === '#/?kind=tv', 'TV');
+      await page.until(() => page.location.hash === '#/discover?kind=tv', 'TV');
       key(page, 'ArrowRight');
-      await page.until(() => page.location.hash === '#/', 'wraps to All');
+      await page.until(() => page.location.hash === '#/discover', 'wraps to All');
       assert.equal(page.focused().textContent, 'All');
       key(page, 'ArrowLeft');
-      await page.until(() => page.location.hash === '#/?kind=tv', 'wraps back to TV');
+      await page.until(() => page.location.hash === '#/discover?kind=tv', 'wraps back to TV');
       key(page, 'Home');
-      await page.until(() => page.location.hash === '#/', 'Home is All');
+      await page.until(() => page.location.hash === '#/discover', 'Home is All');
       key(page, 'End');
-      await page.until(() => page.location.hash === '#/?kind=tv', 'End is TV');
+      await page.until(() => page.location.hash === '#/discover?kind=tv', 'End is TV');
       key(page, 'ArrowUp');
-      await page.until(() => page.location.hash === '#/?kind=movies', 'Up is Movies');
+      await page.until(() => page.location.hash === '#/discover?kind=movies', 'Up is Movies');
       assert.equal(key(page, 'a').defaultPrevented, false);
       assert.equal(key(page, 'Enter').defaultPrevented, false, 'Enter and Space press the focused button, as a button does');
-      assert.equal(page.location.hash, '#/?kind=movies');
+      assert.equal(page.location.hash, '#/discover?kind=movies');
       assert.equal(page.cursor(), 0, 'no history entry was ever added');
     });
 
@@ -3275,19 +3323,19 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const app = await startApp(t);
       const page = await openApp(t, app);
       await ready(page, 'Home');
-      const control = page.main().querySelector('.home-switch');
+      const control = page.main().querySelector('.discover-switch');
       radios(page)[1].dispatchEvent(new page.Event('click'));
       assert.equal(page.document.getElementById('status').textContent, 'Loading…');
       await page.until(() => page.document.getElementById('status').textContent === 'Movies shown.', 'the announcement');
       await page.until(() => page.document.querySelector('#row-upcoming-heading'), 'the last row asked for at once');
-      assert.equal(page.main().querySelector('.home-switch'), control, 'the control is the same node: focus is never lost');
-      assert.equal(page.document.body.getAttribute('data-chrome'), 'home');
+      assert.equal(page.main().querySelector('.discover-switch'), control, 'the control is the same node: focus is never lost');
+      assert.equal(page.document.body.getAttribute('data-chrome'), 'discover');
       // Choosing the choice already made does nothing.
       const calls = page.requests.length;
       radios(page)[1].dispatchEvent(new page.Event('click'));
       await pause(50);
       assert.equal(page.requests.length, calls);
-      assert.equal(page.main().querySelectorAll('#home-panel [data-lazy="loading"]').length, 0);
+      assert.equal(page.main().querySelectorAll('#discover-panel [data-lazy="loading"]').length, 0);
     });
 
     it('comes back to the filter that was chosen: Back from a title restores Movies, and only the member can cancel the restore', async (t) => {
@@ -3304,7 +3352,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await page.until(() => page.main().querySelector('article.detail'), 'the movie');
       page.back().dispatchEvent(new page.Event('click'));
       await page.until(() => page.document.querySelector('#row-trending-movies-heading') && page.scroll.y === 720, 'Movies and the scroll');
-      assert.equal(page.location.hash, '#/?kind=movies');
+      assert.equal(page.location.hash, '#/discover?kind=movies');
       assert.deepEqual(state(page), ['All false -1', 'Movies true 0', 'TV false -1']);
       assert.equal(page.document.querySelector('ul[aria-labelledby="row-popular-movies-heading"]').scrollLeft, 90);
       // Switching is the member's own doing: nothing of the other filter's position is put back on the new one.
@@ -3315,22 +3363,29 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.ok(page.scroll.y <= 400, 'not moved back to where Movies was');
     });
 
-    it('opens Home at #/ from the Home tab even on a filter, and Back from the first screen leaves the filter alone', async (t) => {
+    it('opens Discover on All from Home\'s link even after a filter, under the Home tab, and Back from the first screen goes to Home', async (t) => {
       const app = await startApp(t);
-      const page = await openApp(t, app, { hash: '#/?kind=tv' });
+      const page = await openApp(t, app, { hash: '#/discover?kind=tv' });
       await ready(page, 'TV', 3);
       assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'home');
-      assert.equal(page.back().hidden, true);
+      assert.equal(page.back().hidden, false, 'Discover is a page of Home\'s, with Back');
       page.go('#/');
+      await page.until(() => page.main().querySelector('a.home-link[href="#/discover"]'), 'Home');
+      page.go('#/discover');
       await page.until(() => page.document.querySelector('#row-trending-heading'), 'All');
       assert.deepEqual(state(page), ['All true 0', 'Movies false -1', 'TV false -1']);
+      // Opened directly on a filter, Back has nothing in the app to go back to: it goes to Home, replacing the entry.
+      const direct = await openApp(t, app, { hash: '#/discover?kind=movies' });
+      await ready(direct, 'Movies', 4);
+      direct.back().dispatchEvent(new direct.Event('click'));
+      await direct.until(() => direct.location.hash === '#/' && direct.main().querySelector('a.home-link'), 'Home');
     });
 
     it('draws the same bytes for the same filter whatever other households hold, ask for or wait on', async (t) => {
       const seen = {};
       for (const [name, worldState] of Object.entries({ baseline: world(), ...otherHouseholdWorlds() })) {
         const app = await startApp(t, worldState);
-        const page = await openApp(t, app, { hash: '#/?kind=movies' });
+        const page = await openApp(t, app, { hash: '#/discover?kind=movies' });
         await ready(page, `${name}: Movies`);
         await revealAll(page);
         seen[name] = page.main().outerHTML;
@@ -3497,8 +3552,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
 
   it('has four labelled tabs, a header without the wordmark or (i), and Account (with the TMDB credit) as the fourth', async (t) => {
     const app = await startApp(t);
-    const page = await openApp(t, app);
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
+    const page = await openApp(t, app, { hash: '#/' });
+    await page.until(() => page.main().querySelector('a.home-link'), 'home');
     const tabs = [...page.document.querySelectorAll('nav[aria-label="Main"] a')];
     assert.deepEqual(tabs.map((tab) => tab.textContent), ['Home', 'Search', 'My requests', 'Account']);
     assert.deepEqual(tabs.map((tab) => tab.getAttribute('href')), ['#/', '#/search', '#/requests', '#/account']);
@@ -3509,13 +3564,13 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const pass = icon(page.document, 'account');
     assert.ok(pass.querySelector('circle') && pass.querySelectorAll('line').length >= 3, 'a key: a bow and a shaft with teeth');
     assert.equal(pass.querySelector('path'), null, 'no head-and-shoulders path');
-    // The header: no wordmark, no (i). Home has neither Back nor a title, so it is only the status bar's safe area.
+    // The header: no wordmark, no (i). Home has no Back, and its title.
     const header = page.document.querySelector('header.app-header');
     assert.equal(header.querySelector('.brand'), null);
     assert.equal(header.querySelector('#about-link'), null);
     assert.equal(/JellyPass/.test(header.textContent), false, 'no wordmark');
-    assert.equal(header.hasAttribute('data-bare'), true);
-    assert.equal(header.querySelector('#header-title').textContent, '');
+    assert.equal(header.hasAttribute('data-bare'), false);
+    assert.equal(header.querySelector('#header-title').textContent, 'Home');
     assert.equal(header.querySelector('#signout'), null, 'no Sign out in the header');
     assert.equal(/Sign out/.test(header.textContent), false);
     page.go('#/account');
@@ -3602,7 +3657,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         '/jellypass/app/v1/discover/new-movies', '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv',
         '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/me',
       ]);
-      assert.equal(chrome(page), 'home');
+      assert.equal(chrome(page), 'discover');
       const active = () => [...page.document.querySelectorAll('.hero-dot')].map((dot) => dot.getAttribute('aria-current') === 'true' ? 1 : 0).join('');
       assert.equal(active(), '10000');
       await pause(1500);
@@ -3619,7 +3674,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     it('measures the sticky band into --switch-height, follows it as the chips wrap, and lets go off Home', async (t) => {
       const app = await startApp(t);
       const page = await openApp(t, app, { override: trending(0) });
-      await page.until(() => page.main().querySelector('.home-switch'), 'the band');
+      await page.until(() => page.main().querySelector('.discover-switch'), 'the band');
       const root = page.document.documentElement;
       const switchHeight = () => root.style.getPropertyValue('--switch-height');
       assert.equal(switchHeight(), '62px', 'the band as measured, not a one-row guess');
@@ -3633,13 +3688,13 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(switchHeight(), '62px');
       // Another screen has no band: the property is dropped (the stylesheet's fallback is not used either, the rule is keyed to the band) and nothing is watched.
       page.go('#/search');
-      await page.until(() => !page.document.body.hasAttribute('data-home-switch'), 'a screen without the band');
+      await page.until(() => !page.document.body.hasAttribute('data-discover-switch'), 'a screen without the band');
       assert.equal(switchHeight(), '');
       assert.equal(page.resizers.filter((observer) => observer.targets.size).length, 2, 'only the header and tab bar watched off Home');
       assert.equal(root.style.getPropertyValue('--header-box'), '76px');
       // No style attributes are written via markup or setAttribute; the root's custom properties are set via the CSSOM, allowed by style-src (the root's style attribute then reflects them).
       const css = read(BUILT('app.css'));
-      matches(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
+      matches(css, /:root:has\(body\[data-discover-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
       assert.match(APP_CONTENT_SECURITY_POLICY, /style-src 'self'(?!.*unsafe-inline)/);
       const source = read(BUILT('js/main.js'));
       assert.match(source, /measure\(["']--switch-height["']/);
@@ -3662,7 +3717,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.match(source, /show\(heading, switcher, heroSlot, panel\);\s*revealChip\(switcher\.querySelector\(['"]\[aria-checked="true"\]['"]\)\)/);
       assert.match(source, /if \(next === chosen\)\s*return revealChip\(button\)/);
       assert.match(source, /radio\.setAttribute\(['"]tabindex['"][^]*?\}\s*revealChip\(button\)/);
-      matches(css, /\.segmented-home \{[^}]*scroll-padding-inline: 4px/);
+      matches(css, /\.segmented-discover \{[^}]*scroll-padding-inline: 4px/);
     });
 
     it('has no hero, and the header is its own bar, when the first row is empty or fails', async (t) => {
@@ -3676,18 +3731,18 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(failing.document.querySelectorAll('.hero, .hero-slide').length, 0);
       assert.equal(chrome(failing), null);
       // The sticky switch is still on the page, so the scroll padding that clears it stays on (it is keyed to the switch, not the hero).
-      for (const page of [empty, failing]) assert.equal(page.document.body.getAttribute('data-home-switch'), '');
+      for (const page of [empty, failing]) assert.equal(page.document.body.getAttribute('data-discover-switch'), '');
       const css = read(BUILT('app.css'));
-      matches(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
-      assert.ok(!/data-chrome='home'\]\) \{ scroll-padding/.test(css));
+      matches(css, /:root:has\(body\[data-discover-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
+      assert.ok(!/data-chrome='discover'\]\) \{ scroll-padding/.test(css));
     });
 
     it('runs Home\'s filter band full width and gives every other screen, detail pages included, the page\'s own gutters', async (t) => {
       const app = await startApp(t);
       const page = await openApp(t, app);
       await homeReady(page);
-      assert.equal(chrome(page), 'home');
-      for (const [hash, expected] of [[`#/movie/${OWN_MOVIE}`, null], [`#/tv/${T_TV}`, null], [`#/tv/${T_TV}/season/1`, null], ['#/search', null], ['#/requests', null], ['#/account', null], ['#/', 'home']]) {
+      assert.equal(chrome(page), 'discover');
+      for (const [hash, expected] of [[`#/movie/${OWN_MOVIE}`, null], [`#/tv/${T_TV}`, null], [`#/tv/${T_TV}/season/1`, null], ['#/search', null], ['#/requests', null], ['#/account', null], ['#/', null], ['#/discover', 'discover']]) {
         page.go(hash);
         await page.until(() => chrome(page) === expected && page.main().getAttribute('aria-busy') === 'false', `${hash}: ${expected}`);
         assert.equal(chrome(page), expected, hash);
@@ -3764,16 +3819,88 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     });
   });
 
+  describe('Home and the Discover page', () => {
+    const homeLinks = (page) => page.until(() => page.main().querySelector('a.home-link') && page.main().getAttribute('aria-busy') === 'false', 'Home\'s links');
+    const appCalls = (page) => page.requests.map((request) => request.url).filter((url) => url.startsWith('/jellypass/app/'));
+
+    for (const hash of ['', '#', '#/']) {
+      it(`Home (${JSON.stringify(hash)}) links to Discover, Search and My requests, draws no row and asks the API for nothing`, async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash });
+        await homeLinks(page);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        assert.deepEqual(appCalls(page), [], 'no app API call: not /me, not a Discover list');
+        const links = [...page.main().querySelectorAll('a.home-link')];
+        assert.deepEqual(links.map((link) => link.getAttribute('href')), ['#/discover', '#/search', '#/requests']);
+        assert.deepEqual(links.map((link) => link.querySelector('.home-link-label').textContent), ['Discover', 'Search', 'My requests']);
+        for (const link of links) {
+          assert.ok(link.querySelector('.home-link-note').textContent.length > 10, 'a line on what it holds');
+          assert.equal(link.querySelectorAll('svg[aria-hidden="true"]').length, 2, 'its icon and chevron, hidden from screen readers');
+        }
+        assert.equal(page.main().querySelector('h1').textContent, 'Home');
+        assert.equal(page.document.title, 'JellyPass');
+        assert.equal(page.main().querySelector('ul.row-list, .hero, .discover-switch, [data-lazy]'), null, 'no Discover row or hero on Home');
+        assert.equal(page.document.body.hasAttribute('data-chrome'), false, 'Home has the page\'s own gutters');
+        assert.equal(page.document.body.hasAttribute('data-discover-switch'), false);
+        assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'home');
+        assert.equal(page.back().hidden, true);
+        assert.doesNotMatch(page.main().textContent, /download/i);
+      });
+    }
+
+    it('signed out, Home is the sign-in, as every screen is', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: '#/', signedIn: false });
+      await page.until(() => page.main().querySelector('ul.profiles'), 'the sign-in');
+      assert.equal(page.main().querySelector('a.home-link'), null);
+    });
+
+    it('opens the Discover page from Home\'s link, under the Home tab, with the rows Home used to have', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: '#/' });
+      await homeLinks(page);
+      page.go(page.main().querySelector('a.home-link[href="#/discover"]').getAttribute('href'));
+      await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'Discover');
+      assert.equal(page.document.title, 'Discover – JellyPass');
+      assert.equal(page.document.querySelector('#header-title').textContent, 'Discover');
+      assert.equal(page.main().querySelector('h1').textContent, 'Discover');
+      assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'home');
+      assert.equal(page.document.body.getAttribute('data-chrome'), 'discover');
+      assert.ok(page.main().querySelector('.hero'), 'the hero');
+      assert.ok(page.main().querySelector('.discover-switch [role="radiogroup"]'), 'All | Movies | TV');
+      page.back().dispatchEvent(new page.Event('click'));
+      await homeLinks(page);
+      assert.equal(page.location.hash, '#/');
+    });
+
+    it('moves Home\'s old filter addresses to Discover in place, and leaves Home\'s own address alone', async (t) => {
+      const app = await startApp(t);
+      for (const [old, moved, rows] of [['#/?kind=movies', '#/discover?kind=movies', 4], ['#/?kind=tv', '#/discover?kind=tv', 3], ['#/?kind=bogus', '#/discover', 4], ['#/?kind=', '#/discover', 4]]) {
+        const page = await openApp(t, app, { hash: old });
+        await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === rows && page.main().getAttribute('aria-busy') === 'false', old);
+        assert.equal(page.location.hash, moved, old);
+        assert.equal(page.entries.length, 1, `${old}: replaced, no entry added`);
+      }
+      for (const hash of ['#/?other=tv', '#/nowhere']) {
+        const page = await openApp(t, app, { hash });
+        await homeLinks(page);
+        assert.equal(page.location.hash, hash, `${hash}: Home, the address untouched`);
+      }
+    });
+  });
+
   describe('in-app Back and restoring where you were', () => {
     // Plain strings and numbers only are compared here: a failing assertion on a DOM node would try to print the page.
     const homeReady = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
+    const homeLinks = (page) => page.until(() => page.main().querySelector('a.home-link') && page.main().getAttribute('aria-busy') === 'false', 'Home\'s links');
 
     it('shows Back on every screen but Home, as a labelled button of at least 44px that the keyboard reaches', async (t) => {
       const app = await startApp(t);
-      const page = await openApp(t, app);
-      await homeReady(page);
+      const page = await openApp(t, app, { hash: '#/' });
+      await homeLinks(page);
       assert.equal(page.back().hidden, true, 'no Back on Home');
       for (const [hash, ready] of [
+        ['#/discover', 'ul.row-list'],
         [`#/movie/${OWN_MOVIE}`, 'article.detail'],
         [`#/tv/${T_TV}`, '.season-list'],
         [`#/tv/${T_TV}/season/1`, '.episode-list'],
@@ -3793,14 +3920,14 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.match(read(BUILT('app.css')), /\.back-button, \.icon-button, \.hero-nav \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/, '44px tap target');
       assert.match(read('index.html'), /<header class="app-header">\s*<button id="back"/, 'first in the header, so first in the tab order');
       page.go('#/');
-      await homeReady(page);
+      await homeLinks(page);
       assert.equal(page.back().hidden, true);
     });
 
     it('goes back through the app\'s own history, and to the logical parent when the app was opened on the screen', async (t) => {
       const app = await startApp(t);
-      const page = await openApp(t, app);
-      await homeReady(page);
+      const page = await openApp(t, app, { hash: '' });
+      await homeLinks(page);
       page.go(`#/tv/${T_TV}`);
       await page.until(() => page.main().querySelector('.season-list'), 'series');
       page.go(`#/tv/${T_TV}/season/1`);
@@ -3810,7 +3937,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(page.location.hash, `#/tv/${T_TV}`);
       assert.equal(page.cursor(), 1);
       page.back().dispatchEvent(new page.Event('click'));
-      await homeReady(page);
+      await homeLinks(page);
       assert.equal(page.location.hash, '');
       assert.equal(page.back().hidden, true);
 
@@ -3822,15 +3949,15 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(season.location.hash, `#/tv/${T_TV}`);
       assert.equal(season.entries.length, 1, 'no entry was added');
       season.back().dispatchEvent(new season.Event('click'));
-      await homeReady(season);
+      await homeLinks(season);
       assert.equal(season.location.hash, '#/');
       assert.equal(season.entries.length, 1);
 
-      for (const hash of [`#/movie/${OWN_MOVIE}`, '#/requests', '#/account', '#/search']) {
+      for (const hash of [`#/movie/${OWN_MOVIE}`, '#/requests', '#/account', '#/search', '#/discover', '#/discover?kind=tv']) {
         const deep = await openApp(t, app, { hash });
         await deep.until(() => deep.back().hidden === false && deep.main().getAttribute('aria-busy') === 'false', hash);
         deep.back().dispatchEvent(new deep.Event('click'));
-        await homeReady(deep);
+        await homeLinks(deep);
         assert.equal(deep.location.hash, '#/', hash);
       }
     });
@@ -3849,8 +3976,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(page.cursor(), 1);
       page.back().dispatchEvent(new page.Event('click'));
       await homeReady(page);
-      assert.equal(page.cursor(), 0, 'one Back reached Home');
-      assert.equal(page.location.hash, '');
+      assert.equal(page.cursor(), 0, 'one Back reached Discover');
+      assert.equal(page.location.hash, '#/discover');
     });
 
     it('puts Home\'s page scroll and each row\'s scroll back after a title and Back', async (t) => {
@@ -3929,12 +4056,12 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(page.requests.slice(before).map((request) => request.url), [
         '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/studio/3', '/jellypass/app/v1/discover/studio/3?page=2',
       ]);
-      // Opened on the page itself, Back is Home.
+      // Opened on the page itself, Back is Discover, where the services and studios are.
       const deep = await openApp(t, app, { hash: '#/network/2552' });
       await deep.until(() => deep.main().querySelector('h1')?.textContent === 'Popular on Apple TV', 'the network page');
       deep.back().dispatchEvent(new deep.Event('click'));
       await homeReady(deep);
-      assert.equal(deep.location.hash, '#/');
+      assert.equal(deep.location.hash, '#/discover');
     });
 
     it('puts a service\'s Films tab, its pages and the scroll back after a title, and opens its address on that tab', async (t) => {
@@ -4008,7 +4135,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const results = Array.from({ length: 25 }, (_, index) => ({
         id: `id${index}`, mediaType: 'movie', tmdbId: index % 2 ? T_MOVIE : OWN_MOVIE, status: 'requested', seasons: [], byYou: true,
       }));
-      const page = await openApp(t, app, { hash: '', override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 200, body: Buffer.from(JSON.stringify({ results })), headers: { 'content-type': 'application/json' } } : undefined) });
+      const page = await openApp(t, app, { hash: '#/discover', override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 200, body: Buffer.from(JSON.stringify({ results })), headers: { 'content-type': 'application/json' } } : undefined) });
       await homeReady(page);
       page.go('#/requests');
       await page.until(() => page.main().querySelectorAll('.request').length === 10, 'ten');
@@ -4323,7 +4450,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(page.main().querySelector('h1').textContent, heading, 'not replaced by Home');
     assert.equal(page.requests.length, requests);
     // A real route still navigates.
-    page.go('#/');
+    page.go('#/discover');
     await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
   });
 
@@ -4738,7 +4865,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     // 401: the token Jellyfin web holds is no longer valid.
     const expired = await openApp(t, app, { user: ALICE });
     expired.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: expired.location.origin, AccessToken: 'token-revoked', UserId: ALICE }] }));
-    expired.go('#/');
+    expired.go('#/discover');
     await expired.until(() => expired.main().querySelector('ul.profiles'), 'the sign-in state');
     assert.equal(expired.main().querySelector('h1').textContent, 'Sign in');
     assert.equal(expired.main().querySelector('a').getAttribute('href'), '/web/');
@@ -4941,7 +5068,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         // The page keeps nothing about it.
         assert.deepEqual(page.sessionWrites, []);
         assert.equal([...page.store.keys()].some((key) => key !== 'jellyfin_credentials' && /ask|request/i.test(key)), false);
-        page.go('#/');
+        page.go('#/discover');
         await homeReady(page);
         page.go(`#/movie/${T_MOVIE}`);
         await page.until(() => page.main().querySelector('.badge')?.textContent === 'Requested', 'Requested');
@@ -5410,6 +5537,246 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     });
   });
 
+  describe('collections and all missing seasons against the API', () => {
+    const COLLECTION = 900100;
+    const posts = (page) => page.requests.filter((request) => request.init.method === 'POST');
+    const jsonAnswer = (value, status = 200, headers = {}) => ({ status, body: Buffer.from(JSON.stringify(value)), headers: { 'content-type': 'application/json', ...headers } });
+    const click = (page, node) => node.dispatchEvent(new page.Event('click', { bubbles: true }));
+    const change = (page, node, checked) => {
+      node.checked = checked;
+      node.dispatchEvent(new page.Event('change', { bubbles: true }));
+    };
+    /** /me as a server before collections says it. */
+    const oldServer = (url) => (url === '/jellypass/app/v1/me' ? jsonAnswer({ name: 'Alice', household: 'Grove', apiVersion: 5 }) : undefined);
+    const films = (page) => [...page.main().querySelectorAll('.collection-film')].map((item) => ({
+      name: item.querySelector('.season-name').textContent,
+      meta: item.querySelector('.card-meta').textContent,
+      badge: item.querySelector('.badge').textContent,
+      box: item.querySelector('input[type="checkbox"]')?.checked ?? null,
+    }));
+
+    it('asks once for every missing season of a series with Get all missing seasons', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: `#/tv/${T_TV}` });
+      const all = await page.until(() => page.main().querySelector('.get-all-seasons'), 'the button');
+      click(page, all);
+      await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
+      assert.deepEqual(posts(page).map((request) => [request.url, request.init.body]), [[`/jellypass/app/v1/tv/${T_TV}/get`, '{"seasons":[1,2]}']]);
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      await page.until(() => page.main().querySelectorAll('.season .badge').length === 2
+        && [...page.main().querySelectorAll('.season .badge')].every((badge) => badge.textContent === 'Requested'), 'both requested');
+      assert.equal(page.main().querySelector('.get-all-seasons'), null);
+      await app.background.settled();
+    });
+
+    it('links a film to its collection on a server with collections, and to nothing on an older one or for a film in none', async (t) => {
+      const app = await startApp(t, world({ tmdbMovies: { 900010: { title: 'Synthetic Movie Ten', release_date: '2021-01-01', belongs_to_collection: null } } }));
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+      const link = await page.until(() => page.main().querySelector('.collection-link a'), 'the link');
+      assert.equal(link.textContent, 'Part of Synthetic Collection');
+      assert.equal(link.getAttribute('href'), `#/collection/${COLLECTION}`);
+      const alone = await openApp(t, app, { hash: '#/movie/900010' });
+      await alone.until(() => alone.main().querySelector('article.detail'), 'the page');
+      assert.equal(alone.main().querySelector('.collection-link'), null);
+      const old = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: oldServer });
+      await old.until(() => old.main().querySelector('article.detail'), 'the page');
+      assert.equal(old.main().querySelector('.collection-link'), null);
+      // An old server's movie has no such field at all.
+      const bare = await openApp(t, app, {
+        hash: `#/movie/${T_MOVIE}`,
+        override: (url) => oldServer(url) ?? (url === `/jellypass/app/v1/movie/${T_MOVIE}`
+          ? jsonAnswer({ mediaType: 'movie', tmdbId: T_MOVIE, title: 'Synthetic Movie One', year: 2020, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, genres: [], runtime: null, hidden: false })
+          : undefined),
+      });
+      await bare.until(() => bare.main().querySelector('article.detail'), 'the page');
+      assert.equal(bare.main().querySelector('.collection-link'), null);
+      // Opened directly on an old server, a collection is Not found, and is never asked for.
+      const direct = await openApp(t, app, { hash: `#/collection/${COLLECTION}`, override: oldServer });
+      await direct.until(() => direct.main().querySelector('h1')?.textContent && !direct.main().querySelector('.detail-skeleton'), 'the answer');
+      assert.ok(!direct.requests.some((request) => request.url.includes('/collection/')));
+      assert.equal(direct.main().querySelector('.collection-view'), null);
+    });
+
+    it('lists the films with their states, ticks the released ones still to get, and asks for each with its own Get this', async (t) => {
+      const app = await startApp(t, world(), { now: () => Date.parse('2026-11-10T12:00:00Z') });
+      const page = await openApp(t, app, { hash: `#/collection/${COLLECTION}` });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      assert.equal(page.main().querySelector('h1').textContent, 'Synthetic Collection');
+      assert.equal(page.main().querySelector('.overview').textContent, 'A synthetic film series used only in tests.');
+      assert.deepEqual(films(page), [
+        { name: 'Synthetic Movie One', meta: '2020', badge: 'Available to get', box: true },
+        { name: 'Synthetic Movie Three', meta: '2024', badge: 'Ready to watch', box: null },
+        { name: 'Synthetic Movie Five', meta: '2999 · Not released yet', badge: 'Available to get', box: false },
+        { name: 'Synthetic Movie Six', meta: 'Not released yet', badge: 'Available to get', box: false },
+      ]);
+      assert.equal(page.main().querySelector('.collection-film a.button').textContent, 'Play');
+      assert.deepEqual([...page.main().querySelectorAll('.collection-film .season-link')].map((link) => link.getAttribute('href')),
+        [`#/movie/${T_MOVIE}`, `#/movie/${OWN_MOVIE}`, '#/movie/900005', '#/movie/900006']);
+      const button = page.main().querySelector('button.get-films');
+      assert.equal(button.textContent, 'Get all missing films');
+      // Ticking a film not out yet makes it a selection; back to the first ticks, it is Get all again; none, nothing to send.
+      const boxes = [...page.main().querySelectorAll('.collection-film input[type="checkbox"]')];
+      change(page, boxes[1], true);
+      assert.equal(button.textContent, 'Get selected (2)');
+      change(page, boxes[1], false);
+      assert.equal(button.textContent, 'Get all missing films');
+      change(page, boxes[0], false);
+      assert.equal(button.textContent, 'Get selected (0)');
+      assert.equal(button.disabled, true);
+      change(page, boxes[0], true);
+      assert.equal(posts(page).length, 0, 'ticking asked for nothing');
+      click(page, button);
+      const summary = await page.until(() => page.main().querySelector('.collection-outcome'), 'the summary');
+      assert.equal(summary.textContent, "Thanks — we'll get this film for your household.");
+      assert.deepEqual(posts(page).map((request) => [request.url, request.init.body]), [[`/jellypass/app/v1/movie/${T_MOVIE}/get`, '{}']]);
+      // Read again: the film is requested now, and the rest stay as they were.
+      assert.deepEqual(films(page).map((film) => [film.badge, film.box]), [['Requested', null], ['Ready to watch', null], ['Available to get', false], ['Available to get', false]]);
+      assert.equal(page.main().querySelector('button.get-films').textContent, 'Get selected (0)');
+      await app.background.settled();
+      // My requests lists it as its own entry.
+      const list = (await app.get('/jellypass/app/v1/requests')).json().results;
+      assert.deepEqual(list.map((entry) => [entry.mediaType, entry.tmdbId]), [['movie', T_MOVIE]]);
+    });
+
+    it('stops at the first refusal and says which films were asked for and which were not, with the wait', async (t) => {
+      const app = await startApp(t, world(), { now: () => Date.parse('2026-11-10T12:00:00Z') });
+      const page = await openApp(t, app, {
+        hash: `#/collection/${COLLECTION}`,
+        override: (url, init) => (init.method === 'POST' && url === '/jellypass/app/v1/movie/900005/get'
+          ? jsonAnswer({ error: 'too_many_requests', retryAfterSeconds: 90 }, 429, { 'retry-after': '90' })
+          : undefined),
+      });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      for (const box of page.main().querySelectorAll('.collection-film input[type="checkbox"]')) change(page, box, true);
+      const button = page.main().querySelector('button.get-films');
+      assert.equal(button.textContent, 'Get selected (3)');
+      click(page, button);
+      const summary = await page.until(() => page.main().querySelector('.collection-outcome'), 'the summary');
+      // One call per film, in the page's order, until the refusal: the film after it is never sent.
+      assert.deepEqual(posts(page).map((request) => request.url), [`/jellypass/app/v1/movie/${T_MOVIE}/get`, '/jellypass/app/v1/movie/900005/get']);
+      assert.ok(summary.classList.contains('get-error'));
+      assert.deepEqual([...summary.querySelectorAll('p')].map((line) => line.textContent), [
+        'Asked for: Synthetic Movie One (2020).',
+        'Not asked for: Synthetic Movie Five (2999), Synthetic Movie Six.',
+        'Too many tries. Try again in 2 minutes.',
+      ]);
+      assert.equal(summary.getAttribute('role'), 'status');
+      // The two not asked for can be asked for again; the one asked for is requested.
+      assert.deepEqual(films(page).map((film) => [film.badge, film.box]), [['Requested', null], ['Ready to watch', null], ['Available to get', false], ['Available to get', false]]);
+      assert.doesNotMatch(page.serialize(), /download/i);
+      await app.background.settled();
+    });
+
+    it('keeps films it asked for requested, and unticked, when reading the collection again fails', async (t) => {
+      const app = await startApp(t);
+      let failReads = false;
+      const page = await openApp(t, app, {
+        hash: `#/collection/${COLLECTION}`,
+        override: (url, init) => {
+          if (init.method === 'POST' && url === '/jellypass/app/v1/movie/900005/get') return jsonAnswer({ error: 'too_many_requests', retryAfterSeconds: 60 }, 429, { 'retry-after': '60' });
+          if (init.method === 'POST') failReads = true;
+          return failReads && url === `/jellypass/app/v1/collection/${COLLECTION}` ? jsonAnswer({ error: 'unavailable' }, 502) : undefined;
+        },
+      });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      for (const box of page.main().querySelectorAll('.collection-film input[type="checkbox"]')) change(page, box, true);
+      click(page, page.main().querySelector('button.get-films'));
+      const summary = await page.until(() => page.main().querySelector('.collection-outcome'), 'the summary');
+      assert.equal(summary.querySelector('.collection-asked').textContent, 'Asked for: Synthetic Movie One (2020).');
+      // The read after failed: the film accepted is still Requested and offered no box, so it cannot be sent again.
+      assert.ok(page.requests.filter((request) => request.url === `/jellypass/app/v1/collection/${COLLECTION}`).length >= 2);
+      assert.deepEqual(films(page).map((film) => [film.name, film.badge, film.box]), [
+        ['Synthetic Movie One', 'Requested', null],
+        ['Synthetic Movie Three', 'Ready to watch', null],
+        ['Synthetic Movie Five', 'Available to get', false],
+        ['Synthetic Movie Six', 'Available to get', false],
+      ]);
+      await app.background.settled();
+    });
+
+    it('signs the member out when My requests refuses them, even when the collection read failed first or after', async (t) => {
+      const app = await startApp(t);
+      const settle = (page) => page.until(() => page.main().querySelector('[data-screen="signin"] h1, .notice h1'), 'the sign-in or the error');
+      const signedOut = async (page, label) => {
+        await settle(page);
+        assert.equal(page.main().querySelector('.notice h1')?.textContent ?? null, null, `${label}: no error state`);
+        assert.equal(page.main().querySelector('[data-screen="signin"] h1').textContent, 'Sign in', label);
+      };
+      const later = (answer) => new Promise((resolve) => setTimeout(() => resolve(answer), 50));
+      for (const [label, collectionFirst] of [['the collection fails first', true], ['the 401 comes first', false]]) {
+        const refused = jsonAnswer({ error: 'unauthorized' }, 401);
+        const failed = jsonAnswer({ error: 'unavailable' }, 503);
+        const page = await openApp(t, app, {
+          hash: `#/collection/${COLLECTION}`,
+          override: (url) => {
+            if (url === `/jellypass/app/v1/collection/${COLLECTION}`) return collectionFirst ? failed : later(failed);
+            if (url === '/jellypass/app/v1/requests') return collectionFirst ? later(refused) : refused;
+            return undefined;
+          },
+        });
+        await signedOut(page, label);
+      }
+      // The read again after a film was asked for, failing both ways at once with the collection's failure first.
+      let failReads = false;
+      const page = await openApp(t, app, {
+        hash: `#/collection/${COLLECTION}`,
+        override: (url, init) => {
+          if (init.method === 'POST') {
+            failReads = true;
+            return undefined;
+          }
+          if (!failReads) return undefined;
+          if (url === `/jellypass/app/v1/collection/${COLLECTION}`) return jsonAnswer({ error: 'unavailable' }, 503);
+          if (url === '/jellypass/app/v1/requests') return later(jsonAnswer({ error: 'unauthorized' }, 401));
+          return undefined;
+        },
+      });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      change(page, page.main().querySelector('.collection-film input[type="checkbox"]'), true);
+      click(page, page.main().querySelector('button.get-films'));
+      await page.until(() => page.main().querySelector('[data-screen="signin"] h1, .collection-outcome'), 'the sign-in or the summary');
+      assert.equal(page.main().querySelector('.collection-outcome'), null, 'after the button: no summary');
+      assert.equal(page.main().querySelector('[data-screen="signin"] h1').textContent, 'Sign in');
+      await app.background.settled();
+    });
+
+    it('shows a film whose request failed as such, and never offers or ticks it', async (t) => {
+      const app = await startApp(t);
+      const failedList = { results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: T_MOVIE, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] };
+      const page = await openApp(t, app, {
+        hash: `#/collection/${COLLECTION}`,
+        override: (url) => (url === '/jellypass/app/v1/requests' ? jsonAnswer(failedList) : undefined),
+      });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      assert.deepEqual(films(page)[0], { name: 'Synthetic Movie One', meta: '2020', badge: "We couldn't get this", box: null });
+      // Nothing released is left to get: no film is ticked, so nothing is sent as if newly asked for.
+      const button = page.main().querySelector('button.get-films');
+      assert.equal(button.textContent, 'Get selected (0)');
+      assert.equal(button.disabled, true);
+      assert.equal(posts(page).length, 0);
+    });
+
+    it('marks a film the member hid as Not interested and leaves it unticked, though it can be ticked', async (t) => {
+      const app = await startApp(t);
+      assert.equal((await app.post(`/jellypass/app/v1/hidden/movie/${T_MOVIE}`, undefined)).status, 200);
+      const page = await openApp(t, app, { hash: `#/collection/${COLLECTION}` });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      assert.deepEqual(films(page)[0], { name: 'Synthetic Movie One', meta: '2020 · Not interested', badge: 'Available to get', box: false });
+      const button = page.main().querySelector('button.get-films');
+      assert.equal(button.textContent, 'Get selected (0)');
+      change(page, page.main().querySelector('.collection-film input[type="checkbox"]'), true);
+      assert.equal(button.textContent, 'Get selected (1)');
+    });
+
+    it('says when the household has every film it can get, and offers no button', async (t) => {
+      const app = await startApp(t, world({ tmdbCollections: { 900180: { name: 'Synthetic Held', parts: [{ id: OWN_MOVIE, title: 'Synthetic Movie Three', release_date: '2024-02-02' }] } } }));
+      const page = await openApp(t, app, { hash: '#/collection/900180' });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      assert.equal(page.main().querySelector('button.get-films'), null);
+      assert.equal(page.main().querySelector('.detail-text .muted').textContent, 'Your household has every released film here, or has asked for it.');
+    });
+  });
+
   describe('hidden titles ("Not interested")', () => {
     const json = (body, status = 200) => ({ status, body: Buffer.from(JSON.stringify(body)), headers: { 'content-type': 'application/json' } });
     const click = (page, node) => node.dispatchEvent(new page.Event('click', { bubbles: true }));
@@ -5624,7 +5991,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal((await app.post(`${HIDDEN}/movie/${T_MOVIE}`, undefined, { method: 'DELETE' })).status, 200);
         page.go('#/account');
         await page.until(() => page.main().querySelector('.account'), 'Account');
-        page.go('#/');
+        page.go('#/discover');
         await homeReady(page);
         assert.deepEqual(names(trending(page)), ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three']);
       });
@@ -5864,7 +6231,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       for (const surface of ['row', 'search']) {
         it(`Undo of a hide (${surface}) takes the member to sign-in`, async (t) => {
           const app = await startApp(t);
-          const page = await openApp(t, app, { hash: surface === 'row' ? '#/' : '#/search?q=synthetic', override: refusing('DELETE') });
+          const page = await openApp(t, app, { hash: surface === 'row' ? '#/discover' : '#/search?q=synthetic', override: refusing('DELETE') });
           const card = surface === 'row'
             ? (await homeReady(page), trending(page).querySelector('li.card'))
             : await page.until(() => page.main().querySelector('ul.grid li.card .card-more')?.closest('li.card'), 'results');
@@ -5899,7 +6266,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
             page.go('#/account');
             await page.until(() => page.main().querySelector('.account-out'), 'signed out');
             page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
-            page.go('#/');
+            page.go('#/discover');
             await homeReady(page);
             await settledCalls(page);
             const before = page.main().outerHTML;
@@ -5945,7 +6312,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           click(page, card.querySelector('.card-menu-item'));
           await page.until(() => page.requests.some((request) => request.url.startsWith(HIDDEN)), 'the POST sent');
           asAnn(page);
-          page.go('#/');
+          page.go('#/discover');
           await homeReady(page);
           // Every call of Ann's Home answered: only Alice's hide is still out.
           await page.until(() => page.pending() === 1, 'Ann\'s Home read');

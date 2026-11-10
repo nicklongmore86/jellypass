@@ -1,6 +1,6 @@
 // Home stays the PWA's: its words (status words, filters, hero controls, row and error wording, the JustWatch credit),
-// its rows per filter in order with their kind and whether they are fetched at once, and each service's waterline,
-// read from app/src/render.ts and app/src/main.ts. Also the small helpers that build a card's text and name.
+// its rows per filter in order with their kind and whether they are fetched at once (the PWA's Discover page, which holds
+// the rows its Home used to), and each service's waterline, read from app/src/render.ts and app/src/main.ts. Also the small helpers that build a card's text and name.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -93,8 +93,10 @@ describe('the network and studio pages', () => {
 });
 
 describe("Home's layout", () => {
-  it.each(HOME_FILTERS)('under %s has the PWA\'s rows, in order, each fetched at once or lazily as there', (filter) => {
-    const block = new RegExp(`\\n  ${filter}: \\[([\\s\\S]*?)\\n  \\],`).exec(main.slice(main.indexOf('const HOME_LAYOUT')));
+  it.each(HOME_FILTERS)('under %s has the PWA\'s Discover rows, in order, each fetched at once or lazily as there', (filter) => {
+    const start = main.indexOf('const DISCOVER_LAYOUT');
+    expect(start).toBeGreaterThan(-1);
+    const block = new RegExp(`\\n  ${filter}: \\[([\\s\\S]*?)\\n  \\],`).exec(main.slice(start));
     expect(block).not.toBeNull();
     const pwa = [...block![1]!.matchAll(/row\('([a-z-]+)', '([^']+)', '(poster|backdrop)', (true|false)\)|\{ part: '([a-z]+)' \}/g)].map((match) =>
       match[5] ? match[5] : `${match[1]} ${match[2]} ${match[3]} ${match[4]}`,
