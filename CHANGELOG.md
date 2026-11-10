@@ -125,6 +125,8 @@ Read these before upgrading:
 
 ### Fixed
 
+- Web film and season pages sign out expired members when My requests returns 401, even if the detail read fails first, including after a request.
+
 - **Self-check documentation:** `docs/household-access.md` said a missing or
   unreachable Seerr URL passes the Seerr probe. It always warns, and the
   documentation now also says the direct-origin check has no pass result.

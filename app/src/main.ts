@@ -1317,7 +1317,13 @@ async function title(route: Route, signal: AbortSignal, current: () => boolean):
   await loadMe(signal);
   const id = route.id as number;
   const mediaType: MediaType = route.name === 'tv' ? 'tv' : 'movie';
-  const load = () => Promise.all([mediaType === 'tv' ? api.tv(id, signal) : api.movie(id, signal), failedSeasons(mediaType, id, signal)]);
+  // My requests rejects only for a 401, which wins over a detail failure in either settle order.
+  const load = async () => {
+    const [found, listed] = await Promise.allSettled([mediaType === 'tv' ? api.tv(id, signal) : api.movie(id, signal), failedSeasons(mediaType, id, signal)]);
+    if (listed.status === 'rejected') throw listed.reason;
+    if (found.status === 'rejected') throw found.reason;
+    return [found.value, listed.value] as const;
+  };
   let [answer, failed] = await load();
   if (!current()) return;
   const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
@@ -1424,11 +1430,17 @@ async function season(route: Route, signal: AbortSignal, current: () => boolean)
   await loadMe(signal);
   const id = route.id as number;
   const number = route.season as number;
-  const load = () => Promise.all([
-    api.season(id, number, signal),
-    api.tv(id, signal).then((value) => value, () => undefined),
-    failedSeasons('tv', id, signal),
-  ]);
+  // Wait for My requests too: its 401 must win even when the season detail fails first.
+  const load = async () => {
+    const [found, series, listed] = await Promise.allSettled([
+      api.season(id, number, signal),
+      api.tv(id, signal).then((value) => value, () => undefined),
+      failedSeasons('tv', id, signal),
+    ]);
+    if (listed.status === 'rejected') throw listed.reason;
+    if (found.status === 'rejected') throw found.reason;
+    return [found.value, series.status === 'fulfilled' ? series.value : undefined, listed.value] as const;
+  };
   let [answer, series, failed] = await load();
   if (!current()) return;
   const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
