@@ -1,4 +1,4 @@
-import { collection as readCollection, getThis, type Collection, type CollectionFilm, type Failure, type HouseholdState } from './api.js';
+import { collection as readCollection, getThis, requests as readRequests, type Collection, type CollectionFilm, type Failure, type HouseholdState } from './api.js';
 import type { Asked } from './asked.js';
 import { COLLECTION_TEXT } from './collection-model.js';
 import type { Session } from './jellyfin-web.js';
@@ -57,6 +57,11 @@ interface Open {
   first: boolean;
   /** Films asked for on this page: not offered again while it is open, whatever the overlay says. */
   askedHere: number[];
+  /**
+   * Films whose request failed (My requests' failed entries, as the title page reads them): shown as such and never
+   * offered, since asking again changes nothing until an administrator acts. Kept from the last read that had them.
+   */
+  failed: number[];
   /** The answer drawn, while it can be drawn again from it alone (not loading, failed or sending). */
   drawn: { found: Collection; outcome: Outcome | undefined; shown: string } | undefined;
   lastFocus: Element | undefined;
@@ -93,7 +98,7 @@ export class CollectionPage {
     context.container.appendChild(view);
     const raw = context.params.id ?? '';
     const id = /^[1-9][0-9]{0,9}$/.test(raw) && Number(raw) <= MAX_ID ? Number(raw) : 0;
-    const open: Open = { id, userId: session.userId, context, view, body, load: 0, first: true, askedHere: [], drawn: undefined, lastFocus: undefined };
+    const open: Open = { id, userId: session.userId, context, view, body, load: 0, first: true, askedHere: [], failed: [], drawn: undefined, lastFocus: undefined };
     view.addEventListener('focusin', (event) => {
       open.lastFocus = event.target as Element;
     });
@@ -194,7 +199,10 @@ export class CollectionPage {
       this.#fill(open, [box]);
     }
     const stamp = this.#watch.stamp(session);
-    void readCollection(this.#scope.fetch, this.#origin, session.token, open.id).then((answer) => {
+    void Promise.all([
+      readCollection(this.#scope.fetch, this.#origin, session.token, open.id),
+      readRequests(this.#scope.fetch, this.#origin, session.token),
+    ]).then(([answer, listed]) => {
       if (open.load !== load || this.#open !== open) return;
       const now = this.#watch.holds(stamp);
       if (!now || now.userId !== open.userId) {
@@ -204,6 +212,9 @@ export class CollectionPage {
         else this.#end(open);
         return;
       }
+      // A refused requests read is a refused sign-in too; any other failure of it only leaves the failed marks as they were.
+      if (answer.ok && !listed.ok && listed.status === 401) answer = { ok: false, status: 401 };
+      if (listed.ok) open.failed = listed.entries.filter((entry) => entry.mediaType === 'movie' && entry.status === 'failed').map((entry) => entry.tmdbId);
       if (!answer.ok) {
         if (answer.status === 401) {
           this.#asked.forget();
@@ -249,8 +260,12 @@ export class CollectionPage {
   #draw(open: Open, found: Collection, outcome: Outcome | undefined, picked: number[] | undefined): void {
     const asked = this.#asked;
     const films = found.films.map((film) => ({ film, state: asked.state('movie', film.tmdbId, film.state) as HouseholdState }));
-    const pickable = (entry: { film: CollectionFilm; state: HouseholdState }) => entry.state === 'get_this' && open.askedHere.indexOf(entry.film.tmdbId) < 0;
-    const defaults = films.filter((entry) => pickable(entry) && entry.film.released).map((entry) => entry.film.tmdbId);
+    const failedFilm = (entry: { film: CollectionFilm; state: HouseholdState }) => entry.state === 'get_this' && open.failed.indexOf(entry.film.tmdbId) >= 0;
+    const hiddenFilm = (film: CollectionFilm) => film.hidden !== undefined && asked.hiddenNow('movie', film.tmdbId, film.hidden);
+    const pickable = (entry: { film: CollectionFilm; state: HouseholdState }) =>
+      entry.state === 'get_this' && open.askedHere.indexOf(entry.film.tmdbId) < 0 && !failedFilm(entry);
+    // Not a film the member hid ("Not interested", as Discover leaves it out): it can still be ticked by hand.
+    const defaults = films.filter((entry) => pickable(entry) && entry.film.released && !hiddenFilm(entry.film)).map((entry) => entry.film.tmdbId);
     const ticked = picked ?? defaults;
 
     const parts: HTMLElement[] = [];
@@ -307,7 +322,10 @@ export class CollectionPage {
       item.appendChild(this.#el('span', 'jellypass-tv-title-film-name', film.title));
       if (film.year !== null) item.appendChild(this.#el('span', 'jellypass-tv-title-film-year', String(film.year)));
       if (!film.released) item.appendChild(this.#el('span', 'jellypass-tv-title-film-note', film.releaseDate ? COLLECTION_TEXT.comingOn(film.releaseDate) : COLLECTION_TEXT.notReleased));
-      item.appendChild(this.#el('span', `jellypass-tv-title-status jellypass-tv-title-status-${state}`, STATE_LABELS[state]));
+      if (hiddenFilm(film)) item.appendChild(this.#el('span', 'jellypass-tv-title-film-note jellypass-tv-title-film-hidden', COLLECTION_TEXT.hidden));
+      item.appendChild(failedFilm(entry)
+        ? this.#el('span', 'jellypass-tv-title-status jellypass-tv-title-status-failed', TITLE_TEXT.failed)
+        : this.#el('span', `jellypass-tv-title-status jellypass-tv-title-status-${state}`, STATE_LABELS[state]));
       list.appendChild(item);
     }
     if (!films.length) list.appendChild(this.#el('p', 'jellypass-tv-title-note', COLLECTION_TEXT.noFilms));

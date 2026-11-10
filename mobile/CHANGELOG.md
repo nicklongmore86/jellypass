@@ -21,7 +21,9 @@ build.
   as a trilogy) says "Part of …" on its page, a link to the collection's page:
   every film in it, oldest first, with what the household has or has asked for.
   The films the household can still get are ticked, except those not released
-  yet, which are shown but left out. **Get all missing films** (or **Get selected**)
+  yet and those you marked Not interested, which are shown but left out (you
+  can tick them yourself). A film the household asked for that could not be got
+  says so and is not offered again. **Get all missing films** (or **Get selected**)
   asks for each film on its own, one after the other, so each counts once against
   the household's limits and each is its own entry in My requests. If a limit is
   reached part-way, the page says which films were asked for, which were not, and

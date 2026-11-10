@@ -5588,6 +5588,61 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await app.background.settled();
     });
 
+    it('keeps films it asked for requested, and unticked, when reading the collection again fails', async (t) => {
+      const app = await startApp(t);
+      let failReads = false;
+      const page = await openApp(t, app, {
+        hash: `#/collection/${COLLECTION}`,
+        override: (url, init) => {
+          if (init.method === 'POST' && url === '/jellypass/app/v1/movie/900005/get') return jsonAnswer({ error: 'too_many_requests', retryAfterSeconds: 60 }, 429, { 'retry-after': '60' });
+          if (init.method === 'POST') failReads = true;
+          return failReads && url === `/jellypass/app/v1/collection/${COLLECTION}` ? jsonAnswer({ error: 'unavailable' }, 502) : undefined;
+        },
+      });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      for (const box of page.main().querySelectorAll('.collection-film input[type="checkbox"]')) change(page, box, true);
+      click(page, page.main().querySelector('button.get-films'));
+      const summary = await page.until(() => page.main().querySelector('.collection-outcome'), 'the summary');
+      assert.equal(summary.querySelector('.collection-asked').textContent, 'Asked for: Synthetic Movie One (2020).');
+      // The read after failed: the film accepted is still Requested and offered no box, so it cannot be sent again.
+      assert.ok(page.requests.filter((request) => request.url === `/jellypass/app/v1/collection/${COLLECTION}`).length >= 2);
+      assert.deepEqual(films(page).map((film) => [film.name, film.badge, film.box]), [
+        ['Synthetic Movie One', 'Requested', null],
+        ['Synthetic Movie Three', 'Ready to watch', null],
+        ['Synthetic Movie Five', 'Available to get', false],
+        ['Synthetic Movie Six', 'Available to get', false],
+      ]);
+      await app.background.settled();
+    });
+
+    it('shows a film whose request failed as such, and never offers or ticks it', async (t) => {
+      const app = await startApp(t);
+      const failedList = { results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: T_MOVIE, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] };
+      const page = await openApp(t, app, {
+        hash: `#/collection/${COLLECTION}`,
+        override: (url) => (url === '/jellypass/app/v1/requests' ? jsonAnswer(failedList) : undefined),
+      });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      assert.deepEqual(films(page)[0], { name: 'Synthetic Movie One', meta: '2020', badge: "We couldn't get this", box: null });
+      // Nothing released is left to get: no film is ticked, so nothing is sent as if newly asked for.
+      const button = page.main().querySelector('button.get-films');
+      assert.equal(button.textContent, 'Get selected (0)');
+      assert.equal(button.disabled, true);
+      assert.equal(posts(page).length, 0);
+    });
+
+    it('marks a film the member hid as Not interested and leaves it unticked, though it can be ticked', async (t) => {
+      const app = await startApp(t);
+      assert.equal((await app.post(`/jellypass/app/v1/hidden/movie/${T_MOVIE}`, undefined)).status, 200);
+      const page = await openApp(t, app, { hash: `#/collection/${COLLECTION}` });
+      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+      assert.deepEqual(films(page)[0], { name: 'Synthetic Movie One', meta: '2020 · Not interested', badge: 'Available to get', box: false });
+      const button = page.main().querySelector('button.get-films');
+      assert.equal(button.textContent, 'Get selected (0)');
+      change(page, page.main().querySelector('.collection-film input[type="checkbox"]'), true);
+      assert.equal(button.textContent, 'Get selected (1)');
+    });
+
     it('says when the household has every film it can get, and offers no button', async (t) => {
       const app = await startApp(t, world({ tmdbCollections: { 900180: { name: 'Synthetic Held', parts: [{ id: OWN_MOVIE, title: 'Synthetic Movie Three', release_date: '2024-02-02' }] } } }));
       const page = await openApp(t, app, { hash: '#/collection/900180' });

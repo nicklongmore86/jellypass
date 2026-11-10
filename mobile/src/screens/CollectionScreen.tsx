@@ -16,9 +16,9 @@ import type { Collection, CollectionFilm } from '../api/types';
 import { COLLECTION_TEXT, getFilmsLabel } from '../collection/text';
 import { outcomeLines, useCollection } from '../collection/useCollection';
 import { StatusChip, TmdbImage } from '../home/components';
-import { stateLabel } from '../home/text';
+import { REQUEST_LABELS, stateLabel } from '../home/text';
 import { titlePath, type TitleTab } from '../navigation/titles';
-import { useAsked } from '../session/SessionProvider';
+import { useAsked, useHiddenTitles } from '../session/SessionProvider';
 import { colors, layout, radii, spacing, typography } from '../theme';
 import { ActionButton, DETAIL_MAX_WIDTH, DetailBackdrop, DetailFailure, DetailSkeleton, SectionHeading, SelectCircle } from '../title/components';
 import { GET_THIS_TEXT } from '../title/text';
@@ -26,19 +26,30 @@ import { Screen } from '../ui';
 
 const hidden = { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' } as const;
 
-/** The films the household can ask for now: Available to get, and not asked for on this page. */
-function offeredFilms(films: readonly CollectionFilm[], askedHere: ReadonlySet<number>): CollectionFilm[] {
-  return films.filter((film) => film.state === 'get_this' && !askedHere.has(film.tmdbId));
+const NONE: ReadonlySet<number> = new Set();
+
+/** Whether the household asked for the film and could not get it (GET /requests' failed entries). */
+function failedFilm(film: CollectionFilm, failed: ReadonlySet<number>): boolean {
+  return film.state === 'get_this' && failed.has(film.tmdbId);
 }
 
-/** The films ticked at first: those on offer that are out. */
-export function defaultChoice(films: readonly CollectionFilm[], askedHere: ReadonlySet<number> = new Set()): Set<number> {
-  return new Set(offeredFilms(films, askedHere).filter((film) => film.released).map((film) => film.tmdbId));
+/** The films the household can ask for now: Available to get, not asked for on this page, and not failed. */
+function offeredFilms(films: readonly CollectionFilm[], askedHere: ReadonlySet<number>, failed: ReadonlySet<number> = NONE): CollectionFilm[] {
+  return films.filter((film) => film.state === 'get_this' && !askedHere.has(film.tmdbId) && !failedFilm(film, failed));
+}
+
+/**
+ * The films ticked at first: those on offer that are out, but not one the member hid ("Not interested", as Discover
+ * leaves it out), which can still be ticked by hand.
+ */
+export function defaultChoice(films: readonly CollectionFilm[], askedHere: ReadonlySet<number> = NONE, failed: ReadonlySet<number> = NONE): Set<number> {
+  return new Set(offeredFilms(films, askedHere, failed).filter((film) => film.released && !film.hidden).map((film) => film.tmdbId));
 }
 
 export function CollectionScreen({ id, tab }: { id: number; tab: TitleTab }) {
   const data = useCollection(id);
   const overlay = useAsked();
+  const hiddenTitles = useHiddenTitles();
   const { load } = data;
   return (
     <Screen maxWidth={DETAIL_MAX_WIDTH}>
@@ -47,7 +58,8 @@ export function CollectionScreen({ id, tab }: { id: number; tab: TitleTab }) {
       {load.status === 'failed' ? <DetailFailure error={load.error} onRetry={data.reload} /> : null}
       {load.status === 'loaded' ? (
         <CollectionDetail
-          collection={{ ...load.collection, films: load.collection.films.map((film) => overlay.card(film)) }}
+          collection={{ ...load.collection, films: load.collection.films.map((film) => hiddenTitles.card(overlay.card(film))) }}
+          failed={load.failed}
           tab={tab}
           {...data}
         />
@@ -58,18 +70,19 @@ export function CollectionScreen({ id, tab }: { id: number; tab: TitleTab }) {
 
 function CollectionDetail({
   collection,
+  failed,
   tab,
   sending,
   outcome,
   askedHere,
   send,
-}: { collection: Collection; tab: TitleTab } & Omit<ReturnType<typeof useCollection>, 'load' | 'reload'>) {
+}: { collection: Collection; failed: ReadonlySet<number>; tab: TitleTab } & Omit<ReturnType<typeof useCollection>, 'load' | 'reload'>) {
   const window = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const width = Math.max(0, Math.min(window.width, DETAIL_MAX_WIDTH) - Math.max(spacing.gutter, insets.left) - Math.max(spacing.gutter, insets.right));
-  const offered = offeredFilms(collection.films, askedHere);
+  const offered = offeredFilms(collection.films, askedHere, failed);
   // The films are drawn afresh through the overlay on every render: the first ticks are compared by their IDs.
-  const defaultKey = [...defaultChoice(collection.films, askedHere)].join(',');
+  const defaultKey = [...defaultChoice(collection.films, askedHere, failed)].join(',');
   const defaults = useMemo(() => new Set(defaultKey ? defaultKey.split(',').map(Number) : []), [defaultKey]);
   // The member's ticks, for the films on offer when they made them: read again (after asking), they start over.
   const [picks, setPicks] = useState<{ key: string; chosen: ReadonlySet<number> } | undefined>(undefined);
@@ -124,6 +137,7 @@ function CollectionDetail({
               <FilmRow
                 key={film.tmdbId}
                 film={film}
+                failed={failedFilm(film, failed)}
                 onOpen={() => router.push(titlePath(tab, film))}
                 choice={
                   offered.some((candidate) => candidate.tmdbId === film.tmdbId)
@@ -144,15 +158,20 @@ function CollectionDetail({
 /** One film: a link (its title, year, status and, when it is not out yet, so) to its page, and its selection circle. */
 function FilmRow({
   film,
+  failed,
   onOpen,
   choice,
 }: {
   film: CollectionFilm;
+  failed: boolean;
   onOpen: () => void;
   choice: { checked: boolean; disabled: boolean; onToggle: () => void } | undefined;
 }) {
   const upcoming = !film.released && film.state !== 'in_library';
-  const name = [film.title, film.year ? String(film.year) : '', stateLabel(film.state), upcoming ? COLLECTION_TEXT.notReleased : ''].filter(Boolean).join(', ');
+  const status = failed ? REQUEST_LABELS.failed : stateLabel(film.state);
+  const name = [film.title, film.year ? String(film.year) : '', status, upcoming ? COLLECTION_TEXT.notReleased : '', film.hidden ? COLLECTION_TEXT.hidden : '']
+    .filter(Boolean)
+    .join(', ');
   return (
     <View testID="film-row" style={styles.film}>
       <Pressable accessibilityRole="link" accessibilityLabel={name} onPress={onOpen} style={({ pressed }) => [styles.filmLink, pressed && styles.pressed]}>
@@ -163,7 +182,8 @@ function FilmRow({
           <Text style={styles.filmTitle}>{film.title}</Text>
           {film.year ? <Text style={styles.meta}>{film.year}</Text> : null}
           {upcoming ? <Text style={styles.meta}>{COLLECTION_TEXT.notReleased}</Text> : null}
-          <StatusChip state={film.state} />
+          {film.hidden ? <Text style={styles.meta}>{COLLECTION_TEXT.hidden}</Text> : null}
+          <StatusChip state={film.state} failed={failed} />
         </View>
       </Pressable>
       {choice ? <SelectCircle name={film.title} {...choice} /> : null}

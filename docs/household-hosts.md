@@ -335,9 +335,11 @@ seasons**: one press sends the same single call as Select all then Get this,
 for every season the household neither has nor asked for (it counts 1). A
 film's page links to its collection (since `apiVersion` 6: "Part of The …
 Collection"); the collection page lists every film with the household's state
-and ticks the released films the household can still get (films not out yet
-are shown, not ticked, and left out of **Get all missing films**; they can be
-ticked by hand). **Get all missing films** or **Get selected** sends one "Get
+and ticks the released films the household can still get (films not out yet,
+and films the member marked Not interested, are shown, not ticked, and left
+out of **Get all missing films**; they can be ticked by hand). A film the
+household asked for that could not be got shows "We couldn't get this" and is
+not offered again. **Get all missing films** or **Get selected** sends one "Get
 this" per film, one after another, so each film counts 1 against the limits
 above (eight films are eight), is its own entry in My requests and in the
 administrators' Requests tab, and is cancelled on its own. When a call is

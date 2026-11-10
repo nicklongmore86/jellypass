@@ -12,7 +12,7 @@ import { Linking } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { ALL_SEASONS_TEXT, COLLECTION_TEXT } from '../src/collection/text';
-import { ERROR_TEXT } from '../src/home/text';
+import { ERROR_TEXT, REQUEST_LABELS } from '../src/home/text';
 import { layout } from '../src/theme';
 import { GET_THIS_TEXT } from '../src/title/text';
 import { API, showAll } from './support/home';
@@ -150,7 +150,8 @@ describe("a film's collection link", () => {
 describe('a collection page', () => {
   it('lists every film with its state, and ticks the released ones it can ask for, never one not out yet', async () => {
     await open(`/home/collection/${COLLECTION_ID}`);
-    expect(routes().filter((route) => !route.startsWith('GET /discover') && route !== 'GET /me')).toEqual([`GET /collection/${COLLECTION_ID}`]);
+    // The collection, and My requests for the films whose request failed (as a film's page reads it).
+    expect(routes().filter((route) => !route.startsWith('GET /discover') && route !== 'GET /me').sort()).toEqual([`GET /collection/${COLLECTION_ID}`, 'GET /requests']);
     for (const text of ['Synthetic Collection', 'A synthetic film series.', COLLECTION_TEXT.films]) expect(shows(text)).toBe(true);
     expect(screen.queryAllByTestId('film-row')).toHaveLength(6);
     expect(screen.queryAllByRole('link', { name: 'Film 1, 2020, Ready to watch' })).toHaveLength(1);
@@ -232,6 +233,29 @@ describe('a collection page', () => {
     expect(posts()).toEqual(['POST /movie/2/get']);
     expect(message()).toEqual(['Not asked for: Film 2, Film 3, Film 5.', GET_THIS_TEXT.rate_limited]);
     expect(collectionReads()).toBe(1);
+  });
+
+  it('shows a film whose request failed as such, never offers or ticks it, and so never sends it as newly asked for', async () => {
+    useHousehold({
+      requests: { results: [{ id: 'AAAAAAAAAAAAAAAAAAAAAA', mediaType: 'movie', tmdbId: 2, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] },
+    });
+    await open(`/home/collection/${COLLECTION_ID}`);
+    expect(screen.queryAllByRole('link', { name: `Film 2, 2020, ${REQUEST_LABELS.failed}` })).toHaveLength(1);
+    expect(checkboxes()).toEqual(['Film 3 ✓', 'Film 5 ✓', 'Film 6']);
+    await pressNode(getButton(COLLECTION_TEXT.getAll));
+    expect(posts()).toEqual(['POST /movie/3/get', 'POST /movie/5/get']);
+    expect(message()).toEqual([GET_THIS_TEXT.confirmation]);
+  });
+
+  it('marks a film the member hid as Not interested and leaves it unticked, though it can be ticked by hand', async () => {
+    useHousehold({ collection: () => collectionAnswer([film(2, 'get_this', true), { ...film(3, 'get_this', true), hidden: true }, film(5, 'get_this', true)]) });
+    await open(`/home/collection/${COLLECTION_ID}`);
+    expect(screen.queryAllByRole('link', { name: `Film 3, 2020, Available to get, ${COLLECTION_TEXT.hidden}` })).toHaveLength(1);
+    expect(shows(COLLECTION_TEXT.hidden)).toBe(true);
+    expect(checkboxes()).toEqual(['Film 2 ✓', 'Film 3', 'Film 5 ✓']);
+    expect(getButton(COLLECTION_TEXT.getAll)).toBeTruthy();
+    await pressNode(checkboxNamed('Film 3'));
+    expect(getButton('Get selected (3)')).toBeTruthy();
   });
 
   it('offers nothing when every film is held or asked for', async () => {

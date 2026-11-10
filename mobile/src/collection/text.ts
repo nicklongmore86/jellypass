@@ -12,6 +12,8 @@ export const COLLECTION_TEXT = {
   chooseFilms: 'Choose the films you want',
   getAll: 'Get all missing films',
   notReleased: 'Not released yet',
+  /** A film the member hid from Discover: still listed and tickable, never ticked at first. */
+  hidden: 'Not interested',
   chooseBelow: 'Choose the films you want below.',
 } as const;
 

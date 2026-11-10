@@ -74,6 +74,8 @@ export const COLLECTION_TEXT = {
   getSelected: (count: number) => `Get selected (${count})`,
   sending: (done: number, total: number) => `Sending ${done} of ${total}…`,
   notReleased: 'Not released yet',
+  /** A film the member hid from Discover: still listed, still tickable, never ticked at first. */
+  hidden: 'Not interested',
   noneMissing: 'Your household has every released film here, or has asked for it.',
   asked: (count: number) => `Thanks — we'll get ${count === 1 ? 'this film' : `these ${count} films`} for your household.`,
   askedList: 'Asked for',
@@ -1094,18 +1096,26 @@ export type CollectionHandler = (films: CollectionFilm[], progress: (done: numbe
 
 export interface CollectionExtras {
   onGet?: CollectionHandler;
+  /**
+   * Films the household asked for that could not be got (My requests' failed entries, as the film page reads them):
+   * shown as such and never offered, since asking again changes nothing until an administrator acts.
+   */
+  failed?: ReadonlySet<number>;
   /** What the last press asked for and did not, shown at the top until the page is left. */
   outcome?: CollectionOutcome;
 }
 
-/** The films a collection page ticks at first: every released film the household can still ask for. */
-export function defaultFilms(collection: Collection): CollectionFilm[] {
-  return collection.films.filter((film) => film.state === 'get_this' && film.released);
+/**
+ * The films a collection page ticks at first: every released film the household can still ask for, but not one the
+ * member hid ("Not interested", as Discover leaves it out) or one whose request failed.
+ */
+export function defaultFilms(collection: Collection, failed: ReadonlySet<number> = new Set()): CollectionFilm[] {
+  return pickableFilms(collection, failed).filter((film) => film.released && film.hidden !== true);
 }
 
-/** The films a member can tick: every one the household can still ask for, released or not. */
-function pickableFilms(collection: Collection): CollectionFilm[] {
-  return collection.films.filter((film) => film.state === 'get_this');
+/** The films a member can tick: every one the household can still ask for, released or not, hidden or not, but not a failed one. */
+function pickableFilms(collection: Collection, failed: ReadonlySet<number>): CollectionFilm[] {
+  return collection.films.filter((film) => film.state === 'get_this' && !failed.has(film.tmdbId));
 }
 
 /** The summary of the last press: what was asked for, and what was not with the reason in fixed words. */
@@ -1131,8 +1141,9 @@ function collectionSummary(doc: Document, outcome: CollectionOutcome): HTMLEleme
  * films" while the ticks are the first ones, "Get selected (N)" otherwise.
  */
 export function collectionView(doc: Document, collection: Collection, origin: string, extras: CollectionExtras = {}): HTMLElement {
-  const pickable = extras.onGet ? pickableFilms(collection) : [];
-  const preset = new Set(defaultFilms(collection).map((film) => film.tmdbId));
+  const failed = extras.failed ?? new Set<number>();
+  const pickable = extras.onGet ? pickableFilms(collection, failed) : [];
+  const preset = new Set(defaultFilms(collection, failed).map((film) => film.tmdbId));
   const boxes = new Map<number, HTMLInputElement>();
   for (const film of pickable) {
     const input = el(doc, 'input', { attrs: { type: 'checkbox', value: String(film.tmdbId) } });
@@ -1140,7 +1151,8 @@ export function collectionView(doc: Document, collection: Collection, origin: st
     boxes.set(film.tmdbId, input);
   }
   const items = collection.films.map((film) => {
-    const facts = [film.year ?? '', film.released ? '' : COLLECTION_TEXT.notReleased].filter(Boolean).join(' · ');
+    const facts = [film.year ?? '', film.released ? '' : COLLECTION_TEXT.notReleased, film.hidden === true ? COLLECTION_TEXT.hidden : ''].filter(Boolean).join(' · ');
+    const failedHere = film.state === 'get_this' && failed.has(film.tmdbId);
     const input = boxes.get(film.tmdbId);
     const play = film.state === 'in_library' ? playButton(doc, film, origin, 'button button-small') : undefined;
     return el(doc, 'li', { class: `collection-film${input ? ' season-pick' : ''}${film.released ? '' : ' film-unreleased'}` }, [
@@ -1149,7 +1161,7 @@ export function collectionView(doc: Document, collection: Collection, origin: st
         el(doc, 'span', { class: 'season-name', text: film.title }),
         el(doc, 'span', { class: 'card-meta', text: facts }),
       ]),
-      stateBadge(doc, film.state),
+      failedHere ? requestBadge(doc, 'failed') : stateBadge(doc, film.state),
       play,
       input ? el(doc, 'label', { class: 'choice' }, [input, el(doc, 'span', { class: 'visually-hidden', text: film.title })]) : undefined,
     ]);

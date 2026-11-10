@@ -13,7 +13,14 @@ import { useSession } from '../session/SessionProvider';
 import { getThisError, getThisErrorText, GET_THIS_TEXT, type GetThisError } from '../title/text';
 import { askedForText, notAskedForText } from './text';
 
-export type CollectionLoad = { status: 'loading' } | { status: 'loaded'; collection: Collection } | { status: 'failed'; error: ErrorText };
+/**
+ * `failed`: the films (TMDB IDs) whose request the household made and could not get, from GET /requests as a film's page
+ * reads them. They are never offered: asking again changes nothing until an administrator acts.
+ */
+export type CollectionLoad =
+  | { status: 'loading' }
+  | { status: 'loaded'; collection: Collection; failed: ReadonlySet<number> }
+  | { status: 'failed'; error: ErrorText };
 
 /** How the last "Get all missing films" (or "Get selected") went. */
 export interface FilmsOutcome {
@@ -69,14 +76,28 @@ export function useCollection(id: number): CollectionData {
     [expire],
   );
 
+  /** The household's failed movie requests, by TMDB ID. Best effort, but a 401 (or an abort) is thrown. */
+  const failedFilms = useCallback(
+    async (signal: AbortSignal): Promise<Set<number>> => {
+      try {
+        const list = await api!.requests({ signal });
+        return new Set(list.results.filter((entry) => entry.mediaType === 'movie' && entry.status === 'failed').map((entry) => entry.tmdbId));
+      } catch (error) {
+        if (isAbortError(error) || (error instanceof ApiError && error.kind === 'unauthorized')) throw error;
+        return new Set();
+      }
+    },
+    [api],
+  );
+
   const read = useCallback(
-    async (signal: AbortSignal): Promise<Collection> => {
-      const collection = await api!.collection(id, { signal });
+    async (signal: AbortSignal): Promise<{ collection: Collection; failed: ReadonlySet<number> }> => {
+      const [collection, failed] = await Promise.all([api!.collection(id, { signal }), failedFilms(signal)]);
       // The films' states, as the latest the server said, for every other screen that shows them.
       asked.seen({ page: 1, nextPage: null, results: collection.films });
-      return collection;
+      return { collection, failed };
     },
-    [api, asked, id],
+    [api, asked, id, failedFilms],
   );
 
   useEffect(() => {
@@ -86,8 +107,8 @@ export function useCollection(id: number): CollectionData {
     busy.current = false;
     if (!api) return undefined;
     read(controller.signal).then(
-      (collection) => {
-        if (opening.current === mine) setLoad({ status: 'loaded', collection });
+      (found) => {
+        if (opening.current === mine) setLoad({ status: 'loaded', ...found });
       },
       (error: unknown) => {
         const kind = opening.current === mine ? failure(error) : undefined;
@@ -135,9 +156,9 @@ export function useCollection(id: number): CollectionData {
         AccessibilityInfo.announceForAccessibility?.(outcomeLines(result).join(' '));
         if (done.length) {
           try {
-            const collection = await read(signal);
+            const found = await read(signal);
             if (opening.current !== mine) return;
-            setLoad({ status: 'loaded', collection });
+            setLoad({ status: 'loaded', ...found });
           } catch (caught) {
             if (opening.current !== mine) return;
             failure(caught);

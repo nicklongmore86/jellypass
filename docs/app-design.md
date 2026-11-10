@@ -2121,8 +2121,10 @@ films are eight), each becomes its own My requests entry (and its own row in the
 each is cancelled on its own. Films another household holds or asked for go through the existing branches (join,
 interest, or nothing), as from the film's own page. A client stops at the first refusal and says which films were
 asked for and which were not; for a `429` it shows the wait from `Retry-After`. Clients tick every released film the
-household can still ask for, leave films not out yet unticked (and out of "Get all missing films"), and show the
-collection link only on `apiVersion >= 6`. Collections are reached only from a film's page; search does not list them.
+household can still ask for, leave films not out yet and films the member hid ("Not interested", shown as such) unticked
+(and out of "Get all missing films"), and show the collection link only on `apiVersion >= 6`. A film whose household
+request failed is shown as failed and never offered, from `GET /requests` read with the collection as a film's page
+reads it: asking again would be accepted and change nothing, since a failed request stands until an administrator acts. Collections are reached only from a film's page; search does not list them.
 
 **All missing seasons.** A series page's "Get all missing seasons" button sends the one call Select all then Get this
 sends: every season the household neither has nor asked for, as listed now. No server change.

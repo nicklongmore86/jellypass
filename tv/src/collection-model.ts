@@ -17,6 +17,8 @@ export const COLLECTION_TEXT = {
   getAll: 'Get all missing films',
   getSelected: (count: number): string => `Get selected (${count})`,
   notReleased: 'Not released yet',
+  /** A film the member hid from Discover: still listed and tickable, never ticked at first. */
+  hidden: 'Not interested',
   comingOn: (date: string): string => `Not released yet · ${date}`,
   noFilms: 'No films listed.',
   asked: (titles: string[]): string => `Asked for: ${titles.join(', ')}.`,

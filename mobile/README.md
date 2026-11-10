@@ -323,10 +323,11 @@ same stack; `src/navigation/titles.ts`, `src/screens/TitleRoutes.tsx`). An addre
   then Get this would. It asks only for the seasons the server lists now; a season announced later is not followed.
 - **Collections** (`src/collection`, `src/screens/CollectionScreen.tsx`; server `apiVersion` 6). A film in a TMDB
   collection (a film series) says **Part of <name>**, a link to `/<tab>/collection/<id>` on the same stack. A server
-  before `apiVersion` 6 shows no link. The collection page reads `GET /collection/<id>` once and lists its films oldest
-  first, each a link to its own page with its poster, year, status and, when it is not out yet, "Not released yet". A
+  before `apiVersion` 6 shows no link. The collection page reads `GET /collection/<id>` and `GET /requests` (for the films whose request failed, as a
+  film's page does) and lists its films oldest first, each a link to its own page with its poster, year, status and, when it is not out yet, "Not released yet". A
   film the household can still ask for has a selection circle, ticked at first when it is released and never when it
-  is not. One button asks for the ticked films, one `POST /movie/<id>/get` each, in order and never two at once (each
+  is not or the member hid it ("Not interested", which it says). A film whose request failed says so and has none:
+  asking again changes nothing until an administrator acts. One button asks for the ticked films, one `POST /movie/<id>/get` each, in order and never two at once (each
   counts once against the server's Get this limits, and each is its own entry in My requests): **Get all missing films**
   while the ticks are the first ones, **Get selected (N)** otherwise. The first refusal stops the run: the page says
   "Asked for: …", "Not asked for: …" and why (a 429's wait, "Too many tries. Try again in 10 minutes."), and the

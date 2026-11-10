@@ -8017,14 +8017,40 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
       }
       const unknown = await openAt(t, app, '#/jellypass/collection/404404');
       assert.equal(text(unknown, '.jellypass-tv-title-error'), 'Not found');
-      assert.equal(unknown.requests.length, 1);
+      // The collection, and My requests read with it.
+      assert.equal(unknown.requests.length, 2);
     });
 
     it('is written in the budget file', () => {
       const screen = BUDGET.screens['tv-collection'];
-      assert.deepEqual(screen.atOnce, ['GET /collection/{id}']);
+      assert.deepEqual(screen.atOnce, ['GET /collection/{id}', 'GET /requests']);
       assert.equal(screen.calls, screen.atOnce.length);
-      assert.deepEqual(screen.getTwo, ['GET /collection/{id}', 'POST /movie/{tmdbId}/get', 'POST /movie/{tmdbId}/get']);
+      assert.deepEqual(screen.getTwo, ['GET /collection/{id}', 'GET /requests', 'POST /movie/{tmdbId}/get', 'POST /movie/{tmdbId}/get']);
+    });
+
+    it('shows a film whose request failed as such, never offers or ticks it, and so never sends it as newly asked for', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const failedList = JSON.stringify({ results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: T_MOVIE, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] });
+      const override = (pathname) => (pathname === '/jellypass/app/v1/requests' ? { status: 200, body: failedList } : undefined);
+      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
+      assert.deepEqual(films(page)[0], { title: 'Synthetic Movie One', status: "We couldn't get this", note: null, pick: null });
+      assert.equal(toggle(page, T_MOVIE), null);
+      // Only the films not out yet are left, none ticked.
+      assert.equal(getButton(page).textContent, 'Get selected (0)');
+      assert.equal(getButton(page).disabled, true);
+      page.click(getButton(page));
+      await page.settled();
+      assert.equal(page.posts().length, 0);
+    });
+
+    it('marks a film the member hid as Not interested and leaves it unticked, though it can be ticked by hand', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      assert.equal((await app.post(`/jellypass/app/v1/hidden/movie/${T_MOVIE}`, undefined)).status, 200);
+      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`);
+      assert.deepEqual(films(page)[0], { title: 'Synthetic Movie One', status: 'Available to get', note: 'Not interested', pick: 'false' });
+      assert.equal(getButton(page).textContent, 'Get selected (0)');
+      page.click(toggle(page, T_MOVIE));
+      assert.equal(getButton(page).textContent, 'Get selected (1)');
     });
   });
 });

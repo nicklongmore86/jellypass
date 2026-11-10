@@ -1317,10 +1317,18 @@ async function collectionScreen(route: Route, signal: AbortSignal, current: () =
   await loadMe(signal);
   if (!supportsCollections()) throw new ApiError('not_found');
   const id = route.id as number;
-  let answer = await api.collection(id, signal);
+  // The household's failed requests come from My requests, as on a film's page: a failed film is not offered again.
+  const load = () => Promise.all([api.collection(id, signal), failedMovies(signal)]);
+  let [answer, failed] = await load();
   if (!current()) return;
+  // Films accepted on this screen stay requested here whatever a read says (or fails to say) until the screen is left.
+  const accepted = new Set<number>();
+  const shown = () => ({
+    ...answer,
+    films: answer.films.map((film) => (film.state === 'get_this' && accepted.has(film.tmdbId) ? { ...film, state: 'requested' as const } : film)),
+  });
   const draw = (outcome?: CollectionOutcome) => {
-    show(collectionView(doc, answer, origin, { onGet, ...(outcome ? { outcome } : {}) }));
+    show(collectionView(doc, shown(), origin, { onGet, failed, ...(outcome ? { outcome } : {}) }));
     if (outcome) main.querySelector<HTMLElement>('.collection-outcome')?.focus({ preventScroll: true });
   };
   const onGet: CollectionHandler = async (films, progress) => {
@@ -1331,6 +1339,7 @@ async function collectionScreen(route: Route, signal: AbortSignal, current: () =
       try {
         await api.getThis('movie', film.tmdbId, [], signal);
         asked.push(film);
+        accepted.add(film.tmdbId);
       } catch (error) {
         refusal = signal.aborted ? 'unavailable' : refusalOf(error);
         break;
@@ -1342,9 +1351,9 @@ async function collectionScreen(route: Route, signal: AbortSignal, current: () =
     }
     const outcome: CollectionOutcome = { asked, notAsked: films.slice(asked.length), ...(refusal ? { failure: refusal } : {}) };
     if (signal.aborted || !current()) return outcome;
-    // The page is read again, so what was asked for shows as requested; if that fails, the summary still says it all.
+    // The page is read again; if that fails, the films accepted are still shown as requested, and the summary says it all.
     try {
-      answer = await api.collection(id, signal);
+      [answer, failed] = await load();
     } catch (error) {
       if (kindOf(error) === 'unauthorized' && current()) {
         failure('unauthorized', () => void render());
@@ -1358,6 +1367,17 @@ async function collectionScreen(route: Route, signal: AbortSignal, current: () =
   draw();
   announce('');
   focusHeading();
+}
+
+/** The movies the household asked for that failed, by TMDB ID, from My requests. Best effort: never an error but a 401. */
+async function failedMovies(signal: AbortSignal): Promise<Set<number>> {
+  try {
+    const list = await api.requests(signal);
+    return new Set(list.results.filter((entry) => entry.mediaType === 'movie' && entry.status === 'failed').map((entry) => entry.tmdbId));
+  } catch (error) {
+    if (kindOf(error) === 'unauthorized') throw error;
+    return new Set();
+  }
 }
 
 async function season(route: Route, signal: AbortSignal, current: () => boolean): Promise<void> {

@@ -340,12 +340,15 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home, no key
 web's on the page host at `#/jellypass/collection/<id>`, reached only from a film's **Part of …** button (no search or
 Discover entry). It is the title page's family (its classes, backdrop, buttons, status words and focus rules).
 
-- **One call** when it opens, `GET /collection/{id}` (`tv-collection` in `docs/app-api/fetch-budget.json`); an address
-  whose id is not one says "Not found" and calls nothing.
+- **Two calls** when it opens, `GET /collection/{id}` and `GET /requests` (`tv-collection` in
+  `docs/app-api/fetch-budget.json`); an address whose id is not one says "Not found" and calls nothing. My requests is
+  read, as the title page reads it, for the films whose request failed: such a film says "We couldn't get this" and has
+  no toggle (asking again changes nothing until an administrator acts), so it is never sent as if newly asked for.
 - **The films**, in the server's order (oldest first), each with a small poster, its name, year and household status.
   A film the household can ask for is a toggle (`aria-pressed`, the season cards' look and focus ring): ticked when it
   is out already, **not** ticked when it is not released yet ("Not released yet", with its date when TMDB has one), which
-  can still be ticked by hand. A film in the library, requested or that can't be requested has no toggle.
+  can still be ticked by hand. A film the member hid from Discover says "Not interested" and is not ticked either (it can be
+  ticked by hand). A film in the library, requested, failed or that can't be requested has no toggle.
 - **One button**: **Get all missing films** while the ticks are every film out and missing, **Get selected (N)**
   otherwise, disabled at 0. A press sends one `POST /movie/{tmdbId}/get` per film ticked (Seerr's model: a request per
   film, each counted against the "Get this" limits, so eight films are eight), one after another in the list's order,
