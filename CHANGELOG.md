@@ -64,6 +64,13 @@ now 6. The state file stays at schema 9; nothing is migrated.
   Discover page's chips. The phone app is unchanged, and so is the app API (no
   `apiVersion` change).
 
+### Fixed
+
+- **Signed out on web film and season pages:** when a member's sign-in has
+  expired and the page's own read also fails, the web app's film and season
+  pages now show the sign-in instead of "Try again", whichever read answers
+  first, including when the page reads again after **Get this**.
+
 ## [4.3.0] - 2026-11-09
 
 This is a minor release. It makes the household app's "Get this" limits

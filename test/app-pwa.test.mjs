@@ -5537,6 +5537,85 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     });
   });
 
+  describe('title and season My requests sign-out ordering', () => {
+    const jsonAnswer = (value, status) => ({ status, body: Buffer.from(JSON.stringify(value)), headers: { 'content-type': 'application/json' } });
+    for (const [name, hash, detail] of [
+      ['film', `#/movie/${T_MOVIE}`, `/jellypass/app/v1/movie/${T_MOVIE}`],
+      ['season', `#/tv/${T_TV}/season/1`, `/jellypass/app/v1/tv/${T_TV}/season/1`],
+    ]) {
+      for (const reread of [false, true]) {
+        it(`${name}: keeps Try again for non-auth failures on ${reread ? 'post-request re-read' : 'opening'}`, async (t) => {
+          const app = await startApp(t);
+          let failing = !reread;
+          const page = await openApp(t, app, {
+            hash,
+            override: (url, init) => {
+              if (init.method === 'POST') {
+                failing = true;
+                return undefined;
+              }
+              if (failing && (url === detail || url === '/jellypass/app/v1/requests')) return jsonAnswer({ error: 'unavailable' }, 503);
+              return undefined;
+            },
+          });
+          if (reread) {
+            const button = await page.until(() => page.main().querySelector('button:not(.hide-button):not(.hide-undo)'), 'Get this');
+            button.dispatchEvent(new page.Event('click'));
+          }
+          const error = await page.until(() => page.main().querySelector(reread ? '.get-refresh' : '.notice'), 'the retry state');
+          assert.match(error.textContent, /Try again/);
+          assert.ok([...page.main().querySelectorAll('button')].some((button) => button.textContent === 'Try again'));
+          assert.equal(page.main().querySelector('[data-screen="signin"]'), null);
+          await app.background.settled();
+        });
+        for (const requestsFirst of [true, false]) {
+          it(`${name}: signs out on ${reread ? 'post-request re-read' : 'opening'}, ${requestsFirst ? '401 first' : 'detail failure first'}`, async (t) => {
+            const app = await startApp(t);
+            const detailRead = Promise.withResolvers();
+            const requestsRead = Promise.withResolvers();
+            let failing = !reread;
+            let detailStarted = false;
+            let requestsStarted = false;
+            const page = await openApp(t, app, {
+              hash,
+              override: (url, init) => {
+                if (init.method === 'POST') {
+                  failing = true;
+                  return undefined;
+                }
+                if (!failing) return undefined;
+                if (url === detail) {
+                  detailStarted = true;
+                  return detailRead.promise;
+                }
+                if (url === '/jellypass/app/v1/requests') {
+                  requestsStarted = true;
+                  return requestsRead.promise;
+                }
+                return undefined;
+              },
+            });
+            if (reread) {
+              const button = await page.until(() => page.main().querySelector('button:not(.hide-button):not(.hide-undo)'), 'Get this');
+              button.dispatchEvent(new page.Event('click'));
+            }
+            await page.until(() => detailStarted && requestsStarted, 'both parallel reads');
+            const refuse = () => requestsRead.resolve(jsonAnswer({ error: 'unauthorized' }, 401));
+            const fail = () => detailRead.resolve(jsonAnswer({ error: 'unavailable' }, 503));
+            (requestsFirst ? refuse : fail)();
+            // Let the first response reach the loader while the other remains under test control.
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            (requestsFirst ? fail : refuse)();
+            await page.until(() => page.main().querySelector('[data-screen="signin"] h1, .notice h1, .get-refresh, .get-error'), 'sign-in or failure');
+            assert.equal(page.main().querySelector('[data-screen="signin"] h1')?.textContent, 'Sign in');
+            assert.equal(page.main().querySelector('.notice, .get-message'), null);
+            await app.background.settled();
+          });
+        }
+      }
+    }
+  });
+
   describe('collections and all missing seasons against the API', () => {
     const COLLECTION = 900100;
     const posts = (page) => page.requests.filter((request) => request.init.method === 'POST');
