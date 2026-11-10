@@ -212,8 +212,9 @@ export class CollectionPage {
         else this.#end(open);
         return;
       }
-      // A refused requests read is a refused sign-in too; any other failure of it only leaves the failed marks as they were.
-      if (answer.ok && !listed.ok && listed.status === 401) answer = { ok: false, status: 401 };
+      // A refused requests read is a refused sign-in too, and wins over any failure of the collection's own read; any other
+      // failure of it only leaves the failed marks as they were.
+      if (!listed.ok && listed.status === 401) answer = { ok: false, status: 401 };
       if (listed.ok) open.failed = listed.entries.filter((entry) => entry.mediaType === 'movie' && entry.status === 'failed').map((entry) => entry.tmdbId);
       if (!answer.ok) {
         if (answer.status === 401) {

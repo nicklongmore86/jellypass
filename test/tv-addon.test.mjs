@@ -7807,6 +7807,29 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
       assert.equal(message.querySelector('.jellypass-tv-title-collection-not-asked').textContent, 'Not asked for: Synthetic Movie One, Synthetic Movie Six.');
     });
 
+    it('shows the sign-in when My requests refuses the member, even when the collection read failed too', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let failing = true;
+      const override = (pathname, init) => {
+        if (!failing || (init.method ?? 'GET') !== 'GET') return undefined;
+        if (pathname === `/jellypass/app/v1/collection/${COLLECTION}`) return { status: 503, body: '{"error":"unavailable"}' };
+        if (pathname === '/jellypass/app/v1/requests') return { status: 401, body: '{"error":"unauthorized"}' };
+        return undefined;
+      };
+      const page = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
+      assert.equal(text(page, '.jellypass-tv-title-error'), 'Sign in to continue');
+      assert.equal(view(page).querySelector('.jellypass-tv-title-retry'), null, 'no Try again');
+      // The same after the button: the read again after a film was asked for fails both ways at once.
+      failing = false;
+      const again = await openAt(t, app, `#/jellypass/collection/${COLLECTION}`, { override });
+      failing = true;
+      again.click(toggle(again, 900006));
+      again.click(getButton(again));
+      await again.settled();
+      assert.equal(text(again, '.jellypass-tv-title-error'), 'Sign in to continue');
+      assert.equal(view(again).querySelector('.jellypass-tv-title-retry'), null, 'no Try again');
+    });
+
     it('says Not found with no call for an address that names no collection, and for one the server does not know', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
       for (const id of ['abc', '0', '01', '2147483648']) {

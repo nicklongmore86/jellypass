@@ -92,7 +92,13 @@ export function useCollection(id: number): CollectionData {
 
   const read = useCallback(
     async (signal: AbortSignal): Promise<{ collection: Collection; failed: ReadonlySet<number> }> => {
-      const [collection, failed] = await Promise.all([api!.collection(id, { signal }), failedFilms(signal)]);
+      // Both reads settle first: the requests read fails only for a 401 (or an abort), which wins over the collection's own
+      // failure whichever answers first, so a refused sign-in signs the member out rather than offering Try again.
+      const [found, listed] = await Promise.allSettled([api!.collection(id, { signal }), failedFilms(signal)]);
+      if (listed.status === 'rejected') throw listed.reason;
+      if (found.status === 'rejected') throw found.reason;
+      const collection = found.value;
+      const failed = listed.value;
       // The films' states, as the latest the server said, for every other screen that shows them.
       asked.seen({ page: 1, nextPage: null, results: collection.films });
       return { collection, failed };

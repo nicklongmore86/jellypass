@@ -16,7 +16,7 @@ import { ERROR_TEXT, REQUEST_LABELS } from '../src/home/text';
 import { layout } from '../src/theme';
 import { GET_THIS_TEXT } from '../src/title/text';
 import { API, showAll } from './support/home';
-import { ORIGIN, TOKEN, answer, fixture, keepSession, settle, shows, store, type Call } from './support/household';
+import { ORIGIN, TOKEN, answer, fixture, keepSession, settle, shows, store, storedSession, type Call } from './support/household';
 import { buttonNamed, checkboxes, checkboxNamed, flat, linkNamed, movieAnswer, pressNode, seriesAnswer, titleGateway, type TitleHousehold } from './support/title';
 
 jest.setTimeout(30_000);
@@ -55,6 +55,8 @@ let apiVersion = 6;
 
 interface Options extends TitleHousehold {
   collection?: () => Record<string, unknown>;
+  /** The collection read's whole answer, in place of a 200 with `collection`'s body. */
+  collectionRead?: () => ReturnType<typeof answer> | undefined;
 }
 
 function useHousehold(household: Options = {}) {
@@ -63,7 +65,7 @@ function useHousehold(household: Options = {}) {
     ...household,
     override: (call: Call) => {
       if (call.route === `GET ${API}/me`) return answer(200, { ...fixture('me'), apiVersion });
-      if (call.route === `GET ${API}/collection/${COLLECTION_ID}`) return answer(200, collection());
+      if (call.route === `GET ${API}/collection/${COLLECTION_ID}`) return household.collectionRead?.() ?? answer(200, collection());
       return household.override?.(call);
     },
   });
@@ -263,6 +265,49 @@ describe('a collection page', () => {
     await open(`/home/collection/${COLLECTION_ID}`);
     expect(checkboxes()).toEqual([]);
     expect(screen.queryAllByRole('button', { name: /^Get / })).toHaveLength(0);
+  });
+
+  describe('a 401 from My requests, read with the collection', () => {
+    /** The collection read fails at once (when `failing`); My requests answers 401 only when the test lets it, after. */
+    function useLateRefusal() {
+      const waiting: ((response: ReturnType<typeof answer>) => void)[] = [];
+      const state = { failing: true };
+      useHousehold({
+        collectionRead: () => (state.failing ? answer(503, { error: 'unavailable' }) : undefined),
+        override: (call: Call) =>
+          state.failing && call.route === `GET ${API}/requests` ? new Promise<ReturnType<typeof answer>>((resolve) => waiting.push(resolve)) : undefined,
+      });
+      return {
+        state,
+        refuse: async () => {
+          await act(async () => waiting.shift()!(answer(401, { error: 'unauthorized' })));
+          await settle();
+        },
+        waiting: () => waiting.length,
+      };
+    }
+
+    it('signs the member out on opening, though the collection read failed first', async () => {
+      const late = useLateRefusal();
+      const app = await open(`/home/collection/${COLLECTION_ID}`);
+      expect(late.waiting()).toBe(1);
+      await late.refuse();
+      expect(storedSession()).toBeUndefined();
+      expect(app.getPathname()).toBe('/');
+      expect(shows(ERROR_TEXT.unavailable.title)).toBe(false);
+    });
+
+    it('signs the member out when the collection is read again after a film was asked for', async () => {
+      const late = useLateRefusal();
+      late.state.failing = false;
+      const app = await open(`/home/collection/${COLLECTION_ID}`);
+      late.state.failing = true;
+      await pressNode(getButton(COLLECTION_TEXT.getAll));
+      expect(late.waiting()).toBe(1);
+      await late.refuse();
+      expect(storedSession()).toBeUndefined();
+      expect(app.getPathname()).toBe('/');
+    });
   });
 
   it('is Not found without a call for an address that names no collection', async () => {
