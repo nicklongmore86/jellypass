@@ -15,6 +15,22 @@ build.
 
 ## [Unreleased]
 
+### Added
+
+- **Collections.** A film that belongs to a film series (a TMDB collection, such
+  as a trilogy) says "Part of …" on its page, a link to the collection's page:
+  every film in it, oldest first, with what the household has or has asked for.
+  The films the household can still get are ticked, except those not released
+  yet, which are shown but left out. **Get all missing films** (or **Get selected**)
+  asks for each film on its own, one after the other, so each counts once against
+  the household's limits and each is its own entry in My requests. If a limit is
+  reached part-way, the page says which films were asked for, which were not, and
+  how long to wait. Needs **JellyPass server with `apiVersion` 6**; an older
+  server shows no link.
+- **Get all missing seasons.** A series page has a button beside its season list
+  that asks for every season still to get in one request, the same as Select all
+  then Get this.
+
 ### Changed
 
 - **Too many tries says how long to wait.** When Get this or Cancel request is

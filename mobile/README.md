@@ -318,6 +318,19 @@ same stack; `src/navigation/titles.ts`, `src/screens/TitleRoutes.tsx`). An addre
   the household can ask, a round selection circle that is a real checkbox (44 pt, named for its season). **Select all**
   (more than one to pick) only moves the circles; **Get this** sends exactly the seasons chosen (`{"seasons":[…]}`; HD
   only, as the API asks for nothing else) and is disabled until one is.
+  **Get all missing seasons** (beside the season list, whenever one is left to get) sends, in that one same request,
+  every season still Available to get (from 1 on, not one asked for or failed on the page): exactly what Select all
+  then Get this would. It asks only for the seasons the server lists now; a season announced later is not followed.
+- **Collections** (`src/collection`, `src/screens/CollectionScreen.tsx`; server `apiVersion` 6). A film in a TMDB
+  collection (a film series) says **Part of <name>**, a link to `/<tab>/collection/<id>` on the same stack. A server
+  before `apiVersion` 6 shows no link. The collection page reads `GET /collection/<id>` once and lists its films oldest
+  first, each a link to its own page with its poster, year, status and, when it is not out yet, "Not released yet". A
+  film the household can still ask for has a selection circle, ticked at first when it is released and never when it
+  is not. One button asks for the ticked films, one `POST /movie/<id>/get` each, in order and never two at once (each
+  counts once against the server's Get this limits, and each is its own entry in My requests): **Get all missing films**
+  while the ticks are the first ones, **Get selected (N)** otherwise. The first refusal stops the run: the page says
+  "Asked for: …", "Not asked for: …" and why (a 429's wait, "Too many tries. Try again in 10 minutes."), and the
+  collection is read again whenever anything was asked for.
 - **Get this** (`useTitle.ts`): disabled, "Sending…", while the call is out (the circles and Select all too). Any 2xx
   is the one fixed confirmation, "Thanks — we'll get this for your household.", whatever the answer; the page is then
   read again (as the PWA does), and if that fails the confirmation stays with the fixed error and Try again. A 429, no

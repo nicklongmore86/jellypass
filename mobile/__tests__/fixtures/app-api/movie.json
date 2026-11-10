@@ -17,5 +17,9 @@
     "Comedy"
   ],
   "runtime": 118,
+  "collection": {
+    "id": 900100,
+    "name": "Synthetic Collection"
+  },
   "hidden": false
 }

@@ -16,6 +16,11 @@ export function seasonPath(tab: TitleTab, tmdbId: number, seasonNumber: number):
   return `/${tab}/tv/${tmdbId}/season/${seasonNumber}`;
 }
 
+/** A collection's page (a film series) on `tab`'s stack: `/home/collection/<id>`. */
+export function collectionPath(tab: TitleTab, id: number): string {
+  return `/${tab}/collection/${id}`;
+}
+
 /** A studio's page, on Home's stack: `/home/studio/<id>`. */
 export function studioPath(id: number): string {
   return `/home/studio/${id}`;

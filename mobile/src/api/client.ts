@@ -17,6 +17,7 @@
 import type { HouseholdAddress } from './address';
 import { tokenAuthorization } from './auth';
 import {
+  decodeCollection,
   decodeHidden,
   decodeHiddenPage,
   decodeMe,
@@ -33,6 +34,7 @@ import { householdFetch, offHousehold } from './transport';
 import {
   DISCOVER_LISTS,
   MEDIA_TYPES,
+  type Collection,
   type DiscoverList,
   type Hidden,
   type HiddenPage,
@@ -110,6 +112,8 @@ export interface ApiClient {
   /** A studio's popular movies. */
   studio(id: number, page?: number, options?: CallOptions): Promise<Page>;
   movie(tmdbId: number, options?: CallOptions): Promise<Movie>;
+  /** A collection (a film series) and its films, from a film's `collection` link. Needs `apiVersion` 6. */
+  collection(id: number, options?: CallOptions): Promise<Collection>;
   tv(tmdbId: number, options?: CallOptions): Promise<Series>;
   season(tmdbId: number, seasonNumber: number, options?: CallOptions): Promise<Season>;
   /**
@@ -267,6 +271,10 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     movie: async (id, callOptions) => {
       tmdbId(id);
       return get(`/movie/${id}`, (value) => decodeMovie(value, context), callOptions);
+    },
+    collection: async (id, callOptions) => {
+      tmdbId(id);
+      return get(`/collection/${id}`, (value) => decodeCollection(value, context), callOptions);
     },
     tv: async (id, callOptions) => {
       tmdbId(id);

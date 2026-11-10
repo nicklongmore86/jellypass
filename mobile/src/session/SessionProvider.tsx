@@ -27,6 +27,7 @@ import { ApiError } from '../api/errors';
 import type { MediaType, Me, Request } from '../api/types';
 import { createHiddenTitles, type HiddenTitles, type HideTarget } from '../hidden/store';
 import { HIDE_API_VERSION } from '../hidden/text';
+import { COLLECTIONS_API_VERSION } from '../collection/text';
 import { parseLinkAddress } from '../signin/address-input';
 import { createSignInApi, SignInError, type SignInApi, type SignInResult } from '../signin/signin-api';
 import type { StalledKind } from '../signin/wording';
@@ -101,6 +102,8 @@ export interface Session {
   rowPages: RowPages;
   /** Whether the signed-in household can hide titles (`apiVersion` 3 or later): below it nothing of hiding is shown. */
   canHide: boolean;
+  /** Whether the signed-in household has collection pages (`apiVersion` 6 or later): below it a film links to none. */
+  hasCollections: boolean;
   /** What the member hid or unhid in this session, and the sheet and toast (in memory only). */
   hiddenTitles: HiddenTitles;
   /**
@@ -389,6 +392,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   }, [signedPhase, move, forget]);
 
   const canHide = signedPhase !== undefined && signedPhase.me.apiVersion >= HIDE_API_VERSION;
+  const hasCollections = signedPhase !== undefined && signedPhase.me.apiVersion >= COLLECTIONS_API_VERSION;
 
   // A link to the household the app is already on needs nothing.
   const offer = link?.address && household && link.address.origin === household.origin ? undefined : link;
@@ -452,12 +456,13 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       hideHeld,
       rowPages,
       canHide,
+      hasCollections,
       hiddenTitles,
       getThis,
       cancelRequest,
       setHidden,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, hideHeld, rowPages, canHide, hiddenTitles, getThis, cancelRequest, setHidden],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, hideHeld, rowPages, canHide, hasCollections, hiddenTitles, getThis, cancelRequest, setHidden],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

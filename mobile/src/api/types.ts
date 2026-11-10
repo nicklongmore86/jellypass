@@ -76,6 +76,33 @@ export interface Movie extends Card {
   mediaType: 'movie';
   genres: string[];
   runtime: number | null;
+  /** The film series it belongs to, for its collection page; null when none, and from a server before `apiVersion` 6. */
+  collection: CollectionLink | null;
+}
+
+/** A film's collection (a film series), as its page links to it. */
+export interface CollectionLink {
+  id: number;
+  name: string;
+}
+
+/** One film of a collection: a movie card, with its release date and whether it is out yet. */
+export interface CollectionFilm extends Card {
+  mediaType: 'movie';
+  /** TMDB's release date (`YYYY-MM-DD`), or null. */
+  releaseDate: string | null;
+  /** Released (today, UTC, or earlier): only those are in "Get all missing films". False when the server does not say. */
+  released: boolean;
+}
+
+/** A collection's page (`apiVersion` 6): its films oldest first, those without a date last. */
+export interface Collection {
+  id: number;
+  name: string;
+  overview: string;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+  films: CollectionFilm[];
 }
 
 export interface SeasonSummary {
