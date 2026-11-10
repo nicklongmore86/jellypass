@@ -5773,50 +5773,66 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await app.background.settled();
     });
 
-    it('signs the member out when My requests refuses them, even when the collection read failed first or after', async (t) => {
-      const app = await startApp(t);
-      const settle = (page) => page.until(() => page.main().querySelector('[data-screen="signin"] h1, .notice h1'), 'the sign-in or the error');
-      const signedOut = async (page, label) => {
-        await settle(page);
-        assert.equal(page.main().querySelector('.notice h1')?.textContent ?? null, null, `${label}: no error state`);
-        assert.equal(page.main().querySelector('[data-screen="signin"] h1').textContent, 'Sign in', label);
-      };
-      const later = (answer) => new Promise((resolve) => setTimeout(() => resolve(answer), 50));
-      for (const [label, collectionFirst] of [['the collection fails first', true], ['the 401 comes first', false]]) {
-        const refused = jsonAnswer({ error: 'unauthorized' }, 401);
-        const failed = jsonAnswer({ error: 'unavailable' }, 503);
-        const page = await openApp(t, app, {
-          hash: `#/collection/${COLLECTION}`,
-          override: (url) => {
-            if (url === `/jellypass/app/v1/collection/${COLLECTION}`) return collectionFirst ? failed : later(failed);
-            if (url === '/jellypass/app/v1/requests') return collectionFirst ? later(refused) : refused;
+    describe('a 401 from My requests with a failed collection read, in either order', () => {
+      const COLLECTION_READ = `/jellypass/app/v1/collection/${COLLECTION}`;
+      const REQUESTS_READ = '/jellypass/app/v1/requests';
+      /**
+       * While `holding`, the collection read (a 503) and My requests (a 401) each wait until the test lets it answer, so
+       * the order they settle in is the test's.
+       */
+      const gated = () => {
+        const gates = new Map();
+        const state = { holding: true };
+        const held = (path, response) => new Promise((resolve) => gates.set(path, () => resolve(response)));
+        return {
+          state,
+          override: (url, init) => {
+            if (!state.holding || (init.method ?? 'GET') !== 'GET') return undefined;
+            if (url === COLLECTION_READ) return held(url, jsonAnswer({ error: 'unavailable' }, 503));
+            if (url === REQUESTS_READ) return held(url, jsonAnswer({ error: 'unauthorized' }, 401));
             return undefined;
           },
+          /** Lets the two held reads answer in `order`, each once both are in flight, the next once the first is read. */
+          answer: async (page, order) => {
+            await page.until(() => gates.size === 2, 'both reads in flight');
+            for (const path of order) {
+              gates.get(path)();
+              gates.delete(path);
+              // Drain the first response’s promise continuations while the other read stays held.
+              await new Promise((resolve) => setImmediate(resolve));
+            }
+          },
+        };
+      };
+      const ORDERS = [['the 401 first', [REQUESTS_READ, COLLECTION_READ]], ['the collection failure first', [COLLECTION_READ, REQUESTS_READ]]];
+
+      for (const [label, order] of ORDERS) {
+        it(`shows the sign-in on opening, ${label}`, { timeout: 15_000 }, async (t) => {
+          const app = await startApp(t);
+          const gate = gated();
+          const page = await openApp(t, app, { hash: `#/collection/${COLLECTION}`, override: gate.override });
+          await gate.answer(page, order);
+          await page.until(() => page.main().querySelector('[data-screen="signin"] h1, .notice h1'), 'the sign-in or the error');
+          assert.equal(page.main().querySelector('.notice h1')?.textContent ?? null, null, 'no error state');
+          assert.equal(page.main().querySelector('[data-screen="signin"] h1').textContent, 'Sign in');
         });
-        await signedOut(page, label);
+
+        it(`shows the sign-in when the collection is read again after a film was asked for, ${label}`, { timeout: 15_000 }, async (t) => {
+          const app = await startApp(t);
+          const gate = gated();
+          gate.state.holding = false;
+          const page = await openApp(t, app, { hash: `#/collection/${COLLECTION}`, override: gate.override });
+          await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
+          gate.state.holding = true;
+          change(page, page.main().querySelector('.collection-film input[type="checkbox"]'), true);
+          click(page, page.main().querySelector('button.get-films'));
+          await gate.answer(page, order);
+          await page.until(() => page.main().querySelector('[data-screen="signin"] h1, .collection-outcome'), 'the sign-in or the summary');
+          assert.equal(Boolean(page.main().querySelector('.collection-outcome')), false, 'no summary');
+          assert.equal(page.main().querySelector('[data-screen="signin"] h1').textContent, 'Sign in');
+          await app.background.settled();
+        });
       }
-      // The read again after a film was asked for, failing both ways at once with the collection's failure first.
-      let failReads = false;
-      const page = await openApp(t, app, {
-        hash: `#/collection/${COLLECTION}`,
-        override: (url, init) => {
-          if (init.method === 'POST') {
-            failReads = true;
-            return undefined;
-          }
-          if (!failReads) return undefined;
-          if (url === `/jellypass/app/v1/collection/${COLLECTION}`) return jsonAnswer({ error: 'unavailable' }, 503);
-          if (url === '/jellypass/app/v1/requests') return later(jsonAnswer({ error: 'unauthorized' }, 401));
-          return undefined;
-        },
-      });
-      await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
-      change(page, page.main().querySelector('.collection-film input[type="checkbox"]'), true);
-      click(page, page.main().querySelector('button.get-films'));
-      await page.until(() => page.main().querySelector('[data-screen="signin"] h1, .collection-outcome'), 'the sign-in or the summary');
-      assert.equal(page.main().querySelector('.collection-outcome'), null, 'after the button: no summary');
-      assert.equal(page.main().querySelector('[data-screen="signin"] h1').textContent, 'Sign in');
-      await app.background.settled();
     });
 
     it('shows a film whose request failed as such, and never offers or ticks it', async (t) => {
