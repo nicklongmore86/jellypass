@@ -206,11 +206,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:4.3.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:4.4.0
 ```
 
-Each release is published as a semantic-version image tag, such as `4.3.0`,
-plus floating `4.3` and `4` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `4.4.0`,
+plus floating `4.4` and `4` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](../CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -981,6 +981,9 @@ Upgrading from 4.2.1 to 4.3.0 needs no setting change: it adds the optional
 `GET_THIS_*` settings with higher defaults, keeps the state file at schema 9
 (4.2.1 can run on it again) and renames the TV add-on's script, with no CDN
 purge needed; see the [4.3.0 notes](../CHANGELOG.md#430---2026-11-09).
+Upgrading from 4.3.0 to 4.4.0 changes no setting, keeps the state file at
+schema 9 (4.3.0 can run on it again) and renames both TV add-on files, with no
+CDN purge needed; see the [4.4.0 notes](../CHANGELOG.md#440---2026-11-10).
 If you build from source with `compose.example.yaml`, its service is now named
 `jellypass` instead of `access-bridge`: run
 `docker compose -f compose.example.yaml up --build -d --remove-orphans` once

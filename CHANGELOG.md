@@ -21,8 +21,35 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
-The household app API (`v1`) gains a field and an endpoint, so `apiVersion` is
-now 6. The state file stays at schema 9; nothing is migrated.
+## [4.4.0] - 2026-11-10
+
+This is a minor release. It adds film collections and **Get all missing
+seasons** to the web app and the TV add-on, and moves the web app's Discover
+rows to their own page. **An existing install upgrades without any change to
+its configuration:** it adds, removes and renames no setting. The state file
+(schema 9), webhook payloads, the administrator API and the gateway are as in
+4.3.0; the household app API (`v1`) gains a field and an endpoint, so
+`apiVersion` is now 6. Read these before upgrading:
+
+- **The state file is unchanged** (schema 9, with the same fields as 4.3.0);
+  nothing is migrated, so 4.3.0 reads a state file written by 4.4.0.
+- **No CDN purge is needed.** Both TV add-on files have new names,
+  `jellypass-tv.e303c953b710.js` and `jellypass-tv.04e1ed3b7a1d.css` (they
+  were `jellypass-tv.d24f3a1f0a64.js` and `jellypass-tv.9f2a2886ec7c.css` in
+  4.3.0). The `/web/` page and the Samsung app's manifest are sent
+  `no-store`. Some household app script files and its stylesheet also get new
+  names and its service worker a new cache.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:4.3.0` and recreate the container. No
+  state-file or setting change is needed. Apps that know `apiVersion` 6 show no
+  collection link on 4.3.0, and the web app's Home shows the Discover rows
+  again.
+- **The iPhone, iPad and Android app ships separately.** Its collection page,
+  **Get all missing seasons** and its "Too many tries. Try again in 3
+  minutes." message (for the `Retry-After` that 4.3.0 added) reach the app only
+  with its next release; they are described in `mobile/CHANGELOG.md`
+  (Unreleased). Until then the app shows no collection link and the fixed "Too
+  many tries" words.
 
 ### Added
 
@@ -3987,7 +4014,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.3.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.4.0...HEAD
+[4.4.0]: https://github.com/nicklongmore86/jellypass/compare/v4.3.0...v4.4.0
 [4.3.0]: https://github.com/nicklongmore86/jellypass/compare/v4.2.1...v4.3.0
 [4.2.1]: https://github.com/nicklongmore86/jellypass/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/nicklongmore86/jellypass/compare/v4.1.0...v4.2.0
