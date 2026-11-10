@@ -487,7 +487,7 @@ function heroSlide(doc: Document, card: Card, index: number, total: number): HTM
  * and the round bubbles under the card (each a labelled button) do the same for those who cannot swipe, and scroll
  * smoothly unless the member prefers reduced motion.
  */
-export function heroCarousel(doc: Document, cards: readonly Card[], filter: HomeFilter = 'all'): HTMLElement | undefined {
+export function heroCarousel(doc: Document, cards: readonly Card[], filter: DiscoverFilter = 'all'): HTMLElement | undefined {
   const shown = cards.slice(0, HERO_MAX);
   if (shown.length === 0) return undefined;
   const slides = shown.map((card, index) => heroSlide(doc, card, index, shown.length));
@@ -562,33 +562,63 @@ function accentClass(accent: RowAccent | undefined): string {
   return accent && accent !== 'default' ? ` water-${accent}` : '';
 }
 
-/** Home's filter: everything, only films, or only series. */
-export type HomeFilter = 'all' | 'movies' | 'tv';
-export const HOME_FILTERS: readonly HomeFilter[] = ['all', 'movies', 'tv'];
-export const HOME_TEXT = {
+/** The Discover page's filter: everything, only films, or only series. */
+export type DiscoverFilter = 'all' | 'movies' | 'tv';
+export const DISCOVER_FILTERS: readonly DiscoverFilter[] = ['all', 'movies', 'tv'];
+export const DISCOVER_TEXT = {
   label: 'Show',
   filters: { all: 'All', movies: 'Movies', tv: 'TV' },
   shown: { all: 'All shown.', movies: 'Movies shown.', tv: 'TV shown.' },
 } as const;
 
-/** The address of Home under a filter: All has none (`#/`), the others say so in the query (`?kind=movies`, `?kind=tv`). */
-export function homeHref(filter: HomeFilter): string {
-  return filter === 'all' ? '#/' : `#/?kind=${filter}`;
+/** The address of the Discover page under a filter: All has none (`#/discover`), the others say so in the query (`?kind=movies`, `?kind=tv`). */
+export function discoverHref(filter: DiscoverFilter): string {
+  return filter === 'all' ? '#/discover' : `#/discover?kind=${filter}`;
+}
+
+/** Home's words: a short page that leads to Discover, Search and My requests (it asks the API for nothing). */
+export const HOME_TEXT = {
+  title: 'Home',
+  links: [
+    { name: 'discover', href: '#/discover', label: 'Discover', note: 'Trending, popular and new films and series, by service and studio.' },
+    { name: 'search', href: '#/search', label: 'Search', note: 'Find a film or series by name.' },
+    { name: 'requests', href: '#/requests', label: 'My requests', note: 'What your household asked for, and what is ready to watch.' },
+  ],
+} as const;
+
+/**
+ * Home: its heading and one link each to Discover, Search and My requests, each with an icon, its name and a line on what it
+ * holds. Plain links (`<a href>`), so they work as any link does; nothing here is fetched.
+ */
+export function homeView(doc: Document): HTMLElement {
+  return el(doc, 'article', { class: 'home-screen' }, [
+    el(doc, 'h1', { class: 'screen-title visually-hidden', text: HOME_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }),
+    el(doc, 'ul', { class: 'home-links', attrs: { role: 'list' } }, HOME_TEXT.links.map((link) => el(doc, 'li', {}, [
+      el(doc, 'a', { class: 'home-link', attrs: { href: link.href, 'data-home-link': link.name } }, [
+        el(doc, 'span', { class: 'home-link-icon' }, [icon(doc, link.name)]),
+        el(doc, 'span', { class: 'home-link-text' }, [
+          el(doc, 'span', { class: 'home-link-label', text: link.label }),
+          el(doc, 'span', { class: 'home-link-note', text: link.note }),
+        ]),
+        el(doc, 'span', { class: 'home-link-chevron' }, [icon(doc, 'next')]),
+      ]),
+    ]))),
+  ]);
 }
 
 /**
- * Home's All | Movies | TV control: a radio group of real buttons (one choice, shown ticked and tinted), the chosen one `aria-checked`
+ * The Discover page's All | Movies | TV control: a radio group of real buttons (one choice, shown ticked and tinted), the chosen one `aria-checked`
  * and the only one in the tab order (arrow keys, Home and End move and choose; see main.ts). It is a row of outlined chips
- * that sticks under the header while Home scrolls.
+ * that sticks under the header while the Discover page scrolls.
  */
-export function homeSwitch(doc: Document, selected: HomeFilter, panelId: string): HTMLElement {
-  const buttons = HOME_FILTERS.map((filter) => el(doc, 'button', {
+export function discoverSwitch(doc: Document, selected: DiscoverFilter, panelId: string): HTMLElement {
+  const buttons = DISCOVER_FILTERS.map((filter) => el(doc, 'button', {
     class: 'segment',
-    text: HOME_TEXT.filters[filter],
+    text: DISCOVER_TEXT.filters[filter],
     attrs: {
       type: 'button',
       role: 'radio',
-      id: `home-filter-${filter}`,
+      id: `discover-filter-${filter}`,
       'data-filter': filter,
       'aria-checked': String(filter === selected),
       'aria-controls': panelId,
@@ -597,8 +627,8 @@ export function homeSwitch(doc: Document, selected: HomeFilter, panelId: string)
   }));
   // The tick is drawn on every chip and shown (by the stylesheet) only on the chosen one; it is hidden from assistive technology.
   for (const button of buttons) button.prepend(icon(doc, 'check'));
-  return el(doc, 'div', { class: 'home-switch' }, [
-    el(doc, 'div', { class: 'segmented segmented-home', attrs: { role: 'radiogroup', 'aria-label': HOME_TEXT.label } }, buttons),
+  return el(doc, 'div', { class: 'discover-switch' }, [
+    el(doc, 'div', { class: 'segmented segmented-discover', attrs: { role: 'radiogroup', 'aria-label': DISCOVER_TEXT.label } }, buttons),
   ]);
 }
 

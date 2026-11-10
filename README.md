@@ -196,7 +196,9 @@ from TMDB's image server, `image.tmdb.org`, as the
   App Store or Google Play release yet. Needs JellyPass 3.2.0 or
   later; Cancel request needs 3.5.0 or later.
 - **TV add-on, experimental** (`TV_ADDON_ENABLED`, per-household admin switches):
-  Discover rows, title pages and My requests inside Jellyfin web on the listed
+  a Discover page (from a compass button in Jellyfin's header, with a link to
+  My requests), a Discover row on Jellyfin's Search page, title pages and My
+  requests inside Jellyfin web, and nothing on Jellyfin's Home, on the listed
   households' addresses ([design](docs/tv-addon.md)). A Samsung (Tizen) build is
   in `tv/samsung/` for advanced users.
 

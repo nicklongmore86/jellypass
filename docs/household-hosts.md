@@ -178,7 +178,7 @@ and nowhere else (on the administrator host they do not exist). The
 | `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
 | `GET` | `/jellypass/app/v1/discover/network/{id}?page=N` | A page of a service's popular series. Only the eight listed services (Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+, Peacock); any other ID is `400`. |
 | `GET` | `/jellypass/app/v1/discover/network/{id}/films?page=N` | A page of the films the service streams **in the US**, from TMDB's where-to-watch data (JustWatch). |
-| `GET` | `/jellypass/app/v1/discover/network/{id}/all?page=N` | The service's series and films mixed (film, series, …): Home's "Popular on" rows. |
+| `GET` | `/jellypass/app/v1/discover/network/{id}/all?page=N` | The service's series and films mixed (film, series, …): the "Popular on" rows of the web app's Discover page and the phone app's Home. |
 | `GET` | `/jellypass/app/v1/discover/studio/{id}?page=N` | A page of a listed studio's popular movies. |
 | `GET` | `/jellypass/app/v1/movie/{tmdbId}` | One movie; since `apiVersion` 6 with `collection` (`{"id", "name"}` or `null`), the film series it belongs to. |
 | `GET` | `/jellypass/app/v1/collection/{id}` | One collection (a film series, since `apiVersion` 6), reached from a film's page: its name, images and films, each a movie card with the household state, its `releaseDate` and whether it is `released`. Films are asked for one "Get this" at a time (`POST /movie/{tmdbId}/get`), each counted against the budgets. |
@@ -485,8 +485,10 @@ switched off (those answer the same fixed `404`).
   inside the installed app: its picker stores the session in the app's own
   storage, and Jellyfin web (also inside the installed app, whose scope is the
   whole household address) finds it there.
-- **Screens:** Home (Trending, Popular movies, Popular series and Upcoming
-  movies as scrolling rows), Search (as you type, with **Load more**), a movie
+- **Screens:** Home (links to Discover, Search and My requests), Discover
+  (Trending, Popular movies, Popular series, New movie releases, Upcoming and
+  each service's titles as scrolling rows, with an All | Movies | TV switch;
+  the old Home addresses `#/?kind=…` open it), Search (as you type, with **Load more**), a movie
   page, a series page with its seasons (each with its own state) and a season
   page with its episodes (**Get this** on each title or season that can be
   asked for, with a season picker on a series page), **My requests** (the

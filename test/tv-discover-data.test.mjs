@@ -268,7 +268,7 @@ describe('TV Discover data layer: the model', () => {
 
   it('mirrors the app\'s Home layout: the same lists, headings, shapes and order under each chip', () => {
     const source = readFileSync(path.join(ROOT, 'app', 'src', 'main.ts'), 'utf8');
-    const block = source.slice(source.indexOf('const HOME_LAYOUT'), source.indexOf('/** What a service\'s row lists'));
+    const block = source.slice(source.indexOf('const DISCOVER_LAYOUT'), source.indexOf('/** What a service\'s row lists'));
     const parts = (name, next) => {
       const from = block.indexOf(`${name}: [`);
       const text = block.slice(from, next ? block.indexOf(`${next}: [`) : block.length);
@@ -280,7 +280,7 @@ describe('TV Discover data layer: the model', () => {
     assert.ok(app.all.length === 9 && app.movies.length === 7 && app.tv.length === 4, 'the app\'s layout was read');
     for (const filter of mod.DISCOVER_FILTERS) assert.deepEqual(mod.DISCOVER_LAYOUT[filter], app[filter], filter);
     assert.deepEqual(mod.NETWORK_LIST_FOR, { all: 'all', movies: 'films', tv: 'series' });
-    assert.match(source, /const NETWORK_LIST: Record<HomeFilter, SourceList> = \{ all: 'all', movies: 'films', tv: 'series' \};/);
+    assert.match(source, /const NETWORK_LIST: Record<DiscoverFilter, SourceList> = \{ all: 'all', movies: 'films', tv: 'series' \};/);
   });
 });
 

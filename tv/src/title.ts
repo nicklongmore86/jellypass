@@ -5,7 +5,7 @@ import { HIDDEN_TEXT, hiddenFailureText } from './hidden-model.js';
 import { detailsHash, type Session } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import { REQUESTS_HASH, REQUESTS_TEXT } from './requests-model.js';
-import { STATE_LABELS } from './row.js';
+import { STATE_LABELS } from './cards.js';
 import { SessionWatch } from './session-watch.js';
 
 /**
@@ -19,7 +19,7 @@ import { SessionWatch } from './session-watch.js';
  * each failure, never retried by itself. Everything shown is a fixed string or a DTO field set with `textContent`.
  *
  * It is a route, so Jellyfin web's header, its Back button, its history and its focus manager are what apply: this
- * module handles no key. Back returns to where the member came from (Home's card is given focus again by the row).
+ * module handles no key. Back returns to where the member came from (the card it was opened from is given focus again by its page).
  */
 
 /** Every fixed string the page shows; the "Get this" words are the household app's (app/src/render.ts, GET_THIS_TEXT). */
@@ -106,7 +106,7 @@ interface Scope {
 
 /** What the page asks of the page around it. */
 export interface TitleHost {
-  /** The overlay changed (a "Get this" was accepted, or it was forgotten): the Home row redraws its statuses. */
+  /** The overlay changed (a "Get this" was accepted, or it was forgotten): the Discover and service pages redraw their statuses. */
   changed(): void;
   /** The member hid or unhid this title (accepted): every row, page and cached list leaves it out, or has it back, from what it holds (no call). */
   hiddenChanged(): void;
@@ -607,7 +607,7 @@ export class TitlePage {
   /**
    * "Not interested" (Unhide, once hidden): a button among the title's others, so Jellyfin's focus manager and the remote
    * reach it like them, with what it does in words under the buttons. Its one call is sent once (the button is disabled
-   * while it is out); an accepted one is written to the overlay (so Home's row, the Discover and service pages and the
+   * while it is out); an accepted one is written to the overlay (so the Discover and service pages and the
    * Search row leave the title out, or have it back, at once from what they hold) and the label changes in place, with
    * focus staying on the button. A failure says its fixed words and the button is offered again. A `401` forgets the overlay.
    */

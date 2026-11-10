@@ -46,6 +46,24 @@ now 6. The state file stays at schema 9; nothing is migrated.
   when they come out is planned, not built (see
   [docs/household-hosts.md](docs/household-hosts.md#get-this)).
 
+### Changed
+
+- **Discover has its own page in the web app, and the TV add-on leaves
+  Jellyfin's Home alone.** There wasn't enough control over what a Discover
+  row on Home shows, so it is off Home on the web and on TVs. The web app's
+  Home (`#/`) is now a short page linking to **Discover**, **Search** and **My
+  requests**, and asks the API for nothing. The rows it had (the hero, All |
+  Movies | TV, the services, studios and See all pages, Not interested and the
+  household's states) are unchanged on the new Discover page at `#/discover`,
+  under the Home tab with a Back button; an old Home address with a filter
+  (`#/?kind=movies`, `#/?kind=tv`) opens it on that filter. The TV add-on no
+  longer adds its Discover row to Jellyfin web's Home, so opening Home makes
+  one call fewer (none from the add-on). Its Discover page (the compass button
+  in Jellyfin's header) and the Search row are as before, and the **My
+  requests** card the row ended with is now a **My requests** button after the
+  Discover page's chips. The phone app is unchanged, and so is the app API (no
+  `apiVersion` change).
+
 ## [4.3.0] - 2026-11-09
 
 This is a minor release. It makes the household app's "Get this" limits

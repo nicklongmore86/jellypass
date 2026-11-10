@@ -22,13 +22,15 @@ import {
 import type { HidePreference } from './discover-preference.js';
 import { JELLYFIN_CLASSES, listClasses } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
+import { REQUESTS_HASH } from './requests-model.js';
 import type { SessionWatch, Stamp } from './session-watch.js';
 import { ERROR_TEXT, kindOf, titleHash } from './title.js';
 
 /**
  * The JellyPass Discover page (docs/tv-addon.md, "The Discover page"): the household app's Home as a page of Jellyfin web's
  * at `#/jellypass/discover`, on the page host (page-host.ts), under Jellyfin's real header and Back. A hero of up to five
- * slides (Previous / View / Next and dots, no auto-advance, no swipe), the All / Movies / TV chips and "New only",
+ * slides (Previous / View / Next and dots, no auto-advance, no swipe), the All / Movies / TV chips and "New only"
+ * with a My requests link at the end of their row (the only way to My requests the add-on draws: Home has no JellyPass row),
  * the rows of `DISCOVER_LAYOUT`, and a foot with the studios, the JustWatch line and the TMDB notice. Choosing a card opens
  * the JellyPass title page; Back returns here with the same card focused and no Discover call (the answers are kept by
  * `DiscoverData`, and a returning page draws them before it asks for anything).
@@ -44,6 +46,8 @@ import { ERROR_TEXT, kindOf, titleHash } from './title.js';
 
 /** Marks the page's content (one at most is ever on the page). */
 export const DISCOVER_ATTRIBUTE = 'data-jellypass-tv-discover';
+/** On the My requests link beside the chips. */
+export const REQUESTS_LINK_ATTRIBUTE = 'data-jellypass-tv-discover-requests';
 /** A row asks when it is this near the screen (the study measured 5 calls on opening, 10 more on the way down, with it). */
 export const DATA_MARGIN = '700px 0px';
 /** A row's images are set while it is this near (a screen's height is 100%: about a screen and a half in all, up and down). */
@@ -116,8 +120,12 @@ interface Open {
   context: PageContext;
   view: HTMLElement;
   heroSlot: HTMLElement;
+  /** The row under the hero: the chips, then the My requests link. */
+  bar: HTMLElement;
   chipBox: HTMLElement;
   chips: { [key: string]: HTMLElement };
+  /** The My requests link, drawn again with the chips (one of an earlier drawing does nothing). */
+  requests: HTMLElement | undefined;
   body: HTMLElement;
   /** Bumped by every drawing of the body and by leaving: an answer that comes for an earlier one is dropped. */
   paint: number;
@@ -234,6 +242,16 @@ export class DiscoverPage {
     hide.addEventListener('click', () => this.#toggleHide(open, render));
     open.chips.hide = hide;
     open.chipBox.appendChild(hide);
+    // My requests, at the end of the same row (Left and Right reach it from the chips): the add-on's only link to the page
+    // besides Jellyfin's own address for it, now that Home has no JellyPass row.
+    if (open.requests && open.requests.parentNode) open.requests.parentNode.removeChild(open.requests);
+    const requests = this.#button('jellypass-tv-discover-requests', DISCOVER_TEXT.requests, 'requests');
+    requests.setAttribute(REQUESTS_LINK_ATTRIBUTE, '');
+    requests.addEventListener('click', () => {
+      if (this.#live(open, render)) this.#host.navigate(REQUESTS_HASH);
+    });
+    open.requests = requests;
+    open.bar.appendChild(requests);
   }
 
   /** The page host's render for the route. */
@@ -251,14 +269,16 @@ export class DiscoverPage {
     this.#member(session.userId);
     this.#asked.sync(session.userId);
     const heroSlot = this.#el('div', 'jellypass-tv-discover-hero-slot');
-    const chips = this.#el('div', 'jellypass-tv-discover-chips padded-left padded-right focuscontainer-x');
+    const bar = this.#el('div', 'jellypass-tv-discover-bar padded-left padded-right focuscontainer-x');
+    const chips = this.#el('div', 'jellypass-tv-discover-chips');
     chips.setAttribute('role', 'group');
     chips.setAttribute('aria-label', DISCOVER_TEXT.chips);
+    bar.appendChild(chips);
     const body = this.#el('div', 'jellypass-tv-discover-body');
     view.appendChild(heroSlot);
-    view.appendChild(chips);
+    view.appendChild(bar);
     view.appendChild(body);
-    const open: Open = { retry: undefined, userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, heroSlot, chipBox: chips, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, studios: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
+    const open: Open = { retry: undefined, userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, heroSlot, bar, chipBox: chips, chips: {}, requests: undefined, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, studios: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
     this.#drawChips(open);
     this.#open = open;
     this.#paint(open);
@@ -627,10 +647,16 @@ export class DiscoverPage {
 
   /** The row's cards, as "New only" and the overlay leave them, or why there are none. */
   #fill(row: RowView): void {
+    // A card of this row with focus (the overlay changed while the member was on it): after the redraw focus goes to the same
+    // title, else the card now in its place, else somewhere else in the row's section, never to the page.
+    const active = this.#document.activeElement;
+    const at = active && row.body.contains(active) ? row.drawn.findIndex((one) => one.button === active || one.button.contains(active)) : -1;
+    const focusedKey = at >= 0 ? this.#cardKey((row.drawn[at] as Drawn).card) : undefined;
     this.#teardown(row.scope.open, 'row', row);
     const cards = this.#visible(row);
     if (cards.length === 0) {
       row.body.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text padded-left padded-right', this.#hide.held && (row.answered as DiscoverCard[]).length > 0 ? DISCOVER_TEXT.nothingLeft : DISCOVER_TEXT.nothing));
+      if (at >= 0) this.#refocusRow(row, at, focusedKey);
       return;
     }
     const scroller = this.#el('div', 'jellypass-tv-row-scroller padded-left padded-right');
@@ -642,6 +668,14 @@ export class DiscoverPage {
     }
     scroller.appendChild(list);
     row.body.appendChild(scroller);
+    if (at >= 0) this.#refocusRow(row, at, focusedKey);
+  }
+
+  /** After a redraw of a row that had focus at card `at` (title `key`): the same title, else the card in its place, else the row's heading button, else the chips. */
+  #refocusRow(row: RowView, at: number, key: string | undefined): void {
+    const same = row.drawn.filter((one) => this.#cardKey(one.card) === key)[0];
+    const target = same ? same.button : row.drawn.length > 0 ? (row.drawn[Math.min(at, row.drawn.length - 1)] as Drawn).button : (row.section.querySelector('button') as HTMLElement | null) ?? row.scope.open.chips[this.#filter];
+    if (target && typeof target.focus === 'function') target.focus();
   }
 
   #card(row: RowView, card: DiscoverCard): Drawn {

@@ -17,7 +17,7 @@ interface At {
 
 /**
  * What the signed-in member asked for with "Get this" on this TV, in memory only (never stored, never sent), shared by
- * the Home row and the title view: the household app's overlay (app/src/asked.ts). The server records a "Get this" a
+ * the Search row, the Discover pages and the title view: the household app's overlay (app/src/asked.ts). The server records a "Get this" a
  * moment after it accepts the call, so an answer read right afterwards can still say `get_this`. A key (`movie:<id>`,
  * `tv:<id>`, `tv:<id>:<season>`) is added only after the API accepted the call, lives {@link ASKED_TTL_MS}, and is
  * dropped as soon as the server says anything but `get_this` for it. It belongs to one member: another member, signing
@@ -50,7 +50,7 @@ export class Asked {
   /**
    * What the member hid or unhid on this TV in this sign-in (`movie:<id>`, `tv:<id>`), with a count taken when it was
    * accepted. The server leaves a member's hidden titles out of every list itself, so this only covers answers kept from
-   * before (Home's row, the Discover page's cache) and reads that began before the change. See {@link hiddenNow}.
+   * before (the Search row's, the Discover page's cache) and reads that began before the change. See {@link hiddenNow}.
    */
   #hidden = new Map<string, { hidden: boolean; at: number }>();
   #tick = 0;
@@ -138,7 +138,7 @@ export class Asked {
    * or its absence from a list (nothing known). The member's own change on this TV wins over an answer kept from before
    * it; with `mark` (taken when a read began), a change that was already accepted then is the answer's to correct: the
    * answer is the server's word, and is what answers kept from before it are corrected to. The change itself is kept,
-   * since those older answers (Home's row, the Discover page's cache) still carry the flag from before it.
+   * since those older answers (the Search row's, the Discover page's cache) still carry the flag from before it.
    */
   public hiddenNow(mediaType: MediaType, tmdbId: number, server?: boolean, mark?: number): boolean {
     const key = `${mediaType}:${tmdbId}`;

@@ -329,7 +329,7 @@ is no household's answers a fixed `421 {"error":"unknown_host"}`.
 | `GET /jellypass/app/v1/discover/sources` | `Sources` (no TMDB call) |
 | `GET /jellypass/app/v1/discover/network/:id?page=` | `Page` of the network's popular series (allowlisted IDs only) |
 | `GET /jellypass/app/v1/discover/network/:id/films?page=` | `Page` of the films the network's streaming service has in the US (allowlisted IDs only) |
-| `GET /jellypass/app/v1/discover/network/:id/all?page=` | `Page` of the network's series and films mixed: Home's row and the page's **All** tab |
+| `GET /jellypass/app/v1/discover/network/:id/all?page=` | `Page` of the network's series and films mixed: the service's row on the web app's Discover page (the phone app's Home) and the page's **All** tab |
 | `GET /jellypass/app/v1/discover/studio/:id?page=` | `Page` of the studio's popular movies (allowlisted IDs only) |
 | `GET /jellypass/app/v1/movie/:tmdbId` | `Movie` |
 | `GET /jellypass/app/v1/tv/:tmdbId` | `Series` |
@@ -348,7 +348,7 @@ DTOs (every key always present; missing values `null`, or `""` for text):
   (`{seasonNumber, name, episodeCount, state}`), with `runtime` the first episode run time.
 - `Season`: `tmdbId`, `seasonNumber`, `name`, `overview`, `episodes` (`{episodeNumber, name, overview}`), `state`.
 - `Sources`: `networks` and `studios`, each a list of `{id, name, logoUrl}` (`logoUrl` is
-  `https://image.tmdb.org/t/p/w300` plus the allowlisted file pattern, or `null`), in the order Home shows them; each
+  `https://image.tmdb.org/t/p/w300` plus the allowlisted file pattern, or `null`), in the order the Discover rows show them; each
   network also has `hasFilms` (whether `/films` and `/all` are offered for it: true for all eight). The provider IDs
   themselves are never sent.
 
@@ -419,7 +419,7 @@ household, and the endpoint adds no data the two lists do not already return: ea
 
 #### Home's lists
 
-Home's **All | Movies | TV** switch (see "App page") needs lists of one kind, and Home has rows for what is new and what
+The **All | Movies | TV** switch of the web app's Discover page and the phone app's Home (see "App page") needs lists of one kind, and both have rows for what is new and what
 is best of all time. They are plain discover lists, `GET /discover/<list>?page=`, each a `Page` whose cards all have one
 `mediaType`, built from the allowlist only (a caller's own `region`, `sort_by`, `with_genres` or anything but `page` is
 ignored, like on every list). Anything but exactly these lowercase names after `/discover/` is an unknown path, `404`;
@@ -439,7 +439,7 @@ midnight (UTC) a cached answer (at most ten minutes old) can still be yesterday'
 
 **Attribution.** TMDB's terms for watch-provider data require crediting JustWatch. The app does so on About & credits
 ("Which films each streaming service has (US availability only, the same for every household) comes from JustWatch,
-through TMDB.", with a link to justwatch.com), once on Home under the service rows, and on a service page's All and
+through TMDB.", with a link to justwatch.com), once on the web app's Discover page (the phone app's Home) under the service rows, and on a service page's All and
 Films tabs ("Where to watch: US streaming availability from JustWatch, via TMDB."), alongside the existing TMDB credit.
 
 Errors are fixed and the same for every endpoint and title: `400 invalid_request`, `401 unauthorized` (missing,
@@ -607,8 +607,9 @@ is supported. A client:
 - treats an image URL that is not on its field's pattern as `null` (that image only, never the whole answer);
 - treats an unknown error code by its HTTP status, and any other status as `unavailable`.
 
-**Fetch budget.** `docs/app-api/fetch-budget.json` lists the calls the PWA makes when each screen is opened: Home
-under **All** 6 at once (`/me`, `/discover/sources` and 4 lists) and 10 more as the lazy rows near the screen,
+**Fetch budget.** `docs/app-api/fetch-budget.json` lists the calls the PWA makes when each screen is opened. Home (`#/`)
+makes none (it is only links); the Discover page (`#/discover`, entries `home-all`, `home-movies` and `home-tv`, named for the
+phone app's Home, which is the same screen there) under **All** 6 at once (`/me`, `/discover/sources` and 4 lists) and 10 more as the lazy rows near the screen,
 **Movies** 6 and 8, **TV** 5 and 8; a movie or series page 3 (`/me`, the title, `/requests`), a season page 4;
 **Search** on one query 2 (`/me` and the first page; **Load more** is the member's); **My requests** `/me`, `/requests`
 and one title call for each request shown, at most ten before the member asks for more (`titlesAtOnce`; 4 with one movie
@@ -616,7 +617,8 @@ and one series request); a **network's** page on All, Series or Films and a **st
 `/discover/sources` and the list's first page; **Load more** is the member's). It also
 holds the server's budgets. `test/app-pwa.test.mjs` ("fetch budget") runs the real app against the API and fails
 if any screen makes a different set of calls, so a change that makes the app chattier has to change the file, and a
-native client is tested against the same numbers. The TV add-on's Home row is `tv-home-row` there (one call) and its
+native client is tested against the same numbers. The TV add-on draws nothing on Jellyfin web's Home and calls nothing
+there (its former Home row, `tv-home-row`, was removed on 2026-11-10); its Discover pages are the `tv-discover*` entries and its
 title view `tv-movie` and `tv-series` (two calls each, plus what an accepted "Get this" makes; see `docs/tv-addon.md`),
 pinned by `test/tv-addon.test.mjs`.
 
@@ -643,8 +645,9 @@ elsewhere; the files are never proxied to Jellyfin.
   server reads `dist/app` once at startup (`src/app-assets.ts`) and refuses to start the app if it is missing. The
   Dockerfile builds it with the rest. `scripts/make-app-icons.py` regenerates the PNG icons (Pillow; the PNGs are
   committed). The only new dependency is `linkedom`, a dev dependency, for DOM-level tests.
-- **Routing.** One page, with screens chosen by the URL hash (`#/`, `#/search?q=`, `#/movie/:id`, `#/tv/:id`,
-  `#/tv/:id/season/:n`, `#/requests` (since step 2b), `#/network/:id` and `#/studio/:id` (the discover rows), `#/account`, and `#/about` as its old name), so the server needs no fallback route and a deep link is just the page.
+- **Routing.** One page, with screens chosen by the URL hash (`#/` Home, `#/discover` (with `?kind=movies` or `?kind=tv`), `#/search?q=`, `#/movie/:id`, `#/tv/:id`,
+  `#/tv/:id/season/:n`, `#/requests` (since step 2b), `#/network/:id` and `#/studio/:id` (the discover rows), `#/account`, `#/about` as Account's old name and `#/?kind=…` as
+  the Discover page's, both replaced in place), so the server needs no fallback route and a deep link is just the page.
 - **Sign-in.** The page sits on the household host next to the proxied Jellyfin web client, so it signs in the way
   Jellyfin web does, through the household gateway, and keeps the result where Jellyfin web keeps its own.
   *Flow:* with no token (or a `401` from the API) the app shows a profile picker built from `GET /Users/Public`, which
@@ -681,12 +684,20 @@ elsewhere; the files are never proxied to Jellyfin.
   and share its storage. Only the service worker is limited to `/jellypass/app/`. `GET /me` provides the name and
   household shown in the Account tab's member card. **Unverified on a real iPhone**: install and sign-in have only been exercised in a
   simulated browser and against a real Jellyfin 10.11.3.
-- **Screens.** Home (see "Home's rows" below), Search (debounced 300 ms, one call
+- **Screens.** Home (links only, below), the Discover page (see "The Discover page's rows" below), Search (debounced 300 ms, one call
   per pause, previous calls aborted, **Load more** by the API's `nextPage`, query kept in the address), movie page,
   series page with a seasons list (each season's state) and a season page with its episodes, **My requests** (since step
   2b: the household's requests from `GET /requests`, each with its coarse status, per season for a series, and whether the
   caller or someone else in the household asked; titles are named from TMDB ten at a time), About & credits.
-- **Home's rows.** Under the header, an **All | Movies | TV** filter (outlined chips), then the hero and the rows of the chosen filter.
+- **Home.** Since 2026-11-10 the web app's Home (`#/`; also an empty hash) is a short page, not the discovery screen: under
+  the header titled **Home** (no Back), one link each to **Discover** (`#/discover`), **Search** and **My requests**, each a
+  full-width row with an icon, the name and a line on what it holds. It asks the API for nothing (not even `/me`). The owner
+  moved the Discover rows off Home because there isn't enough control over what appears there. Home's old filter addresses
+  (`#/?kind=movies`, `#/?kind=tv`; any other `kind` means All) are replaced in place, with no history entry, by the Discover
+  page's (`#/discover?kind=…`); any other address under `#/` is Home. **The phone app is unchanged**: its Home is still the
+  discovery screen these rows describe.
+- **The Discover page's rows.** At `#/discover`, under the Home tab, with the header titled **Discover** and a **Back** to
+  Home: under the header, an **All | Movies | TV** filter (outlined chips), then the hero and the rows of the chosen filter.
   **All** (the default), in order: the switch, the hero (from Trending's answer), **Trending** (posters), **Popular
   movies** and **Popular series** (large backdrop cards), **New movie releases** (backdrop cards; these four fetched at
   once), **Upcoming movies**, **Upcoming series** (posters, fetched when they near the screen), **Popular on** Netflix,
@@ -709,19 +720,19 @@ elsewhere; the files are never proxied to Jellyfin.
   the chosen one is filled cyan-tint (`--accent-tint`) with an accent border, `--accent-text` text and a **tick** (`✓ All`),
   a small line icon the app draws on every chip, hidden from assistive technology and shown by the stylesheet on the
   chosen chip only, so each name is still the plain word and the chosen state is never colour alone. The chips sit in a
-  **solid band** (`.home-switch`, the page colour, a hairline under it) that is a direct child of `main`, so it **sticks**
+  **solid band** (`.discover-switch`, the page colour, a hairline under it) that is a direct child of `main`, so it **sticks**
   (`position: sticky`) just under the solid header and the status bar (`top: var(--header-height) + env(safe-area-inset-top)`,
   below the header's own layer) while the rows scroll away under it. It is above the hero in the page, so it is on screen
   from the first paint. The band is 3.875 rem (0.5 rem, the 2.75 rem chip, 0.625 rem; `--switch-height`) and the header
   3.75 rem (`--header-height`) plus the status bar: 122 px together on a phone with no notch, as measured by the clearance
-  script. While the switch is on the page (`body[data-home-switch]`, set from the switch's presence, so it holds when the hero
+  script. While the switch is on the page (`body[data-discover-switch]`, set from the switch's presence, so it holds when the hero
   fails or is empty) the page's `scroll-padding-top` is the header, the band and 0.5 rem, so a focused or scrolled-to card
-  (#51's focus-into-view) never ends up behind either. The choice is in the address, `#/` for All and `#/?kind=movies` or `#/?kind=tv` (anything else is All),
-  replaced in place on choosing (no history entry, so Back still leaves Home), so a deep link opens on its filter and
+  (#51's focus-into-view) never ends up behind either. The choice is in the address, `#/discover` for All and `#/discover?kind=movies` or `#/discover?kind=tv` (anything else is All),
+  replaced in place on choosing (no history entry, so Back still leaves the page), so a deep link opens on its filter and
   Back from a title comes back to it, with the page scroll and rows' scrolls of *that* filter put back under the same
   rules as before (choosing is the member's own doing: it cancels a restoration still owed, and the new filter starts at
-  its first row if the page was scrolled past the hero). The Home tab itself links to `#/`, so tapping it returns to
-  All. The panel under the switch is a `role="group"` labelled by the chosen button; the switch announces "Loading…"
+  its first row if the page was scrolled past the hero). Home's **Discover** link is `#/discover`, so following it opens
+  All. (The Home tab links to `#/`, Home itself.) The panel under the switch is a `role="group"` labelled by the chosen button; the switch announces "Loading…"
   and then "Movies shown." (or "All", "TV"). The control is the same node throughout, so focus is never lost.
   **What each filter shows.** The rows are never filtered on the phone: each filter asks for lists of its own kind, so
   no row is half empty. *Movies:* hero and **Trending movies** (`trending-movies`), **Popular movies**, **New movie
@@ -763,9 +774,9 @@ elsewhere; the files are never proxied to Jellyfin.
   series, Trending and the services' rows stay posters).
   **Lazy rows:** everything below the first four rows (Upcoming movies and series and the services' rows) holds a row-shaped skeleton (hidden from assistive
   technology) and is fetched only when it comes within 400 px of the screen: an `IntersectionObserver` with that
-  root margin, or without one, a check on scroll (at most once a frame) and once when Home is drawn. Nothing is watched
+  root margin, or without one, a check on scroll (at most once a frame) and once when the page is drawn. Nothing is watched
   until the first rows are drawn and any position is put back, each row is fetched once per visit to a filter, and
-  leaving Home or choosing another filter stops the watching. So a first Home load makes the same four TMDB calls as
+  leaving the page or choosing another filter stops the watching. So a first Discover load makes the same four TMDB calls as
   before (plus `GET /me` and `GET /discover/sources`, neither of which calls TMDB); scrolling to the bottom of All adds
   at most eighteen, one each for Upcoming movies and Upcoming series and two for
   each service's mixed row as it nears the screen, never all at once. **Network and studio pages**
@@ -788,11 +799,12 @@ elsewhere; the files are never proxied to Jellyfin.
   **The header** is solid (the page colour) and carries only the squircle **Back** button (behaviour unchanged) and the
   screen's **title** (`#header-title`, aria-hidden; the page's own `<h1 data-header-title>` stays the screen's heading
   for assistive technology and focus, and is visually hidden on Search, My requests and Account, where the header shows
-  it). There is **no JellyPass wordmark and no (i) button**; on Home, which has neither Back nor a title, the header
-  shrinks to the status bar's safe area (`data-bare`), so Home goes straight to the filter chips and the hero.
+  it). There is **no JellyPass wordmark and no (i) button**. Home's header shows its title, **Home**, and the Discover
+  page's **Discover**; a screen with neither Back nor a title in the header (the sign-in, an error on Home) shrinks it to
+  the status bar's safe area (`data-bare`).
   **Account** (`#/account`; the old `#/about` is replaced in place by it) shows the **member card** first (the signed-in
   name and household from `GET /me`, and the outlined **Sign out** button, which revokes the token at Jellyfin and clears
-  the stored sign-in exactly as before; signed out, it says so and links to the sign-in on Home), then **About &
+  the stored sign-in exactly as before; signed out, it says so and links to the sign-in at `#/`), then **About &
   credits**: what JellyPass is, TMDB's logo and its exact notice, the JustWatch credit and the app's version (written
   into the built client from `package.json`).
   Cards carry no **Play** button: a poster card is one link to the title, with the **status chip** (a dot and the same
@@ -813,8 +825,8 @@ elsewhere; the files are never proxied to Jellyfin.
   `--panel` of the page colour at 0.92, composited over pure white and pure black). The screens' data, statuses, wording
   and **Get this** outcomes are unchanged.
 - **Hero and detail pages.** The page keeps its own gutters everywhere (nothing runs under the status bar, nothing is drawn
-  under the header); `body[data-chrome='home']` only lets Home's filter band run the full width.
-  *Home's hero* shows the first five titles of the first row (Trending, or the filter's own first row) from the answer Home
+  under the header); `body[data-chrome='discover']` only lets the Discover page's filter band run the full width.
+  *The Discover page's hero* shows the first five titles of the first row (Trending, or the filter's own first row) from the answer the page
   already has for that row: **no extra API call**, and nothing new in the DTO. Each slide is a scroll-snap slide
   (`scroll-snap-type: x mandatory`) holding an **inset rounded card** (30 px; 4:5 on a phone, 21:9 from 48 rem) whose
   backdrop is an `<img>` (`srcset` w780/w1280, `sizes` the card's width; never a CSS `url()` or inline style), and, over
@@ -825,7 +837,7 @@ elsewhere; the files are never proxied to Jellyfin.
   (hollow idle, a larger filled one for the title in view, so shape and size and not colour tell them apart; named "Show
   title N of 5: <title>", `aria-current` on the one in view). There is **no autoplay**: it moves only by swipe or the
   pager (wrapping round); buttons scroll smoothly unless the member prefers reduced motion, and a hidden polite live
-  region says which slide is showing. The hero's `scrollLeft` is part of Home's captured position and is put back with the
+  region says which slide is showing. The hero's `scrollLeft` is part of the Discover page's captured position and is put back with the
   rows' under the same rules; the data is fetched again, never kept.
   *Detail pages* (movie, series, season) start with an **inset rounded backdrop card** (16:9, 30 px radius, nothing drawn
   over it; a navy gradient when a title has no backdrop), then, below it on the page's navy: a large bold title, a chip row
@@ -846,9 +858,10 @@ elsewhere; the files are never proxied to Jellyfin.
 - **Back and position.** Every screen but Home has a **Back** button first in the header (44 px, `aria-label="Back"`),
   because the installed app has no browser chrome. The app numbers its own history entries in `history.state` (`{jp: n}`,
   nothing else). With `n > 0` Back is `history.back()`, so hardware back and swipe-back are identical; opened on a screen
-  (`n = 0`) it replaces the entry with the logical parent (a season's series, otherwise Home) and never leaves the app.
+  (`n = 0`) it replaces the entry with the logical parent (a season's series, My requests for its Hidden view, the Discover
+  page for a service's or a studio's page, otherwise Home) and never leaves the app.
   **Get this** adds no history entry. Scroll offsets are kept in memory per entry and put back on returning: the page
-  scroll, each Home row's `scrollLeft` (the Studios strip's too), which of Home's lazy rows had been fetched (fetched
+  scroll, each Discover row's `scrollLeft` (the Studios strip's too), which of the Discover page's lazy rows had been fetched (fetched
   again at once on coming back, before the scroll is put back; the others wait to be scrolled to again), Search's query
   (already in the address) with the pages loaded, a network's or studio's pages loaded (for the tab in the address), and My requests' entries
   shown. A lazy row still waiting is not a screen still loading, so it never stops the position being kept. Data is fetched again, never kept; nothing from the API is written to `sessionStorage`,
@@ -1515,7 +1528,7 @@ never repeated by the app). On the fixed `202` the app shows the same **Request 
 server then did, takes the entry off the list at once and reads the list again; the overlay (the in-memory memory of what
 the member asked for, and the latest state each title was reported in) shows the title as **Get this** again while the
 server still says requested (two minutes, or until the server says anything but requested, or the member asks again), so
-Home, Search and the title pages do not keep showing Requested. A `429` has the same fixed words as Get this's; any
+the Discover page, Search and the title pages do not keep showing Requested. A `429` has the same fixed words as Get this's; any
 other failure one fixed line; a `401` signs out; nothing is retried by itself. The call budget is
 `docs/app-api/fetch-budget.json`, "requests", "cancel": the POST and the list read again (the titles stay named). A
 title page does not offer Cancel yet (My requests is where it is).
@@ -1954,7 +1967,7 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   methods, caches only static paths, is network first with a copy as fallback and never keeps a failed answer; DOM
   rendering with linkedom of each state to its badge and Play link (a Play link or image URL that is not the household's
   or TMDB's is dropped, markup in text is inert), series, seasons and episodes, each fixed error, and the About screen;
-  and the real client modules run against the real API on the test server (home rows, a movie, series, season, search
+  and the real client modules run against the real API on the test server (Home, the Discover rows, a movie, series, season, search
   with debounce and Load more, signed out and signing in, 401, 429, 502 and 404), serializing the page after each screen
   to `assertNoCanaries`. `pnpm test:real` also loads the page from a real Jellyfin 10.11.3 household and checks that the
   sign-in the app sends is accepted.

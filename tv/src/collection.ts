@@ -3,7 +3,7 @@ import type { Asked } from './asked.js';
 import { COLLECTION_TEXT } from './collection-model.js';
 import type { Session } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
-import { STATE_LABELS } from './row.js';
+import { STATE_LABELS } from './cards.js';
 import { SessionWatch } from './session-watch.js';
 import { ERROR_TEXT, TITLE_TEXT, kindOf, rateLimitedText, type ErrorKind } from './title.js';
 

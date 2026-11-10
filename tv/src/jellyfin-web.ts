@@ -43,20 +43,6 @@ export function currentSession(scope: { ApiClient?: unknown }): Session | undefi
 }
 
 /**
- * Home's sections, once Jellyfin web has laid them out: its home page (`#indexPage`, kept in the page while hidden, with
- * `hide` then) holds the Home tab (`#homeTab`), whose `.sections` element gets `homeSectionsContainer` and its
- * `.verticalSection.section0` … placeholders all at once when the sections are loaded. Undefined until then, and while
- * Home is not the page shown.
- */
-export function homeSections(document: Document): { container: Element; first: Element } | undefined {
-  const page = document.getElementById('indexPage');
-  if (!page || page.classList.contains('hide')) return undefined;
-  const container = page.querySelector('#homeTab .homeSectionsContainer');
-  const first = container?.querySelector('.verticalSection.section0');
-  return container && first && first.parentNode === container ? { container, first } : undefined;
-}
-
-/**
  * Jellyfin web's Search page, once it is shown: `#searchPage` (the legacy app's `routes/search.tsx`, the same in the TV
  * and the desktop layout), a `[data-role=page].page` that is not `hide`, whose `#searchTextInput` holds the query as the
  * member typed it (a controlled input: Jellyfin web debounces it by 500 ms before it lists results). Undefined unless
@@ -73,12 +59,6 @@ export function searchPage(document: Document): { page: Element; input: HTMLInpu
 export function isSearchShown(event: Event): boolean {
   const target = event.target as Element | null;
   return Boolean(target && target.id === 'searchPage');
-}
-
-/** Whether `event` (a `viewshow`, which Jellyfin web dispatches on each page as it is shown) is Home being shown. */
-export function isHomeShown(event: Event): boolean {
-  const target = event.target as Element | null;
-  return Boolean(target && target.id === 'indexPage');
 }
 
 /** Where the add-on's header button goes: in front of Jellyfin web's Search button, in whichever header the layout shows. */

@@ -20,11 +20,12 @@ import {
   type HideOutcome,
   HEADER_TITLE,
   heroCarousel,
-  HOME_FILTERS,
-  HOME_TEXT,
-  type HomeFilter,
-  homeHref,
-  homeSwitch,
+  DISCOVER_FILTERS,
+  DISCOVER_TEXT,
+  type DiscoverFilter,
+  discoverHref,
+  discoverSwitch,
+  homeView,
   NETWORK_ACCENTS,
   type RowAccent,
   matchesRequestFilter,
@@ -69,8 +70,8 @@ import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
 import type { Card, CollectionFilm, DiscoverList, HiddenEntry, HiddenList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
 
-/** One of Home's rows, fetched from a discover list; `eager` rows are asked for at once, the others as they near the screen. */
-interface HomeRow {
+/** One of the Discover page's rows, fetched from a discover list; `eager` rows are asked for at once, the others as they near the screen. */
+interface DiscoverRow {
   part: 'row';
   list: DiscoverList;
   heading: string;
@@ -78,17 +79,17 @@ interface HomeRow {
   eager: boolean;
   accent: RowAccent;
 }
-/** Home is these in order: discover rows, and the places where the services' rows, the studios' strip and the JustWatch credit go. */
-type HomePart = HomeRow | { part: 'networks' } | { part: 'studios' } | { part: 'credit' };
-const row = (list: DiscoverList, heading: string, variant: RowVariant, eager: boolean, accent: RowAccent = 'default'): HomeRow =>
+/** The Discover page is these in order: discover rows, and the places where the services' rows, the studios' strip and the JustWatch credit go. */
+type DiscoverPart = DiscoverRow | { part: 'networks' } | { part: 'studios' } | { part: 'credit' };
+const row = (list: DiscoverList, heading: string, variant: RowVariant, eager: boolean, accent: RowAccent = 'default'): DiscoverRow =>
   ({ part: 'row', list, heading, variant, eager, accent });
 /**
- * What Home shows under each filter. The first row is also the hero's source. Only the first four rows are eager (three
- * under TV, which has fewer): that is Home's whole TMDB cost on first load, and everything below waits to near the
+ * What the Discover page shows under each filter. The first row is also the hero's source. Only the first four rows are eager (three
+ * under TV, which has fewer): that is the page's whole TMDB cost on first load, and everything below waits to near the
  * screen. Movies and TV ask for their own lists (a mixed page is never filtered on the phone, which would leave rows
  * half empty): the per-kind trending lists, a service's films or its series.
  */
-const HOME_LAYOUT: Record<HomeFilter, readonly HomePart[]> = {
+const DISCOVER_LAYOUT: Record<DiscoverFilter, readonly DiscoverPart[]> = {
   all: [
     row('trending', 'Trending', 'poster', true),
     row('popular-movies', 'Popular movies', 'backdrop', true),
@@ -117,9 +118,11 @@ const HOME_LAYOUT: Record<HomeFilter, readonly HomePart[]> = {
   ],
 };
 /** What a service's row lists under each filter: its films and series mixed, its films, or its series. */
-const NETWORK_LIST: Record<HomeFilter, SourceList> = { all: 'all', movies: 'films', tv: 'series' };
+const NETWORK_LIST: Record<DiscoverFilter, SourceList> = { all: 'all', movies: 'films', tv: 'series' };
 /** How far below (or above) the screen a lazy row starts loading, so it is usually there by the time it scrolls in. */
 const LAZY_MARGIN_PX = 400;
+/** The Discover page's name, in the header and the window's title. */
+const DISCOVER_HEADING = 'Discover';
 const SEARCH_DEBOUNCE_MS = 300;
 const MAX_QUERY_LENGTH = 100;
 /** "My requests" names its titles from TMDB a few at a time, so a long list is never a burst of calls. */
@@ -239,15 +242,15 @@ function measure(property: string, element: HTMLElement | null): void {
 measure('--header-box', doc.querySelector<HTMLElement>('.app-header'));
 measure('--tabbar-box', doc.querySelector<HTMLElement>('.tabbar'));
 
-/** `data-home-switch` is on the body whenever the sticky All | Movies | TV switch is on the page, hero or no hero, so the scroll padding that clears it never depends on the hero. */
+/** `data-discover-switch` is on the body whenever the sticky All | Movies | TV switch is on the page, hero or no hero, so the scroll padding that clears it never depends on the hero. */
 function markSwitch(): void {
-  const band = main.querySelector<HTMLElement>('.home-switch');
-  if (band) doc.body.setAttribute('data-home-switch', '');
-  else doc.body.removeAttribute('data-home-switch');
+  const band = main.querySelector<HTMLElement>('.discover-switch');
+  if (band) doc.body.setAttribute('data-discover-switch', '');
+  else doc.body.removeAttribute('data-discover-switch');
   measure('--switch-height', band);
 }
 
-/** The header shows the screen's title (the page's own heading marked `data-header-title`); with neither a Back button nor a title it shrinks to the status bar's safe area (Home). */
+/** The header shows the screen's title (the page's own heading marked `data-header-title`); with neither a Back button nor a title it shrinks to the status bar's safe area. */
 function syncHeader(): void {
   const text = main.querySelector<HTMLElement>(`h1[${HEADER_TITLE}]`)?.textContent ?? '';
   headerTitle.textContent = text;
@@ -291,10 +294,10 @@ function appScrollTo(y: number): void {
   window.scrollTo(0, y);
   markScrolled();
 }
-/** The chosen Home chip, ring included, sits fully inside the chip row's horizontal scroll. Runs after the browser's own focus scroll and after the tick has changed the chips' widths (a frame later, so the final bounds are measured), and jumps rather than glides under reduced motion. */
+/** The chosen Discover chip, ring included, sits fully inside the chip row's horizontal scroll. Runs after the browser's own focus scroll and after the tick has changed the chips' widths (a frame later, so the final bounds are measured), and jumps rather than glides under reduced motion. */
 const CHIP_RING = 4; // the focus outline: 3px wide, 1px offset
 function revealChip(chip: HTMLElement | null): void {
-  const scroller = chip?.closest<HTMLElement>('.segmented-home');
+  const scroller = chip?.closest<HTMLElement>('.segmented-discover');
   if (!chip || !scroller) return;
   const settle = (): void => {
     const box = chip.getBoundingClientRect();
@@ -343,8 +346,8 @@ function bringCardIntoRow(link: Element): void {
   list.scrollLeft += rowFocusShift(box, view, parseFloat(getComputedStyle(list).scrollPaddingRight));
 }
 
-/** Home runs its sticky filter band the page's full width (`home`); every other screen has the page's own gutters. */
-function setChrome(kind?: 'home'): void {
+/** The Discover page runs its sticky filter band the page's full width (`discover`); every other screen has the page's own gutters. */
+function setChrome(kind?: 'discover'): void {
   if (kind) doc.body.setAttribute('data-chrome', kind);
   else doc.body.removeAttribute('data-chrome');
 }
@@ -376,11 +379,11 @@ interface Position {
   y: number;
   /** Each discover row's horizontal scroll, by the row list's `aria-labelledby`. */
   rows?: Record<string, number>;
-  /** Home's hero carousel's horizontal scroll. */
+  /** The Discover page's hero carousel's horizontal scroll. */
   hero?: number;
   /** Search, a network's or a studio's page: result pages loaded. My requests: entries shown. */
   loaded?: number;
-  /** Home: the lazy rows that had been fetched (by their slot's key), fetched again at once on coming back. */
+  /** Discover: the lazy rows that had been fetched (by their slot's key), fetched again at once on coming back. */
   lazy?: string[];
 }
 const positions = new Map<number, Position>();
@@ -458,7 +461,11 @@ function stampHistory(): void {
 
 /** Where Back goes when the app was opened on this screen and there is nothing in the app to go back to. */
 function parentHash(route: Route): string {
-  return route.name === 'season' ? `#/tv/${route.id}` : route.name === 'hidden' ? '#/requests' : '#/';
+  if (route.name === 'season') return `#/tv/${route.id}`;
+  if (route.name === 'hidden') return '#/requests';
+  // A service's or a studio's page is reached from Discover.
+  if (route.name === 'network' || route.name === 'studio') return '#/discover';
+  return '#/';
 }
 
 function goBack(): void {
@@ -698,14 +705,14 @@ function failure(kind: ApiErrorKind, retry: () => void): void {
 }
 
 interface Route {
-  name: 'home' | 'search' | 'requests' | 'hidden' | 'movie' | 'tv' | 'season' | 'collection' | 'account' | SourceKind;
+  name: 'home' | 'discover' | 'search' | 'requests' | 'hidden' | 'movie' | 'tv' | 'season' | 'collection' | 'account' | SourceKind;
   id?: number;
   season?: number;
   query?: string;
   /** A network's page: which of its lists (`?kind=series` or `films`; anything else is All). */
   list?: SourceList;
-  /** Home: which filter (`?kind=movies` or `tv`; anything else is All). */
-  filter?: HomeFilter;
+  /** Discover: which filter (`?kind=movies` or `tv`; anything else is All). */
+  filter?: DiscoverFilter;
 }
 
 /** Only an empty hash or one that starts `#/` names a screen; anything else (the skip link's `#screen`) is not a route. */
@@ -732,8 +739,22 @@ function parse(hash: string): Route {
   if (collection) return { name: 'collection', id: Number(collection[1]) };
   const title = /^\/(movie|tv)\/(\d{1,10})$/.exec(path);
   if (title) return { name: title[1] === 'tv' ? 'tv' : 'movie', id: Number(title[2]) };
+  if (path === '/discover') {
+    const filter = new URLSearchParams(queryString).get('kind');
+    return { name: 'discover', filter: filter === 'movies' || filter === 'tv' ? filter : 'all' };
+  }
+  return { name: 'home' };
+}
+
+/**
+ * Home's old addresses with a filter (`#/?kind=movies`, `#/?kind=tv`, from when Home was the Discover rows) are the Discover
+ * page's now: the address it should be replaced with, or undefined. Only a `kind` query on Home's own path is moved.
+ */
+function legacyDiscover(hash: string): string | undefined {
+  const [path = '', queryString] = hash.replace(/^#/, '').split('?', 2);
+  if ((path !== '' && path !== '/') || queryString === undefined || !new URLSearchParams(queryString).has('kind')) return undefined;
   const filter = new URLSearchParams(queryString).get('kind');
-  return { name: 'home', filter: filter === 'movies' || filter === 'tv' ? filter : 'all' };
+  return discoverHref(filter === 'movies' || filter === 'tv' ? filter : 'all');
 }
 
 function markNav(route: Route): void {
@@ -750,13 +771,14 @@ async function render(): Promise<void> {
   navigationAbort = abort;
   const mine = ++navigation;
   const current = () => mine === navigation;
-  // An old About address is replaced in place by Account's, so Back and a reload keep to the new one.
+  // An old About address is replaced in place by Account's, and an old Home filter by Discover's, so Back and a reload keep to the new one.
   const legacy = /^#\/about(\?.*)?$/.exec(location.hash);
-  if (legacy) {
+  const moved = legacy ? `#/account${legacy[1] ?? ''}` : legacyDiscover(location.hash);
+  if (moved) {
     try {
-      history.replaceState(history.state, '', `#/account${legacy[1] ?? ''}`);
+      history.replaceState(history.state, '', moved);
     } catch {
-      // The route is the same either way.
+      // The About route is the same either way; an old Home filter then shows Home.
     }
   }
   syncCredentials();
@@ -768,7 +790,7 @@ async function render(): Promise<void> {
   restoreCancelled = false;
   shownDepth = depth;
   shownRoute = route;
-  setChrome(route.name === 'home' ? 'home' : undefined);
+  setChrome(route.name === 'discover' ? 'discover' : undefined);
   backButton.hidden = route.name === 'home';
   markNav(route);
   const retry = () => void render();
@@ -794,7 +816,8 @@ async function render(): Promise<void> {
   if (!jellyfinToken(localStorage, origin)) return failure('unauthorized', retry);
 
   try {
-    if (route.name === 'home') await home(route.filter ?? 'all', abort.signal, current);
+    if (route.name === 'home') homeScreen();
+    else if (route.name === 'discover') await discover(route.filter ?? 'all', abort.signal, current);
     else if (route.name === 'search') await search(route.query ?? '', abort.signal, current);
     else if (route.name === 'requests') await requestsScreen(abort.signal, current);
     else if (route.name === 'hidden') await hiddenScreen(abort.signal, current);
@@ -808,17 +831,25 @@ async function render(): Promise<void> {
   }
 }
 
-async function home(filter: HomeFilter, signal: AbortSignal, current: () => boolean): Promise<void> {
+/** Home: links to Discover, Search and My requests. It asks the API for nothing (the Discover rows are on their own page). */
+function homeScreen(): void {
   setTitle();
-  const eagerRows = HOME_LAYOUT[filter].filter((part): part is HomeRow => part.part === 'row' && part.eager);
-  busy(el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } }), skeletonHero(doc), ...eagerRows.map((part) => skeletonRow(doc, part.variant)));
+  show(homeView(doc));
+  announce('');
+  focusHeading();
+}
+
+async function discover(filter: DiscoverFilter, signal: AbortSignal, current: () => boolean): Promise<void> {
+  setTitle(DISCOVER_HEADING);
+  const eagerRows = DISCOVER_LAYOUT[filter].filter((part): part is DiscoverRow => part.part === 'row' && part.eager);
+  busy(el(doc, 'h1', { class: 'screen-title visually-hidden', text: DISCOVER_HEADING, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }), skeletonHero(doc), ...eagerRows.map((part) => skeletonRow(doc, part.variant)));
   await loadMe(signal);
   if (!current()) return;
-  const heading = el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } });
+  const heading = el(doc, 'h1', { class: 'screen-title visually-hidden', text: DISCOVER_HEADING, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } });
   const heroSlot = el(doc, 'div', {}, [skeletonHero(doc)]);
-  const panelId = 'home-panel';
-  const switcher = homeSwitch(doc, filter, panelId);
-  const panel = el(doc, 'div', { attrs: { id: panelId, role: 'group', 'aria-labelledby': `home-filter-${filter}` } });
+  const panelId = 'discover-panel';
+  const switcher = discoverSwitch(doc, filter, panelId);
+  const panel = el(doc, 'div', { attrs: { id: panelId, role: 'group', 'aria-labelledby': `discover-filter-${filter}` } });
   show(heading, switcher, heroSlot, panel);
   revealChip(switcher.querySelector<HTMLElement>('[aria-checked="true"]'));
 
@@ -835,17 +866,17 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
    * for as they near the screen, called once the page is in place and any position put back. Until the drawing is
    * replaced, that is.
    */
-  const draw = async (shown: HomeFilter, restore: Position | undefined): Promise<{ unauthorized: boolean; start: () => void }> => {
+  const draw = async (shown: DiscoverFilter, restore: Position | undefined): Promise<{ unauthorized: boolean; start: () => void }> => {
     drawAbort?.abort();
     const controller = new AbortController();
     drawAbort = controller;
     const sig = controller.signal;
     const mine = ++drawing;
     const live = () => current() && mine === drawing && !sig.aborted;
-    const layout = HOME_LAYOUT[shown];
+    const layout = DISCOVER_LAYOUT[shown];
     heroSlot.hidden = false;
     heroSlot.replaceChildren(skeletonHero(doc));
-    setChrome('home');
+    setChrome('discover');
     /** Without a hero (the first row failed or is empty) the header is its own bar again. */
     const noHero = () => {
       heroSlot.replaceChildren();
@@ -862,7 +893,7 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
       else lazy.watch(slot, () => void run());
     };
     const networksSlot = el(doc, 'div');
-    const studiosSlot = el(doc, 'div', { class: 'home-row' });
+    const studiosSlot = el(doc, 'div', { class: 'discover-row' });
     const creditSlot = el(doc, 'div');
     const slots: HTMLElement[] = [];
     const eager: Array<Promise<void>> = [];
@@ -877,7 +908,7 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
         watch(slot, () => api.discover(part.list, sig), (page) => titleRow(doc, id, part.heading, page, part.variant, part.accent, cardActionsFor('discover')), part.heading);
         return;
       }
-      const slot = el(doc, 'div', { class: 'home-row' }, [skeletonRow(doc, part.variant)]);
+      const slot = el(doc, 'div', { class: 'discover-row' }, [skeletonRow(doc, part.variant)]);
       slots.push(slot);
       const isHero = index === 0;
       eager.push((async () => {
@@ -907,7 +938,7 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
       })());
     });
     panel.replaceChildren(...slots);
-    panel.setAttribute('aria-labelledby', `home-filter-${shown}`);
+    panel.setAttribute('aria-labelledby', `discover-filter-${shown}`);
 
     /** The studios' strip and the services' rows, once the API has said which there are (no TMDB call). */
     const sources = async (): Promise<void> => {
@@ -939,7 +970,7 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
         watch(slot, () => api.source('network', network.id, 1, sig, list === 'all' || list === 'films' ? list : undefined),
           (page) => sourceRow(doc, slot.dataset['key'] as string, 'network', network, page, list, accent, cardActionsFor('discover')), SOURCE_TEXT.heading('network', network.name, list));
       }
-      if (listed.some((network) => network.hasFilms) && shown !== 'tv') creditSlot.append(el(doc, 'div', { class: 'home-row' }, [justWatchNote(doc)]));
+      if (listed.some((network) => network.hasFilms) && shown !== 'tv') creditSlot.append(el(doc, 'div', { class: 'discover-row' }, [justWatchNote(doc)]));
       await Promise.all(again);
     };
     await Promise.all([sources(), ...eager, ...again]);
@@ -953,15 +984,15 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
   focusHeading();
   drawn.start();
 
-  // The control: choosing replaces the address (not pushes it), so Back still leaves Home, and coming back is to this filter.
+  // The control: choosing replaces the address (not pushes it), so Back still leaves Discover, and coming back is to this filter.
   let chosen = filter;
-  const choose = (next: HomeFilter, focus: boolean): void => {
+  const choose = (next: DiscoverFilter, focus: boolean): void => {
     const button = switcher.querySelector<HTMLElement>(`[data-filter="${next}"]`);
     if (focus) button?.focus();
     if (next === chosen) return revealChip(button);
     // (revealChip runs again below once the selection has changed the chips' widths.)
     chosen = next;
-    history.replaceState(history.state, '', homeHref(next));
+    history.replaceState(history.state, '', discoverHref(next));
     shownRoute = parse(location.hash);
     // What was being put back belonged to the other filter.
     restoreCancelled = true;
@@ -978,29 +1009,29 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
     void draw(next, undefined).then((result) => {
       if (!current() || chosen !== next) return;
       if (result.unauthorized) return failure('unauthorized', () => void render());
-      announce(HOME_TEXT.shown[next]);
+      announce(DISCOVER_TEXT.shown[next]);
       result.start();
     });
   };
   for (const radio of switcher.querySelectorAll<HTMLElement>('[role="radio"]')) {
-    radio.addEventListener('click', () => choose(radio.dataset['filter'] as HomeFilter, false));
+    radio.addEventListener('click', () => choose(radio.dataset['filter'] as DiscoverFilter, false));
   }
   switcher.addEventListener('keydown', (event) => {
-    const at = HOME_FILTERS.indexOf(chosen);
+    const at = DISCOVER_FILTERS.indexOf(chosen);
     const key = (event as KeyboardEvent).key;
-    const last = HOME_FILTERS.length - 1;
-    const next = key === 'ArrowRight' || key === 'ArrowDown' ? HOME_FILTERS[at === last ? 0 : at + 1]
-      : key === 'ArrowLeft' || key === 'ArrowUp' ? HOME_FILTERS[at === 0 ? last : at - 1]
-        : key === 'Home' ? HOME_FILTERS[0] : key === 'End' ? HOME_FILTERS[last] : undefined;
+    const last = DISCOVER_FILTERS.length - 1;
+    const next = key === 'ArrowRight' || key === 'ArrowDown' ? DISCOVER_FILTERS[at === last ? 0 : at + 1]
+      : key === 'ArrowLeft' || key === 'ArrowUp' ? DISCOVER_FILTERS[at === 0 ? last : at - 1]
+        : key === 'Home' ? DISCOVER_FILTERS[0] : key === 'End' ? DISCOVER_FILTERS[last] : undefined;
     if (!next) return;
     event.preventDefault();
     choose(next, true);
   });
 }
 
-/** A Home row that is fetched only when it comes near the screen: a row-shaped skeleton until then, so nothing shifts. */
+/** A Discover row that is fetched only when it comes near the screen: a row-shaped skeleton until then, so nothing shifts. */
 function lazySlot(key: string): HTMLElement {
-  return el(doc, 'div', { class: 'home-row', attrs: { 'data-lazy': 'waiting', 'data-key': key } }, [skeletonRow(doc)]);
+  return el(doc, 'div', { class: 'discover-row', attrs: { 'data-lazy': 'waiting', 'data-key': key } }, [skeletonRow(doc)]);
 }
 
 /** Fetches and draws one lazy row into its slot; a failure shows the row's own error with a retry for that row alone. */
@@ -1032,9 +1063,9 @@ async function lazyRow(
 }
 
 /**
- * Runs each watched slot's `load` once, when the slot comes within {@link LAZY_MARGIN_PX} of the screen, so Home never
+ * Runs each watched slot's `load` once, when the slot comes within {@link LAZY_MARGIN_PX} of the screen, so Discover never
  * asks for all of its rows at once. With IntersectionObserver the browser says when; without it, the slots are checked
- * on scroll (at most once a frame) and once when Home is drawn. Nothing is watched before `start()` (Home is drawn and
+ * on scroll (at most once a frame) and once when Discover is drawn. Nothing is watched before `start()` (Discover is drawn and
  * any position put back first), and nothing after the navigation is over.
  */
 function lazyLoader(signal: AbortSignal): { watch(slot: HTMLElement, load: () => void): void; start(): void } {
@@ -1409,7 +1440,7 @@ async function season(route: Route, signal: AbortSignal, current: () => boolean)
 
 /**
  * A network's or a studio's page: a grid with **Load more** (the API's `nextPage`). A network whose films the API lists
- * has an All | Series | Films control (All, its series and films mixed, as on Home); the list shown is in the address
+ * has an All | Series | Films control (All, its series and films mixed, as on Discover); the list shown is in the address
  * (`?kind=`), replaced in place on switching, so Back and coming back are per list. Only the networks and studios the
  * API lists have a page; any other is "Not found" without asking for titles. Coming back, the pages that were showing
  * are fetched again and the scroll put back.

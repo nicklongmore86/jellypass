@@ -217,10 +217,6 @@ async function read(fetcher: Fetch, origin: string, token: string, path: string,
   return body && typeof body === 'object' ? { ok: true, body: body as Record<string, unknown> } : { ok: false, status: 502 };
 }
 
-/** `GET /discover/trending` (first page): one call. */
-export async function trending(fetcher: Fetch, origin: string, token: string): Promise<Answer> {
-  return cardsOf(await read(fetcher, origin, token, '/discover/trending'));
-}
 
 /** The discover lists (`GET /discover/{list}`) the Discover page asks for. */
 export type DiscoverList = 'trending' | 'trending-movies' | 'trending-tv' | 'popular-movies' | 'popular-tv' | 'new-movies' | 'upcoming' | 'upcoming-tv';
