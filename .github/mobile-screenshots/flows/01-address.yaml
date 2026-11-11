@@ -6,11 +6,20 @@ appId: com.rtc-services.jellypass
 - extendedWaitUntil:
     visible: "Connect to your household"
     timeout: 120000
-# The label's Text comes first in the tree; the field with the same name comes second.
-- tapOn:
-    text: "Household address"
-    index: 1
-- inputText: "${ADDRESS}"
-# A tap outside the field dismisses the keyboard; hideKeyboard is unreliable on iPhone.
-- tapOn: "Connect to your household"
+# The label's Text comes first in the tree; the field with the same name comes second. This is the session's first tap,
+# which is sometimes lost (03-search.yaml), and then the text goes nowhere: the field is cleared and typed again until
+# the address shows. A tap outside the field dismisses the keyboard; hideKeyboard is unreliable on iPhone.
+- repeat:
+    while:
+      notVisible: "${ADDRESS}"
+    times: 3
+    commands:
+      - tapOn:
+          text: "Household address"
+          index: 1
+      - eraseText: 100
+      - inputText: "${ADDRESS}"
+      - tapOn: "Connect to your household"
+      - waitForAnimationToEnd:
+          timeout: 5000
 - assertVisible: "${ADDRESS}"
