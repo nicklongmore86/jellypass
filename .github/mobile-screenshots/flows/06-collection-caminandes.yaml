@@ -45,6 +45,10 @@ appId: com.rtc-services.jellypass
           timeout: 5000
 - assertVisible:
     id: "film-list"
+# On iPhone the tab bar covers the third film; scrolling to the end shows all three with their status. On iPad they
+# already fit, so this does nothing.
+- scroll
+- scroll
 - assertVisible: ".*Llama Drama.*Ready to watch"
 - assertVisible: ".*Gran Dillama.*Ready to watch"
 - assertVisible: ".*Llamigos.*Ready to watch"
