@@ -1,0 +1,55 @@
+# The Caminandes Collection's page: the household has all three films, so each shows Ready to watch and the page offers
+# nothing to ask for. Reached from Search → Llama Drama → "Part of Caminandes Collection"; nothing is asked for. Taps
+# are repeated until they land (03-search.yaml).
+appId: com.rtc-services.jellypass
+---
+- repeat:
+    while:
+      visible: "Back"
+    times: 5
+    commands:
+      - tapOn: "Back"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "search-field"
+- tapOn:
+    id: "search-field"
+# The field still holds the last search.
+- eraseText: 20
+- inputText: "Caminandes"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: ".*Llama Drama.*Ready to watch"
+    timeout: 30000
+- repeat:
+    while:
+      notVisible:
+        id: "detail-facts"
+    times: 5
+    commands:
+      - tapOn: ".*Llama Drama.*Ready to watch"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- extendedWaitUntil:
+    visible: "Part of Caminandes Collection"
+    timeout: 30000
+- repeat:
+    while:
+      notVisible:
+        id: "film-list"
+    times: 5
+    commands:
+      - tapOn: "Part of Caminandes Collection"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "film-list"
+- assertVisible: ".*Llama Drama.*Ready to watch"
+- assertVisible: ".*Gran Dillama.*Ready to watch"
+- assertVisible: ".*Llamigos.*Ready to watch"
+# All three are in the library: no Get all, nothing to tick.
+- assertNotVisible:
+    id: "get-films"
+- waitForAnimationToEnd:
+    timeout: 10000
