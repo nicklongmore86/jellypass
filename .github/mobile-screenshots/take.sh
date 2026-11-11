@@ -66,8 +66,14 @@ for shot in "${shots[@]}"; do
   flow="${shot%%:*}"
   file="${out}/${shot#*:}.png"
   if ! maestro --device "$udid" test -e ADDRESS="$ADDRESS" -e PROFILE="$PROFILE" "${here}/flows/${flow}.yaml"; then
-    # Do not capture failure screens: sign-in failures may display configured values.
+    # Do not capture failure screens: sign-in failures may display configured values. Only which of the app's own
+    # fixed labels were on screen is printed, from Maestro's debug output (never uploaded).
     echo "::error::The ${flow} flow failed on ${name}"
+    echo "App labels on screen:"
+    grep -rhoF -e 'Connect to your household' -e 'Loading…' -e 'Choose your profile to sign in.' -e 'Try again' \
+      -e "Can't sign in right now" -e 'Check your connection' -e "There's no JellyPass household" -e 'Too many attempts' \
+      -e "Can't keep your sign-in" -e 'Sign in with a different name' -e 'See all Trending' "$HOME/.maestro/tests" 2>/dev/null |
+      sort | uniq -c || true
     exit 1
   fi
   # Posters arrive after the screen settles; give them a moment.
