@@ -28,6 +28,11 @@ export interface TitleAnswer {
   season: Season | undefined;
   /** Seasons (0 for a movie) the household asked for that failed, from GET /requests. */
   failed: ReadonlySet<number>;
+  /**
+   * Every film (TMDB ID) the household asked for that failed, from the same GET /requests: a film page's collection
+   * section says "We couldn't get this" for them, as the collection page does, with no read of its own.
+   */
+  failedFilms: ReadonlySet<number>;
 }
 
 export type TitleLoad = { status: 'loading' } | { status: 'loaded'; answer: TitleAnswer } | { status: 'failed'; error: ErrorText };
@@ -59,23 +64,27 @@ export interface TitleData {
   reload: () => void;
 }
 
-/** The seasons (0 for a movie) of a title the household asked for that did not work out. Best effort, but a 401 is thrown. */
-async function failedSeasons(api: ApiClient, mediaType: MediaType, tmdbId: number, signal: AbortSignal): Promise<Set<number>> {
+/**
+ * The seasons (0 for a movie) of a title the household asked for that did not work out, and every film it asked for
+ * that did not (by TMDB ID). Best effort, but a 401 is thrown.
+ */
+async function failedSeasons(api: ApiClient, mediaType: MediaType, tmdbId: number, signal: AbortSignal): Promise<{ failed: Set<number>; failedFilms: Set<number> }> {
   try {
     const list = await api.requests({ signal });
+    const failedFilms = new Set(list.results.filter((entry) => entry.mediaType === 'movie' && entry.status === 'failed').map((entry) => entry.tmdbId));
     const entry = list.results.find((candidate) => candidate.mediaType === mediaType && candidate.tmdbId === tmdbId);
-    if (!entry) return new Set();
-    if (mediaType === 'movie') return new Set(entry.status === 'failed' ? [0] : []);
-    return new Set(entry.seasons.filter((season) => season.status === 'failed').map((season) => season.seasonNumber));
+    if (!entry) return { failed: new Set(), failedFilms };
+    if (mediaType === 'movie') return { failed: new Set(entry.status === 'failed' ? [0] : []), failedFilms };
+    return { failed: new Set(entry.seasons.filter((season) => season.status === 'failed').map((season) => season.seasonNumber)), failedFilms };
   } catch (error) {
     if (isAbortError(error) || (error instanceof ApiError && error.kind === 'unauthorized')) throw error;
-    return new Set();
+    return { failed: new Set(), failedFilms: new Set() };
   }
 }
 
 async function read(api: ApiClient, route: TitleRoute, signal: AbortSignal): Promise<TitleAnswer> {
   if (route.mediaType === 'season') {
-    const [season, title, failed] = await Promise.all([
+    const [season, title, failures] = await Promise.all([
       api.season(route.tmdbId, route.seasonNumber, { signal }),
       api.tv(route.tmdbId, { signal }).then(
         (series) => series,
@@ -86,13 +95,13 @@ async function read(api: ApiClient, route: TitleRoute, signal: AbortSignal): Pro
       ),
       failedSeasons(api, 'tv', route.tmdbId, signal),
     ]);
-    return { title, season, failed };
+    return { title, season, ...failures };
   }
-  const [title, failed] = await Promise.all([
+  const [title, failures] = await Promise.all([
     route.mediaType === 'tv' ? api.tv(route.tmdbId, { signal }) : api.movie(route.tmdbId, { signal }),
     failedSeasons(api, route.mediaType, route.tmdbId, signal),
   ]);
-  return { title, season: undefined, failed };
+  return { title, season: undefined, ...failures };
 }
 
 /** Hands a fresh answer to the overlay, as the latest the server said for its title and seasons. */

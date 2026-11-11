@@ -353,8 +353,8 @@ export function backdropUri(url: string | null, width: number, scale = PixelRati
 }
 
 /** A card's accessible name, with "Hidden from Discover" after it when the member hid it. */
-function hiddenCardName(card: Card, kind = false): string {
-  const name = cardName(card, kind);
+function hiddenCardName(card: Card, kind = false, failed = false): string {
+  const name = cardName(card, kind, failed);
   return card.hidden ? `${name}, ${HIDE_TEXT.state}` : name;
 }
 
@@ -367,15 +367,19 @@ function HiddenMark() {
   );
 }
 
-/** A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". */
-export function PosterCard({ card, width, onOpen }: { card: Card; width: number; onOpen: (card: Card) => void }) {
+/**
+ * A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". `failed` (a film
+ * the household asked for that did not work out, on a film page's collection section) says "We couldn't get this" in
+ * full, below the poster, as it is too long for the corner pill.
+ */
+export function PosterCard({ card, width, onOpen, failed = false }: { card: Card; width: number; onOpen: (card: Card) => void; failed?: boolean }) {
   const onFocus = useContext(CardFocus);
   const badge = useBadgePlacement(width);
   const hide = useCardHideProps(card);
   return (
     <Pressable
       accessibilityRole="link"
-      accessibilityLabel={hiddenCardName(card, true)}
+      accessibilityLabel={hiddenCardName(card, true, failed)}
       onPress={() => onOpen(card)}
       {...hide}
       onFocus={onFocus}
@@ -384,7 +388,7 @@ export function PosterCard({ card, width, onOpen }: { card: Card; width: number;
       <View style={[styles.poster, !safeImageUrl(card.posterUrl) && styles.frameEmpty]}>
         <TmdbImage uri={card.posterUrl} style={styles.fillImage} />
       </View>
-      <StatusChip state={card.state} overlay={badge === 'overlay'} below={badge === 'below'} />
+      <StatusChip state={card.state} overlay={badge === 'overlay' && !failed} below={badge === 'below' || failed} failed={failed} />
       <Text style={styles.cardTitle}>{card.title}</Text>
       <Text style={styles.cardMeta}>{posterMeta(card)}</Text>
       {card.hidden ? <HiddenMark /> : null}
@@ -483,19 +487,31 @@ export function LogoTile({ source, size }: { source: Source; size: 'small' | 'la
  * `linkName` link, never a third, duplicate stop. A press on the chevron is the chevron's own, but either press dims the
  * whole row: the chevron takes the responder from the row, so the two share one pressed state rather than each its own.
  */
-function HeadingTap({ onOpen, linkName, children }: { onOpen: () => void; linkName: string; children: ReactNode }) {
+function HeadingTap({
+  onOpen,
+  linkName,
+  children,
+  testID = 'row-heading-tap',
+  linkTestID = 'row-heading-link',
+}: {
+  onOpen: () => void;
+  linkName: string;
+  children: ReactNode;
+  testID?: string;
+  linkTestID?: string;
+}) {
   const [held, setHeld] = useState(false);
   const press = { onPress: onOpen, onPressIn: () => setHeld(true), onPressOut: () => setHeld(false) };
   return (
     <Pressable
-      testID="row-heading-tap"
+      testID={testID}
       accessible={false}
       importantForAccessibility="no"
       {...press}
       style={[styles.networkHeading, styles.headingTap, held && styles.pressed]}
     >
       {children}
-      <Pressable testID="row-heading-link" accessibilityRole="link" accessibilityLabel={linkName} {...press} style={styles.headingLink}>
+      <Pressable testID={linkTestID} accessibilityRole="link" accessibilityLabel={linkName} {...press} style={styles.headingLink}>
         <Icon name="next" color={colors.text} size={20} />
       </Pressable>
     </Pressable>
@@ -525,10 +541,23 @@ export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; ne
 /**
  * A list row's heading with the same chevron after it as a service row's, a link of its own to the row's full grid ("See
  * all Trending"); the whole heading row is a touch-only target for the same page, so a screen reader's headings still land on it alone.
+ * A film page's collection heading names its own link and its test IDs (`linkName`, `testID`, `linkTestID`).
  */
-export function ListHeading({ title, onOpen }: { title: string; onOpen: () => void }) {
+export function ListHeading({
+  title,
+  onOpen,
+  linkName,
+  testID,
+  linkTestID,
+}: {
+  title: string;
+  onOpen: () => void;
+  linkName?: string;
+  testID?: string;
+  linkTestID?: string;
+}) {
   return (
-    <HeadingTap onOpen={onOpen} linkName={listLinkName(title)}>
+    <HeadingTap onOpen={onOpen} linkName={linkName ?? listLinkName(title)} testID={testID} linkTestID={linkTestID}>
       <Text accessibilityRole="header" style={styles.rowHeadingText}>
         {title}
       </Text>
@@ -543,12 +572,15 @@ export function CardRow({
   cardWidth,
   viewport,
   onOpen,
+  failed,
 }: {
   cards: readonly Card[];
   variant: RowVariant;
   cardWidth: number;
   viewport: number;
   onOpen: (card: Card) => void;
+  /** Whether the household asked for a poster card's title and it did not work out (a film page's collection section). */
+  failed?: (card: Card) => boolean;
 }) {
   if (cards.length === 0) return <Text style={styles.muted}>{EMPTY_ROW_TEXT}</Text>;
   return (
@@ -557,19 +589,22 @@ export function CardRow({
         variant === 'backdrop' ? (
           <BackdropCard key={`${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
         ) : (
-          <PosterCard key={`${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
+          <PosterCard key={`${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} failed={failed?.(card)} />
         ),
       )}
     </SnapRow>
   );
 }
 
-/** A row while it loads (or waits to come near the screen): its shape, so nothing shifts, hidden from screen readers. */
-export function SkeletonRow({ variant, cardWidth }: { variant: RowVariant; cardWidth: number }) {
+/**
+ * A row while it loads (or waits to come near the screen): its shape, so nothing shifts, hidden from screen readers.
+ * `heading` false leaves out the heading's shape, for a row whose real heading is already drawn above it.
+ */
+export function SkeletonRow({ variant, cardWidth, heading = true }: { variant: RowVariant; cardWidth: number; heading?: boolean }) {
   const count = variant === 'backdrop' ? 3 : 6;
   return (
     <View testID="skeleton-row" style={styles.row} {...hidden}>
-      <View style={styles.skeletonHeading} />
+      {heading ? <View style={styles.skeletonHeading} /> : null}
       <View style={[styles.rowList, styles.skeletonList]}>
         {Array.from({ length: count }, (_, index) => (
           <View key={index} style={[variant === 'backdrop' ? styles.backdropFrame : styles.poster, styles.skeleton, { width: cardWidth }]} />

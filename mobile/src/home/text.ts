@@ -145,15 +145,16 @@ export function backdropMeta(card: Pick<Card, 'year' | 'rating'>): string {
 
 /**
  * A card's accessible name: its title, year and rating, then its status, each said once ("Dune, 2021, TMDB rating 7.8
- * out of 10, Ready to watch"). A poster card also says whether it is a movie or a series, as its text does.
+ * out of 10, Ready to watch"). A poster card also says whether it is a movie or a series, as its text does. `failed`: the
+ * household asked for it and it did not work out, said as the request's own words ("We couldn't get this").
  */
-export function cardName(card: Pick<Card, 'title' | 'year' | 'rating' | 'state' | 'mediaType'>, kind = false): string {
+export function cardName(card: Pick<Card, 'title' | 'year' | 'rating' | 'state' | 'mediaType'>, kind = false, failed = false): string {
   return [
     card.title,
     card.year ? String(card.year) : '',
     kind ? (card.mediaType === 'tv' ? 'Series' : 'Movie') : '',
     typeof card.rating === 'number' ? ratingLabel(card.rating) : '',
-    stateLabel(card.state),
+    failed ? REQUEST_LABELS.failed : stateLabel(card.state),
   ]
     .filter(Boolean)
     .join(', ');

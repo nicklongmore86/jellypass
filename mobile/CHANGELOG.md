@@ -15,6 +15,18 @@ build.
 
 ## [Unreleased]
 
+### Changed
+
+- **A film's collection is easier to see.** The small "Part of …" link on a
+  film's page is now a section under the film's description: the heading
+  "Part of …" (it and its chevron open the collection's page) and the
+  collection's other films as posters, with what the household has or has asked
+  for (or "We couldn't get this", as on the collection page), each opening its
+  own page. The film you are on is not repeated. The
+  posters load after the page, with placeholders meanwhile; if they cannot be
+  loaded the plain "Part of …" link is shown, as before. Needs JellyPass server
+  4.4.0 or later (`apiVersion` 6); an older server shows nothing, as before.
+
 ## [1.5.0] - 2026-11-11
 
 A minor release: a film in a film series links to the series' page, where a

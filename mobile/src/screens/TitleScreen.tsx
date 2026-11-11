@@ -11,15 +11,25 @@
 //
 // Where the household can hide titles, a movie's or series' page has Not interested (Unhide once hidden) under its
 // actions (src/hidden/components.tsx): the page stays open, and the toast offers Undo. A season is never hidden alone.
+//
+// A film in a collection (server `apiVersion` 6) has the collection's own section under its overview, last on the page
+// (a film has no seasons below it), so the actions and description come first: the heading "Part of
+// <name>" (the whole heading row and its chevron open the collection page), then the collection's other films as poster
+// cards, Home's, with their states. The film itself is left out: its own page is the one open. The collection is read
+// once the page is drawn; until it answers the heading stands over placeholder posters, and if the read fails the plain
+// "Part of <name>" link is all that is left (the page itself never waits for it, nor shows its failure).
 import { router, Stack } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import type { Movie, Season, Series } from '../api/types';
+import type { CollectionLink, Movie, Season, Series } from '../api/types';
 import { safePlayUrl } from '../api/urls';
-import { ALL_SEASONS_TEXT, partOfText } from '../collection/text';
-import { collectionPath, seasonPath, type TitleTab } from '../navigation/titles';
+import { ALL_SEASONS_TEXT, partOfText, seeAllFilmsText } from '../collection/text';
+import { useCollectionPreview } from '../collection/useCollectionPreview';
+import { CardRow, ListHeading, SkeletonRow } from '../home/components';
+import { TABLET_WIDTH } from '../home/layout';
+import { collectionPath, seasonPath, titlePath, type TitleTab } from '../navigation/titles';
 import { HideTitleButton } from '../hidden/components';
 import { useAsked, useHiddenTitles, useSession } from '../session/SessionProvider';
 import { colors, layout, spacing, typography } from '../theme';
@@ -42,13 +52,18 @@ import {
 import { episodesText, episodeTitle, GET_THIS_TEXT, seasonName, SEASONS_TEXT } from '../title/text';
 import { useTitle, type GetThisState, type TitleRoute } from '../title/useTitle';
 import { Button, Screen } from '../ui';
+import { cardWidths } from './HomeScreen';
 
 /** The column's width, inside the gutters and the detail page's widest. */
 function useColumn() {
   const window = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const gutters = Math.max(spacing.gutter, insets.left) + Math.max(spacing.gutter, insets.right);
-  return { width: Math.max(0, Math.min(window.width, DETAIL_MAX_WIDTH) - gutters), tablet: window.width >= DETAIL_TABLET_WIDTH };
+  return {
+    width: Math.max(0, Math.min(window.width, DETAIL_MAX_WIDTH) - gutters),
+    tablet: window.width >= DETAIL_TABLET_WIDTH,
+    posterWidth: cardWidths(0, window.width >= TABLET_WIDTH).poster,
+  };
 }
 
 /** `tab`: the tab whose stack the page is on, where its season pages open too. */
@@ -68,6 +83,7 @@ export function TitleScreen({ route, tab }: { route: TitleRoute; tab: TitleTab }
         <TitleDetail
           title={load.answer.title.mediaType === 'tv' ? asked.series(load.answer.title) : asked.movie(load.answer.title)}
           failed={load.answer.failed}
+          failedFilms={load.answer.failedFilms}
           tab={tab}
           {...data}
         />
@@ -83,7 +99,7 @@ interface DetailProps {
   reload: () => void;
 }
 
-function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { title: Movie | Series; tab: TitleTab }) {
+function TitleDetail({ title, failed, failedFilms, get, send, reload, tab }: DetailProps & { title: Movie | Series; failedFilms: ReadonlySet<number>; tab: TitleTab }) {
   const { api, hasCollections } = useSession();
   const hiddenTitles = useHiddenTitles();
   const collection = title.mediaType === 'movie' && hasCollections ? title.collection : null;
@@ -135,16 +151,6 @@ function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { 
           </Text>
           <Facts title={title} />
           <Genres genres={title.genres} />
-          {collection ? (
-            <Pressable
-              accessibilityRole="link"
-              accessibilityLabel={partOfText(collection.name)}
-              onPress={() => router.push(collectionPath(tab, collection.id))}
-              style={({ pressed }) => [styles.collection, pressed && styles.pressed]}
-            >
-              <Text style={styles.collectionText}>{partOfText(collection.name)}</Text>
-            </Pressable>
-          ) : null}
           <DetailStatus state={title.state} failed={failedMovie} failedNote={failedAny} />
           {play || choices.length || get.confirmed || get.error ? (
             <View style={styles.actions}>
@@ -165,6 +171,17 @@ function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { 
         </View>
       </View>
       {title.overview ? <Text style={styles.overview}>{title.overview}</Text> : null}
+      {collection ? (
+        <CollectionSection
+          key={collection.id}
+          collection={collection}
+          filmId={title.tmdbId}
+          failedFilms={failedFilms}
+          tab={tab}
+          width={column.width}
+          posterWidth={column.posterWidth}
+        />
+      ) : null}
       {series ? (
         <View style={styles.section}>
           <SectionHeading title={SEASONS_TEXT.heading} />
@@ -206,6 +223,75 @@ function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { 
             <Text style={styles.muted}>{SEASONS_TEXT.none}</Text>
           )}
         </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** The plain link to a collection's page: all a film's page shows of it when the collection could not be read. */
+function CollectionLinkText({ name, onOpen }: { name: string; onOpen: () => void }) {
+  return (
+    <Pressable
+      testID="collection-link"
+      accessibilityRole="link"
+      accessibilityLabel={partOfText(name)}
+      onPress={onOpen}
+      style={({ pressed }) => [styles.collection, pressed && styles.pressed]}
+    >
+      <Text style={styles.collectionText}>{partOfText(name)}</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * A film's collection: its heading (a header, "Part of <name>", the whole row a touch target and its chevron the one
+ * "See all films in <name>" link, both to the collection page), then the collection's other films as Home's poster
+ * cards, each a link to its own page with its state, drawn through the overlay and the hidden titles as the collection
+ * page draws them ("Hidden" under one the member hid). Placeholder posters while it is read; the plain link if it fails.
+ */
+function CollectionSection({
+  collection,
+  filmId,
+  failedFilms,
+  tab,
+  width,
+  posterWidth,
+}: {
+  collection: CollectionLink;
+  filmId: number;
+  /** The films the household asked for that failed, from the film page's own GET /requests (no read of its own). */
+  failedFilms: ReadonlySet<number>;
+  tab: TitleTab;
+  width: number;
+  posterWidth: number;
+}) {
+  const preview = useCollectionPreview(collection.id);
+  const overlay = useAsked();
+  const hiddenTitles = useHiddenTitles();
+  const open = () => router.push(collectionPath(tab, collection.id));
+  if (preview.status === 'failed') return <CollectionLinkText name={collection.name} onOpen={open} />;
+  const films =
+    preview.status === 'loaded' ? preview.collection.films.filter((film) => film.tmdbId !== filmId).map((film) => hiddenTitles.card(overlay.card(film))) : [];
+  return (
+    <View testID="collection-preview" style={styles.section}>
+      <ListHeading
+        title={partOfText(collection.name)}
+        linkName={seeAllFilmsText(collection.name)}
+        testID="collection-link"
+        linkTestID="collection-see-all"
+        onOpen={open}
+      />
+      {preview.status === 'loading' ? <SkeletonRow variant="poster" cardWidth={posterWidth} heading={false} /> : null}
+      {films.length ? (
+        <CardRow
+          cards={films}
+          variant="poster"
+          cardWidth={posterWidth}
+          viewport={width}
+          onOpen={(card) => router.push(titlePath(tab, card))}
+          // As the collection page says it: a film still to get whose request failed is "We couldn't get this".
+          failed={(card) => card.state === 'get_this' && failedFilms.has(card.tmdbId)}
+        />
       ) : null}
     </View>
   );
