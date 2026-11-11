@@ -124,7 +124,9 @@ describe("a film's collection link", () => {
   it('says "Part of" its collection and opens the collection page on the same tab', async () => {
     useHousehold({ movies: { 7: { ...movieAnswer(7), collection: LINK } as never } });
     const app = await open('/home/movie/7');
-    const link = linkNamed('Part of Synthetic Collection');
+    // The heading, with its chevron link (the whole heading row is a touch target too: collection-preview.test.tsx).
+    expect(screen.queryAllByRole('header', { name: 'Part of Synthetic Collection' })).toHaveLength(1);
+    const link = linkNamed('See all films in Synthetic Collection');
     expect(flat(link).minHeight).toBe(layout.touchTarget);
     await pressNode(link);
     expect(app.getPathname()).toBe(`/home/collection/${COLLECTION_ID}`);
@@ -135,17 +137,18 @@ describe("a film's collection link", () => {
     apiVersion = 5;
     useHousehold({ movies: { 7: { ...movieAnswer(7), collection: LINK } as never } });
     await open('/home/movie/7');
-    expect(screen.queryAllByRole('link', { name: /^Part of/ })).toHaveLength(0);
+    expect(screen.queryAllByTestId('collection-link')).toHaveLength(0);
     expect(shows(/^Part of/)).toBe(false);
     apiVersion = 6;
     // A server before 6 sends no field at all: decoded as none.
     useHousehold({ movies: { 8: movieAnswer(8) as never, 9: { ...movieAnswer(9), collection: null } as never } });
     await act(async () => router.push('/search/movie/8'));
     await settle();
-    expect(screen.queryAllByRole('link', { name: /^Part of/ })).toHaveLength(0);
+    expect(screen.queryAllByTestId('collection-link')).toHaveLength(0);
     await act(async () => router.push('/search/movie/9'));
     await settle();
-    expect(screen.queryAllByRole('link', { name: /^Part of/ })).toHaveLength(0);
+    expect(screen.queryAllByTestId('collection-link')).toHaveLength(0);
+    expect(collectionReads()).toBe(0);
   });
 });
 

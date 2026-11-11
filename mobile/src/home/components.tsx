@@ -483,19 +483,31 @@ export function LogoTile({ source, size }: { source: Source; size: 'small' | 'la
  * `linkName` link, never a third, duplicate stop. A press on the chevron is the chevron's own, but either press dims the
  * whole row: the chevron takes the responder from the row, so the two share one pressed state rather than each its own.
  */
-function HeadingTap({ onOpen, linkName, children }: { onOpen: () => void; linkName: string; children: ReactNode }) {
+function HeadingTap({
+  onOpen,
+  linkName,
+  children,
+  testID = 'row-heading-tap',
+  linkTestID = 'row-heading-link',
+}: {
+  onOpen: () => void;
+  linkName: string;
+  children: ReactNode;
+  testID?: string;
+  linkTestID?: string;
+}) {
   const [held, setHeld] = useState(false);
   const press = { onPress: onOpen, onPressIn: () => setHeld(true), onPressOut: () => setHeld(false) };
   return (
     <Pressable
-      testID="row-heading-tap"
+      testID={testID}
       accessible={false}
       importantForAccessibility="no"
       {...press}
       style={[styles.networkHeading, styles.headingTap, held && styles.pressed]}
     >
       {children}
-      <Pressable testID="row-heading-link" accessibilityRole="link" accessibilityLabel={linkName} {...press} style={styles.headingLink}>
+      <Pressable testID={linkTestID} accessibilityRole="link" accessibilityLabel={linkName} {...press} style={styles.headingLink}>
         <Icon name="next" color={colors.text} size={20} />
       </Pressable>
     </Pressable>
@@ -525,10 +537,23 @@ export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; ne
 /**
  * A list row's heading with the same chevron after it as a service row's, a link of its own to the row's full grid ("See
  * all Trending"); the whole heading row is a touch-only target for the same page, so a screen reader's headings still land on it alone.
+ * A film page's collection heading names its own link and its test IDs (`linkName`, `testID`, `linkTestID`).
  */
-export function ListHeading({ title, onOpen }: { title: string; onOpen: () => void }) {
+export function ListHeading({
+  title,
+  onOpen,
+  linkName,
+  testID,
+  linkTestID,
+}: {
+  title: string;
+  onOpen: () => void;
+  linkName?: string;
+  testID?: string;
+  linkTestID?: string;
+}) {
   return (
-    <HeadingTap onOpen={onOpen} linkName={listLinkName(title)}>
+    <HeadingTap onOpen={onOpen} linkName={linkName ?? listLinkName(title)} testID={testID} linkTestID={linkTestID}>
       <Text accessibilityRole="header" style={styles.rowHeadingText}>
         {title}
       </Text>
@@ -564,12 +589,15 @@ export function CardRow({
   );
 }
 
-/** A row while it loads (or waits to come near the screen): its shape, so nothing shifts, hidden from screen readers. */
-export function SkeletonRow({ variant, cardWidth }: { variant: RowVariant; cardWidth: number }) {
+/**
+ * A row while it loads (or waits to come near the screen): its shape, so nothing shifts, hidden from screen readers.
+ * `heading` false leaves out the heading's shape, for a row whose real heading is already drawn above it.
+ */
+export function SkeletonRow({ variant, cardWidth, heading = true }: { variant: RowVariant; cardWidth: number; heading?: boolean }) {
   const count = variant === 'backdrop' ? 3 : 6;
   return (
     <View testID="skeleton-row" style={styles.row} {...hidden}>
-      <View style={styles.skeletonHeading} />
+      {heading ? <View style={styles.skeletonHeading} /> : null}
       <View style={[styles.rowList, styles.skeletonList]}>
         {Array.from({ length: count }, (_, index) => (
           <View key={index} style={[variant === 'backdrop' ? styles.backdropFrame : styles.poster, styles.skeleton, { width: cardWidth }]} />

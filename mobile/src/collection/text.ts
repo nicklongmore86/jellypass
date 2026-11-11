@@ -25,6 +25,11 @@ export function partOfText(name: string): string {
   return `Part of ${name}`;
 }
 
+/** A film page's collection heading's chevron: "See all films in The Synthetic Collection". */
+export function seeAllFilmsText(name: string): string {
+  return `See all films in ${name}`;
+}
+
 /** The send button: "Get all missing films" while the films chosen are the ones chosen at first, else "Get selected (N)". */
 export function getFilmsLabel(chosen: number, allMissing: boolean): string {
   return allMissing ? COLLECTION_TEXT.getAll : `Get selected (${chosen})`;
