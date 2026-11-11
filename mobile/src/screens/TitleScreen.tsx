@@ -83,6 +83,7 @@ export function TitleScreen({ route, tab }: { route: TitleRoute; tab: TitleTab }
         <TitleDetail
           title={load.answer.title.mediaType === 'tv' ? asked.series(load.answer.title) : asked.movie(load.answer.title)}
           failed={load.answer.failed}
+          failedFilms={load.answer.failedFilms}
           tab={tab}
           {...data}
         />
@@ -98,7 +99,7 @@ interface DetailProps {
   reload: () => void;
 }
 
-function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { title: Movie | Series; tab: TitleTab }) {
+function TitleDetail({ title, failed, failedFilms, get, send, reload, tab }: DetailProps & { title: Movie | Series; failedFilms: ReadonlySet<number>; tab: TitleTab }) {
   const { api, hasCollections } = useSession();
   const hiddenTitles = useHiddenTitles();
   const collection = title.mediaType === 'movie' && hasCollections ? title.collection : null;
@@ -170,7 +171,17 @@ function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { 
         </View>
       </View>
       {title.overview ? <Text style={styles.overview}>{title.overview}</Text> : null}
-      {collection ? <CollectionSection key={collection.id} collection={collection} filmId={title.tmdbId} tab={tab} width={column.width} posterWidth={column.posterWidth} /> : null}
+      {collection ? (
+        <CollectionSection
+          key={collection.id}
+          collection={collection}
+          filmId={title.tmdbId}
+          failedFilms={failedFilms}
+          tab={tab}
+          width={column.width}
+          posterWidth={column.posterWidth}
+        />
+      ) : null}
       {series ? (
         <View style={styles.section}>
           <SectionHeading title={SEASONS_TEXT.heading} />
@@ -241,12 +252,15 @@ function CollectionLinkText({ name, onOpen }: { name: string; onOpen: () => void
 function CollectionSection({
   collection,
   filmId,
+  failedFilms,
   tab,
   width,
   posterWidth,
 }: {
   collection: CollectionLink;
   filmId: number;
+  /** The films the household asked for that failed, from the film page's own GET /requests (no read of its own). */
+  failedFilms: ReadonlySet<number>;
   tab: TitleTab;
   width: number;
   posterWidth: number;
@@ -268,7 +282,17 @@ function CollectionSection({
         onOpen={open}
       />
       {preview.status === 'loading' ? <SkeletonRow variant="poster" cardWidth={posterWidth} heading={false} /> : null}
-      {films.length ? <CardRow cards={films} variant="poster" cardWidth={posterWidth} viewport={width} onOpen={(card) => router.push(titlePath(tab, card))} /> : null}
+      {films.length ? (
+        <CardRow
+          cards={films}
+          variant="poster"
+          cardWidth={posterWidth}
+          viewport={width}
+          onOpen={(card) => router.push(titlePath(tab, card))}
+          // As the collection page says it: a film still to get whose request failed is "We couldn't get this".
+          failed={(card) => card.state === 'get_this' && failedFilms.has(card.tmdbId)}
+        />
+      ) : null}
     </View>
   );
 }

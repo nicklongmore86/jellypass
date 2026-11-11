@@ -353,8 +353,8 @@ export function backdropUri(url: string | null, width: number, scale = PixelRati
 }
 
 /** A card's accessible name, with "Hidden from Discover" after it when the member hid it. */
-function hiddenCardName(card: Card, kind = false): string {
-  const name = cardName(card, kind);
+function hiddenCardName(card: Card, kind = false, failed = false): string {
+  const name = cardName(card, kind, failed);
   return card.hidden ? `${name}, ${HIDE_TEXT.state}` : name;
 }
 
@@ -367,15 +367,19 @@ function HiddenMark() {
   );
 }
 
-/** A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". */
-export function PosterCard({ card, width, onOpen }: { card: Card; width: number; onOpen: (card: Card) => void }) {
+/**
+ * A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". `failed` (a film
+ * the household asked for that did not work out, on a film page's collection section) says "We couldn't get this" in
+ * full, below the poster, as it is too long for the corner pill.
+ */
+export function PosterCard({ card, width, onOpen, failed = false }: { card: Card; width: number; onOpen: (card: Card) => void; failed?: boolean }) {
   const onFocus = useContext(CardFocus);
   const badge = useBadgePlacement(width);
   const hide = useCardHideProps(card);
   return (
     <Pressable
       accessibilityRole="link"
-      accessibilityLabel={hiddenCardName(card, true)}
+      accessibilityLabel={hiddenCardName(card, true, failed)}
       onPress={() => onOpen(card)}
       {...hide}
       onFocus={onFocus}
@@ -384,7 +388,7 @@ export function PosterCard({ card, width, onOpen }: { card: Card; width: number;
       <View style={[styles.poster, !safeImageUrl(card.posterUrl) && styles.frameEmpty]}>
         <TmdbImage uri={card.posterUrl} style={styles.fillImage} />
       </View>
-      <StatusChip state={card.state} overlay={badge === 'overlay'} below={badge === 'below'} />
+      <StatusChip state={card.state} overlay={badge === 'overlay' && !failed} below={badge === 'below' || failed} failed={failed} />
       <Text style={styles.cardTitle}>{card.title}</Text>
       <Text style={styles.cardMeta}>{posterMeta(card)}</Text>
       {card.hidden ? <HiddenMark /> : null}
@@ -568,12 +572,15 @@ export function CardRow({
   cardWidth,
   viewport,
   onOpen,
+  failed,
 }: {
   cards: readonly Card[];
   variant: RowVariant;
   cardWidth: number;
   viewport: number;
   onOpen: (card: Card) => void;
+  /** Whether the household asked for a poster card's title and it did not work out (a film page's collection section). */
+  failed?: (card: Card) => boolean;
 }) {
   if (cards.length === 0) return <Text style={styles.muted}>{EMPTY_ROW_TEXT}</Text>;
   return (
@@ -582,7 +589,7 @@ export function CardRow({
         variant === 'backdrop' ? (
           <BackdropCard key={`${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
         ) : (
-          <PosterCard key={`${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
+          <PosterCard key={`${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} failed={failed?.(card)} />
         ),
       )}
     </SnapRow>

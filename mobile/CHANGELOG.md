@@ -21,7 +21,8 @@ build.
   film's page is now a section under the film's description: the heading
   "Part of …" (it and its chevron open the collection's page) and the
   collection's other films as posters, with what the household has or has asked
-  for, each opening its own page. The film you are on is not repeated. The
+  for (or "We couldn't get this", as on the collection page), each opening its
+  own page. The film you are on is not repeated. The
   posters load after the page, with placeholders meanwhile; if they cannot be
   loaded the plain "Part of …" link is shown, as before. Needs JellyPass server
   4.4.0 or later (`apiVersion` 6); an older server shows nothing, as before.

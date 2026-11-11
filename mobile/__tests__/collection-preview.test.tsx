@@ -5,16 +5,17 @@
 // signs the member out, and a server before apiVersion 6 shows nothing. Films the member hid say so, as on the collection
 // page. Queries are queryAll* and assertions read single fields, so a failure never prints the component tree.
 import { act, fireEvent, screen, within } from '@testing-library/react-native';
+import { Linking } from 'react-native';
 import { router } from 'expo-router';
 import { renderRouter } from 'expo-router/testing-library';
 
 import type { FetchLike } from '../src/api/client';
-import { ERROR_TEXT } from '../src/home/text';
+import { ERROR_TEXT, REQUEST_LABELS } from '../src/home/text';
 import { HIDE_TEXT } from '../src/hidden/text';
 import { GET_THIS_TEXT } from '../src/title/text';
 import { API, showAll } from './support/home';
 import { ORIGIN, TOKEN, answer, fixture, keepSession, settle, shows, store, storedSession, type Call } from './support/household';
-import { linkNamed, movieAnswer, pressNode, titleGateway } from './support/title';
+import { buttonNamed, linkNamed, movieAnswer, pressNode, titleGateway } from './support/title';
 
 jest.setTimeout(30_000);
 
@@ -44,10 +45,16 @@ let gateway: ReturnType<typeof titleGateway>;
 let apiVersion = 6;
 type Answer = ReturnType<typeof answer>;
 
-function useHousehold(collectionRead: () => Answer | Promise<Answer> = () => answer(200, collectionAnswer())) {
+function useHousehold(
+  collectionRead: () => Answer | Promise<Answer> = () => answer(200, collectionAnswer()),
+  household: { requests?: { results: unknown[] }; override?: (call: Call) => Answer | Promise<Answer> | undefined } = {},
+) {
   gateway = titleGateway({
     movies: { 7: { ...movieAnswer(7), collection: LINK } as never },
+    requests: household.requests,
     override: (call: Call) => {
+      const own = household.override?.(call);
+      if (own) return own;
       if (call.route === `GET ${API}/me`) return answer(200, { ...fixture('me'), apiVersion });
       if (call.route === COLLECTION_READ) return collectionRead();
       return undefined;
@@ -77,6 +84,9 @@ const ids = (id: string) => screen.queryAllByTestId(id, { includeHiddenElements:
 /** The section's own nodes (Home stays drawn under the film's page, with rows of its own). */
 const section = () => screen.queryAllByTestId('collection-preview', { includeHiddenElements: true });
 const inSection = (id: string) => section().flatMap((node) => within(node).queryAllByTestId(id, { includeHiddenElements: true })).length;
+const RATING = 'TMDB rating 7.4 out of 10';
+/** A My requests entry, as GET /requests lists one. */
+const request = (tmdbId: number, status: string) => ({ id: `A${String(tmdbId).padStart(21, 'A')}`, mediaType: 'movie', tmdbId, status, seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' });
 const posterNames = () =>
   section().flatMap((node) => within(node).queryAllByRole('link', { name: /, Movie, / })).map((node) => String(node.props.accessibilityLabel));
 
@@ -220,5 +230,84 @@ describe("a film page's collection section", () => {
     const { made } = await open('/home/movie/8');
     expect(ids('collection-link')).toBe(0);
     expect(made().some((route) => route.includes('/collection/'))).toBe(false);
+  });
+  it('says "We couldn\'t get this" for a film still to get whose household request failed, from the page\'s own My requests read', async () => {
+    useHousehold(() => answer(200, collectionAnswer([film(7, 'get_this'), film(1, 'in_library'), film(4, 'get_this'), film(5, 'requested')])), {
+      // Film 5's failed entry is older than its state: the collection page shows Requested for it too.
+      requests: { results: [request(4, 'failed'), request(5, 'failed')] },
+    });
+    const { made } = await open();
+    expect(posterNames()).toEqual([`Film 1, 2020, Movie, ${RATING}, Ready to watch`, `Film 4, 2020, Movie, ${RATING}, ${REQUEST_LABELS.failed}`, `Film 5, 2020, Movie, ${RATING}, Requested`]);
+    // The words are drawn, in full (under the poster): not "Get this".
+    expect(section().flatMap((node) => within(node).queryAllByText(REQUEST_LABELS.failed, { includeHiddenElements: true }))).toHaveLength(1);
+    // No read of its own: My requests once, the film's page's.
+    expect(made().filter((route) => route === 'GET /requests')).toHaveLength(1);
+    expect(made().filter((route) => route === `GET /collection/${COLLECTION_ID}`)).toHaveLength(1);
+  });
+
+  it("shows each film only as the household's own answer says: one private to another household is just a film to get", async () => {
+    const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+    try {
+      // The server works out each film's state from the caller's own view: a film in another household's private
+      // library is not in this one's, so it comes as a film to get, with no play link. Nothing more is drawn for it.
+      useHousehold(() => answer(200, collectionAnswer([film(7, 'get_this'), film(1, 'in_library'), film(8, 'get_this', { play: null })])));
+      const { app } = await open();
+      expect(posterNames()).toEqual([`Film 1, 2020, Movie, ${RATING}, Ready to watch`, `Film 8, 2020, Movie, ${RATING}, Available to get`]);
+      expect(inSection('status-chip')).toBe(2);
+      await pressNode(linkNamed(/^Film 8, /));
+      expect(app.getPathname()).toBe('/home/movie/8');
+      expect(openURL).not.toHaveBeenCalled();
+    } finally {
+      openURL.mockRestore();
+    }
+  });
+
+  it('drops a collection read still out when the page is left: aborted, and nothing drawn from it', async () => {
+    const { read, release } = heldRead();
+    useHousehold(read);
+    const errors = jest.spyOn(console, 'error');
+    try {
+      const { app } = await open();
+      const call = gateway.calls.find((made) => made.route === COLLECTION_READ)!;
+      await act(async () => router.back());
+      await settle();
+      expect(app.getPathname()).toBe('/home');
+      expect((call.init as { signal?: AbortSignal }).signal?.aborted).toBe(true);
+      await release(answer(200, collectionAnswer()));
+      expect(ids('collection-preview')).toBe(0);
+      expect(storedSession()).toBeDefined();
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("starts over when the film's page, read again, names another collection: the first collection's late answer is dropped", async () => {
+    const OTHER = 900200;
+    let reads = 0;
+    const first = heldRead();
+    useHousehold(first.read, {
+      override: (call: Call) => {
+        if (call.route === `GET ${API}/movie/7`) {
+          reads += 1;
+          return answer(200, { ...movieAnswer(7), collection: reads === 1 ? LINK : { id: OTHER, name: 'Other Collection' } });
+        }
+        if (call.route === `GET ${API}/collection/${OTHER}`) return answer(200, { ...collectionAnswer([film(7, 'requested'), film(21, 'in_library')]), id: OTHER, name: 'Other Collection' });
+        return undefined;
+      },
+    });
+    await open();
+    expect(ids('skeleton-row')).toBeGreaterThan(0);
+    // Get this reads the film's page again, and this time it is in the other collection.
+    await pressNode(buttonNamed('Get this: Film 7'));
+    expect(reads).toBe(2);
+    expect(screen.queryAllByRole('header', { name: 'Part of Other Collection' })).toHaveLength(1);
+    expect(posterNames()).toEqual([`Film 21, 2020, Movie, ${RATING}, Ready to watch`]);
+    // The first collection's read was aborted, and its answer, late, changes nothing.
+    const call = gateway.calls.find((made) => made.route === COLLECTION_READ)!;
+    expect((call.init as { signal?: AbortSignal }).signal?.aborted).toBe(true);
+    await first.release(answer(200, collectionAnswer()));
+    expect(screen.queryAllByRole('header', { name: `Part of ${NAME}` })).toHaveLength(0);
+    expect(posterNames()).toEqual([`Film 21, 2020, Movie, ${RATING}, Ready to watch`]);
   });
 });
