@@ -1,6 +1,19 @@
+# The first tap of a new Maestro session is sometimes lost (03-search.yaml), so Continue is tapped again until the
+# profile picker shows; once it has moved on, Continue is gone and the tap is skipped.
 appId: com.rtc-services.jellypass
 ---
-- tapOn: "Continue"
+- repeat:
+    while:
+      notVisible: "${PROFILE}"
+    times: 4
+    commands:
+      - tapOn:
+          text: "Continue"
+          optional: true
+      - extendedWaitUntil:
+          visible: "${PROFILE}"
+          timeout: 20000
+          optional: true
 - extendedWaitUntil:
     visible: "${PROFILE}"
     timeout: 60000
