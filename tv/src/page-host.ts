@@ -42,7 +42,7 @@ export interface PageContext {
    * The page has drawn what it focuses on its own: focus goes to what had it when the page was last left (a
    * `FOCUS_ATTR` key), else to `fallback`; not once the member has pressed anything on this page, whose focus is theirs.
    */
-  focus(fallback: HTMLElement | null): void;
+  focus(fallback: HTMLElement | null, preserveMissing?: boolean): void;
 }
 
 /** What a page's render function returns. */
@@ -69,6 +69,8 @@ interface Active {
   cleanup: (() => void) | undefined;
   /** Focus is put right again once, after Jellyfin's own `pageshow` work (its auto-focus) is done. */
   focusPending: boolean;
+  /** A lazy title row may supply the remembered focus key after its main content. */
+  preserveMissingFocus?: boolean;
   /** The member has pressed a key or the pointer on this page: what the page focuses later is not theirs to take. */
   acted: boolean;
   /** Jellyfin's `data-title` for its page, put back (with the header and document title it implies) when the host leaves. */
@@ -241,10 +243,11 @@ export class PageHost {
           const now = this.active;
           if (now && now.container === container) this.setTitle(now.page, title);
         },
-        focus: (fallback) => {
+        focus: (fallback, preserveMissing) => {
           const now = this.active;
           if (!now || now.container !== container) return;
           now.view.focus = fallback;
+          if (preserveMissing) now.preserveMissingFocus = true;
           if (!now.acted) this.restoreFocus(now);
         },
       });
@@ -391,8 +394,13 @@ export class PageHost {
         }
       }
     }
+    const missing = !target;
     target = target || active.view.focus;
     if (target && active.container.contains(target)) target.focus();
+    // The fallback can emit focusin before a lazy row supplies the saved key. Keep it until that row draws,
+    // unless the member acts in the meantime (context.focus already honours active.acted).
+    if (missing && active.preserveMissingFocus && wanted !== undefined) this.focusKeys.set(active.hash, wanted);
+    if (!missing) active.preserveMissingFocus = false;
   }
 
   /** The header's title as Jellyfin web's `libraryMenu.setTitle` sets it, on its page too, so its `pageshow` agrees. */

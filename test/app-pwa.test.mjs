@@ -2588,8 +2588,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         const page = await openApp(t, app, { hash });
         await page.until(() => page.main().querySelector('article.detail, .season-list, .episode-list'), name);
         await settled(page);
-        assert.deepEqual(calls(page), BUDGET.screens[name].atOnce);
-        assert.equal(page.requests.length, BUDGET.screens[name].calls);
+        assert.deepEqual(calls(page).map((call) => call.replace(/\/collection\/[0-9]+$/, '/collection/{id}')).sort(), [...BUDGET.screens[name].atOnce, ...(name === 'movie' ? BUDGET.conditionalAllowances.collectionPreview.afterRender : [])].sort());
+        assert.equal(page.requests.length, BUDGET.screens[name].calls + (name === 'movie' ? BUDGET.conditionalAllowances.collectionPreview.calls : 0));
       });
     }
 
@@ -2618,8 +2618,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         const page = await openApp(t, app, { hash });
         await page.until(() => page.main().querySelector('.source-panel ul.grid, .source-panel p.muted'), name);
         await settled(page);
-        assert.deepEqual(calls(page).map((call) => call.replace(/\/discover\/(network|studio)\/[0-9]+/, '/discover/$1/{id}')).sort(), BUDGET.screens[name].atOnce);
-        assert.equal(page.requests.length, BUDGET.screens[name].calls);
+        assert.deepEqual(calls(page).map((call) => call.replace(/\/discover\/(network|studio)\/[0-9]+/, '/discover/$1/{id}')).sort(), [...BUDGET.screens[name].atOnce, ...(name === 'movie' ? BUDGET.conditionalAllowances.collectionPreview.afterRender : [])].sort());
+        assert.equal(page.requests.length, BUDGET.screens[name].calls + (name === 'movie' ? BUDGET.conditionalAllowances.collectionPreview.calls : 0));
       });
     }
 
@@ -5205,7 +5205,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         await ask(page);
         await new Promise((resolve) => setTimeout(resolve, 50));
         const made = page.requests.slice(start).map((request) => `${request.init.method ?? 'GET'} ${request.url}`).sort();
-        assert.deepEqual(made, [`GET /jellypass/app/v1/movie/${T_MOVIE}`, 'GET /jellypass/app/v1/requests', `POST /jellypass/app/v1/movie/${T_MOVIE}/get`].sort());
+        assert.deepEqual(made, [`GET /jellypass/app/v1/movie/${T_MOVIE}`, 'GET /jellypass/app/v1/requests', 'GET /jellypass/app/v1/collection/900100', `POST /jellypass/app/v1/movie/${T_MOVIE}/get`].sort());
       });
     });
 
@@ -5648,6 +5648,45 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await app.background.settled();
     });
 
+    it('loads collection posters below the overview without blocking the title, then navigates', async (t) => {
+      const app = await startApp(t);
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: async (url) => {
+        if (url === `/jellypass/app/v1/collection/${COLLECTION}`) await held;
+      } });
+      await page.until(() => page.main().querySelector('.collection-link'), 'title before collection');
+      assert.ok(page.main().querySelector('.row .skeleton-card'));
+      assert.equal(page.main().querySelector('.collection-preview'), null);
+      release();
+      const preview = await page.until(() => page.main().querySelector('.collection-preview'), 'posters');
+      assert.equal(preview.parentNode.lastElementChild, preview, 'after overview and actions');
+      assert.ok(preview.querySelectorAll('.card').length > 0);
+      assert.equal(preview.querySelector(`a[href="#/movie/${T_MOVIE}"]`), null, 'current film omitted');
+      assert.ok(preview.querySelector('.badge'));
+      assert.ok(preview.querySelector('.card-link').getAttribute('aria-label'));
+      const link = preview.querySelector('.card-link');
+      page.go(link.getAttribute('href'));
+      await page.until(() => !page.main().contains(preview), 'film navigation');
+    });
+
+    for (const status of [503, 404]) it(`keeps the plain link on collection preview failure ${status}`, async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => url.includes('/collection/') ? jsonAnswer({ error: 'unavailable' }, status) : undefined });
+      await page.until(() => page.main().querySelector('.collection-link') && page.pending() === 0, 'fallback');
+      assert.equal(page.main().querySelector('.collection-preview'), null);
+      assert.ok(page.main().querySelector('.collection-link a'));
+      assert.ok(page.main().querySelector('article.detail'));
+    });
+
+    it('signs out when the lazy collection read returns 401', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => url.includes('/collection/') ? jsonAnswer({ error: 'unauthorized' }, 401) : undefined });
+      await page.until(() => page.main().querySelector('[data-screen="signin"]'), 'signed out');
+      assert.equal(page.main().querySelector('.collection-preview'), null);
+    });
+
     it('links a film to its collection on a server with collections, and to nothing on an older one or for a film in none', async (t) => {
       const app = await startApp(t, world({ tmdbMovies: { 900010: { title: 'Synthetic Movie Ten', release_date: '2021-01-01', belongs_to_collection: null } } }));
       const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
@@ -5657,9 +5696,11 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const alone = await openApp(t, app, { hash: '#/movie/900010' });
       await alone.until(() => alone.main().querySelector('article.detail'), 'the page');
       assert.equal(alone.main().querySelector('.collection-link'), null);
+      assert.ok(!alone.requests.some((request) => request.url.includes('/collection/')));
       const old = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: oldServer });
       await old.until(() => old.main().querySelector('article.detail'), 'the page');
       assert.equal(old.main().querySelector('.collection-link'), null);
+      assert.ok(!old.requests.some((request) => request.url.includes('/collection/')));
       // An old server's movie has no such field at all.
       const bare = await openApp(t, app, {
         hash: `#/movie/${T_MOVIE}`,

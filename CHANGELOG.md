@@ -21,6 +21,10 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Film title pages in the household web app and TV add-on now preview the other films in their collection, with household status badges and See all. TV previews keep at most ten small posters and load images around focus.
+
 ## [4.4.0] - 2026-11-10
 
 This is a minor release. It adds film collections and **Get all missing
