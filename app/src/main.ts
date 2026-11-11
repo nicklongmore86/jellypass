@@ -208,7 +208,6 @@ function kindOf(error: unknown): ApiErrorKind {
   return error instanceof ApiError ? error.kind : 'unavailable';
 }
 
-<<<<<<< Updated upstream
 /** A failed Get this or Cancel's outcome: its kind, or, for a 429 that said how long to wait, the wait too. */
 function refusalOf(error: unknown): ApiErrorKind | RateLimitedOutcome {
   if (error instanceof ApiError && error.kind === 'rate_limited' && error.retryAfterSeconds !== undefined) {
@@ -217,8 +216,6 @@ function refusalOf(error: unknown): ApiErrorKind | RateLimitedOutcome {
   return kindOf(error);
 }
 
-=======
->>>>>>> Stashed changes
 /** The fixed chrome's real heights go onto the root as custom properties through the CSSOM (no style attribute is written via markup or setAttribute; style-src 'self' allows CSSOM writes). At large text or zoom the header grows, the tab bar grows and the chips would wrap, so the scroll padding follows what is measured, not a one-row guess. The stylesheet's rem estimates stay as the fallback until then. */
 const watchers = new Map<string, ResizeObserver>();
 
@@ -297,17 +294,10 @@ function appScrollTo(y: number): void {
   window.scrollTo(0, y);
   markScrolled();
 }
-<<<<<<< Updated upstream
 /** The chosen Discover chip, ring included, sits fully inside the chip row's horizontal scroll. Runs after the browser's own focus scroll and after the tick has changed the chips' widths (a frame later, so the final bounds are measured), and jumps rather than glides under reduced motion. */
 const CHIP_RING = 4; // the focus outline: 3px wide, 1px offset
 function revealChip(chip: HTMLElement | null): void {
   const scroller = chip?.closest<HTMLElement>('.segmented-discover');
-=======
-/** The chosen Home chip, ring included, sits fully inside the chip row's horizontal scroll. Runs after the browser's own focus scroll and after the tick has changed the chips' widths (a frame later, so the final bounds are measured), and jumps rather than glides under reduced motion. */
-const CHIP_RING = 4; // the focus outline: 3px wide, 1px offset
-function revealChip(chip: HTMLElement | null): void {
-  const scroller = chip?.closest<HTMLElement>('.segmented-home');
->>>>>>> Stashed changes
   if (!chip || !scroller) return;
   const settle = (): void => {
     const box = chip.getBoundingClientRect();
@@ -319,13 +309,8 @@ function revealChip(chip: HTMLElement | null): void {
     const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
     scroller.scrollTo({ left: scroller.scrollLeft + by, behavior: reduced ? 'auto' : 'smooth' });
   };
-<<<<<<< Updated upstream
   // Without frames there is no layout to measure (a test page), so there is nothing to reveal.
   if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(() => window.requestAnimationFrame(settle));
-=======
-  if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(() => window.requestAnimationFrame(settle));
-  else settle();
->>>>>>> Stashed changes
 }
 function appScrollLeft(list: HTMLElement, left: number): void {
   list.scrollLeft = left;

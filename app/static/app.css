@@ -257,7 +257,6 @@ main {
   background: var(--bg); box-shadow: 0 1px 0 var(--hairline);
 }
 /* One row at any text size or zoom: the sticky band must stay short, so at large text the chips scroll sideways (focus brings the chosen one into view) instead of wrapping into a tall band that would fill the screen. The padding keeps the focus ring inside the scroller's clip. */
-<<<<<<< Updated upstream
 .segmented-discover { margin: -4px; padding: 4px; flex-wrap: nowrap; overflow-x: auto; scroll-padding-inline: 4px; scrollbar-width: none; overscroll-behavior-x: contain; }
 .segmented-discover::-webkit-scrollbar { display: none; }
 .segmented-discover .segment { flex: none; }
@@ -266,12 +265,6 @@ main {
 .request-filters .segmented { margin-bottom: 0; }
 .request-filters .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
 .segmented-discover .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
-=======
-.segmented-home { margin: -4px; padding: 4px; flex-wrap: nowrap; overflow-x: auto; scroll-padding-inline: 4px; scrollbar-width: none; overscroll-behavior-x: contain; }
-.segmented-home::-webkit-scrollbar { display: none; }
-.segmented-home .segment { flex: none; }
-.segmented-home .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
->>>>>>> Stashed changes
 /* While the switch is on the page (with or without a hero), a focused or scrolled-to card also clears the band. */
 :root:has(body[data-discover-switch]) { scroll-padding-top: calc(var(--header-box) + var(--switch-height) + 0.5rem); }
 .source-note { margin: 0.25rem 0 1rem; font-size: 0.8rem; }

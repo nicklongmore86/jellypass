@@ -99,7 +99,6 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     assert.ok(contrast(tokens.accent, tokens['accent-tint']) >= 3 && contrast(tokens.accent, tokens.bg) >= 3);
     matches(css, /\.segment \{[^}]*min-height: 2\.75rem/, 'a touch target of at least 44px');
     // A focused card clears the header, and on Home the band under it too (#42's scroll padding, plus the band).
-<<<<<<< Updated upstream
     matches(css, /--header-height: 3\.75rem;/);
     matches(css, /--switch-height: 3\.875rem;/);
     matches(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
@@ -112,20 +111,6 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     for (const file of FILES.filter((name) => name.startsWith('js/'))) {
       let rest = read(file);
       if (/^js\/main\./.test(file)) {
-=======
-    assert.match(css, /--header-height: 3\.75rem;/);
-    assert.match(css, /--switch-height: 3\.875rem;/);
-    assert.match(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
-    assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\(var\(--header-box\) \+ var\(--switch-height\) \+ 0\.5rem\); \}/);
-    assert.doesNotMatch(css, /backdrop-filter/, 'no glass');
-    assert.equal(homeHref('all'), '#/');
-    assert.equal(homeHref('movies'), '#/?kind=movies');
-    assert.equal(homeHref('tv'), '#/?kind=tv');
-    // The scripts set no style attribute, as the CSP forbids: every waterline colour is a class. No style attributes are written via markup or setAttribute; the root's custom properties are set via the CSSOM, which style-src allows. The one exemption is the root-measurement helper in main.js (measure) and only the three properties --header-box, --tabbar-box and --switch-height.
-    for (const file of FILES.filter((name) => name.startsWith('js/'))) {
-      let rest = read(file);
-      if (file === 'js/main.js') {
->>>>>>> Stashed changes
         const helper = rest.match(/function measure\(property, element\) \{[^]*?\n\}\n/);
         assert.ok(helper, 'the measure helper');
         assert.equal(helper[0].match(/\.style\b/g).length, 2, 'only the remove and set calls');
@@ -3730,15 +3715,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.match(reveal[0], /prefers-reduced-motion: reduce[^]*behavior: reduced \? ['"]auto['"] : ['"]smooth['"]/);
       // On the initial render (?kind=tv), on a click or key choice, and when the choice is unchanged.
       assert.match(source, /show\(heading, switcher, heroSlot, panel\);\s*revealChip\(switcher\.querySelector\(['"]\[aria-checked="true"\]['"]\)\)/);
-<<<<<<< Updated upstream
       assert.match(source, /if \(next === chosen\)\s*return revealChip\(button\)/);
       assert.match(source, /radio\.setAttribute\(['"]tabindex['"][^]*?\}\s*revealChip\(button\)/);
       matches(css, /\.segmented-discover \{[^}]*scroll-padding-inline: 4px/);
-=======
-      assert.match(source, /if \(next === chosen\) return revealChip\(button\)/);
-      assert.match(source, /radio\.setAttribute\(['"]tabindex['"][^]*?\}\s*revealChip\(button\)/);
-      assert.match(css, /\.segmented-home \{[^}]*scroll-padding-inline: 4px/);
->>>>>>> Stashed changes
     });
 
     it('has no hero, and the header is its own bar, when the first row is empty or fails', async (t) => {
