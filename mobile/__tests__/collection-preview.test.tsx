@@ -95,16 +95,18 @@ function textOrder(): string[] {
 /** The collection read, answered when the test says. */
 function heldRead() {
   let release: ((response: Answer) => void) | undefined;
-  useHousehold(() => new Promise<Answer>((resolve) => (release = resolve)));
-  return async (response: Answer) => {
-    await act(async () => release!(response));
-    await settle();
+  return {
+    read: () => new Promise<Answer>((resolve) => (release = resolve)),
+    release: async (response: Answer) => {
+      await act(async () => release!(response));
+      await settle();
+    },
   };
 }
 
 describe("a film page's collection section", () => {
   it('draws the film first, with the heading over placeholder posters, while the collection is read', async () => {
-    heldRead();
+    useHousehold(heldRead().read);
     await open();
     expect(shows('Film 7')).toBe(true);
     expect(shows('The overview of film 7.')).toBe(true);
@@ -170,7 +172,8 @@ describe("a film page's collection section", () => {
   });
 
   it('falls back to the plain "Part of" link when the read fails, with no error and no retry', async () => {
-    const release = heldRead();
+    const { read, release } = heldRead();
+    useHousehold(read);
     const { app, made } = await open();
     await release(answer(503, { error: 'unavailable' }));
     await act(async () => {
@@ -190,7 +193,8 @@ describe("a film page's collection section", () => {
   });
 
   it('signs the member out on a 401 from the collection read', async () => {
-    const release = heldRead();
+    const { read, release } = heldRead();
+    useHousehold(read);
     const { app } = await open();
     await release(answer(401, { error: 'unauthorized' }));
     expect(storedSession()).toBeUndefined();
