@@ -15,6 +15,23 @@ build.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-11
+
+A minor release: a film in a film series links to the series' page, where a
+member can ask for every missing film at once; a series page can ask for every
+missing season in one tap; and a refusal for too many tries says how long to
+wait. It still works with **JellyPass server 3.2.0 or later** (app API `v1`),
+as 1.0.0 to 1.4.1 do. **Collections** need **JellyPass server 4.4.0 or later**
+(`apiVersion` 6 in `GET /jellypass/app/v1/me`); on an older server a film's
+page shows no "Part of …" link, with no error, and everything else works as in
+1.4.1. The wait in "Too many tries. Try again in 3 minutes." needs **JellyPass
+server 4.3.0 or later** (`apiVersion` 5); an older server gets the same words
+as before. **Get all missing seasons** works with any supported server. As in
+1.4.1, **Not interested** needs JellyPass server 4.0.0 or later (`apiVersion`
+3), and Cancel request and the day each title was requested need JellyPass
+server 3.5.0 or later (`apiVersion` 2). Members update by installing the new
+TestFlight build, or the new APK over the old one.
+
 ### Added
 
 - **Collections.** A film that belongs to a film series (a TMDB collection, such
@@ -27,11 +44,12 @@ build.
   asks for each film on its own, one after the other, so each counts once against
   the household's limits and each is its own entry in My requests. If a limit is
   reached part-way, the page says which films were asked for, which were not, and
-  how long to wait. Needs **JellyPass server with `apiVersion` 6**; an older
-  server shows no link.
+  how long to wait. Needs JellyPass server 4.4.0 or later (`apiVersion` 6); an
+  older server shows no link.
 - **Get all missing seasons.** A series page has a button beside its season list
   that asks for every season still to get in one request, the same as Select all
-  then Get this.
+  then Get this. A season the household already has, has asked for, or could
+  not get is left out.
 
 ### Changed
 
@@ -39,8 +57,8 @@ build.
   refused for too many tries and the server says how long until it can be tried
   again (`Retry-After`, or `retryAfterSeconds` in the answer), the app says
   "Too many tries. Try again in 3 minutes." (rounded up to whole minutes). A
-  server that does not say (one before `apiVersion` 5) gets the same words as
-  before.
+  server that does not say (one before JellyPass server 4.3.0) gets the same
+  words as before.
 
 ## [1.4.1] - 2026-11-05
 
@@ -333,7 +351,8 @@ is not supported.
 - **iPhone, iPad and Android.** Portrait on phones; iPad and Android tablets
   turn. iOS is distributed through TestFlight and Android as an APK.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.4.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.5.0...HEAD
+[1.5.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.5.0
 [1.4.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.4.1
 [1.4.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.4.0
 [1.3.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.3.0
