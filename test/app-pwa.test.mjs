@@ -2618,8 +2618,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         const page = await openApp(t, app, { hash });
         await page.until(() => page.main().querySelector('.source-panel ul.grid, .source-panel p.muted'), name);
         await settled(page);
-        assert.deepEqual(calls(page).map((call) => call.replace(/\/discover\/(network|studio)\/[0-9]+/, '/discover/$1/{id}')).sort(), [...BUDGET.screens[name].atOnce, ...(name === 'movie' ? BUDGET.conditionalAllowances.collectionPreview.afterRender : [])].sort());
-        assert.equal(page.requests.length, BUDGET.screens[name].calls + (name === 'movie' ? BUDGET.conditionalAllowances.collectionPreview.calls : 0));
+        assert.deepEqual(calls(page).map((call) => call.replace(/\/discover\/(network|studio)\/[0-9]+/, '/discover/$1/{id}')).sort(), BUDGET.screens[name].atOnce);
+        assert.equal(page.requests.length, BUDGET.screens[name].calls);
       });
     }
 
@@ -5669,6 +5669,39 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const link = preview.querySelector('.card-link');
       page.go(link.getAttribute('href'));
       await page.until(() => !page.main().contains(preview), 'film navigation');
+    });
+
+    it('shows a failed sibling badge from the single title requests read', async (t) => {
+      const app = await startApp(t);
+      const failed = { results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: 900005, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] };
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => url.endsWith('/requests') ? jsonAnswer(failed) : undefined });
+      const preview = await page.until(() => page.main().querySelector('.collection-preview'), 'preview');
+      const card = preview.querySelector('a[href="#/movie/900005"]').closest('.card');
+      assert.equal(card.querySelector('.badge').textContent, "We couldn't get this");
+      assert.equal(card.querySelector('a').getAttribute('aria-label'), "Synthetic Movie Five, We couldn't get this");
+      assert.equal(page.requests.filter((request) => request.url.endsWith('/requests')).length, 1);
+    });
+
+    it('drops a collection response after navigating away while it is held', async (t) => {
+      const app = await startApp(t);
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const errors = [];
+      t.mock.method(console, 'error', (...args) => errors.push(args));
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: async (url) => {
+        if (url.includes('/collection/')) await held;
+      } });
+      await page.until(() => page.main().querySelector('.row .skeleton-card'), 'held preview');
+      page.go('#/account');
+      await page.until(() => page.main().querySelector('h1')?.textContent === 'Account', 'new screen');
+      const before = page.main().innerHTML;
+      release();
+      await page.until(() => page.pending() === 0, 'late response drained');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(page.main().innerHTML, before);
+      assert.equal(page.main().querySelector('.collection-preview, .skeleton-card'), null);
+      assert.deepEqual(errors, []);
     });
 
     for (const status of [503, 404]) it(`keeps the plain link on collection preview failure ${status}`, async (t) => {

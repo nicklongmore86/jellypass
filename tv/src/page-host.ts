@@ -247,7 +247,7 @@ export class PageHost {
           const now = this.active;
           if (!now || now.container !== container) return;
           now.view.focus = fallback;
-          if (preserveMissing) now.preserveMissingFocus = true;
+          if (preserveMissing !== undefined) now.preserveMissingFocus = preserveMissing;
           if (!now.acted) this.restoreFocus(now);
         },
       });

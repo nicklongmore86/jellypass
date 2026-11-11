@@ -272,7 +272,7 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home and no 
     The current film is omitted to leave room for its siblings. Hidden films retain their Not interested label, as on
     the collection page. At most ten 140px cards use TMDB w185 posters, with only the focused card and two neighbours
     on either side holding image sources (initially the first three). Left/right move within the row; Up returns to
-    See all, Down from See all enters the row. Down from the main actions reaches See all; Up returns to the originating action. Jellyfin handles Back/history, restoring the selected poster once the lazy row arrives.
+    See all, Down from See all enters the row. Down from the last enabled main action reaches See all; Up returns to the originating action. Jellyfin handles Back/history, restoring the selected poster once the lazy row arrives.
   - "Requested", "Can't request" and "We couldn't get this" have no button, only their note. "Requested" says "Follow it
     in My requests." and, like a title just asked for with **Get this**, a title with a failed request, or a series with
     a requested season, has a **My requests** button after the others (it only opens the page; see "My requests").

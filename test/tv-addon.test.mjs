@@ -156,6 +156,23 @@ function unguardedAbortControllers(source) {
   return found;
 }
 
+function assertPreviewKeyBoundary(source) {
+  const banned = /\bpreventDefault\b|\bstopPropagation\b|\bstopImmediatePropagation\b|\bkeyCode\b|\.key\b/;
+  const directory = path.join(import.meta.dirname, '..', 'tv', 'src');
+  for (const file of readdirSync(directory).filter((name) => name.endsWith('.ts'))) {
+    let text = readFileSync(path.join(directory, file), 'utf8');
+    if (file === 'title.ts') {
+      const blocks = [...text.matchAll(/\/\* collection-preview-keys:start \*\/([\s\S]*?)\/\* collection-preview-keys:end \*\//g)];
+      assert.equal(blocks.length, 4, 'only four local collection key handlers');
+      for (const [, block] of blocks) assert.equal((block.match(/addEventListener\('keydown'/g) ?? []).length, 1);
+      text = text.replace(/\/\* collection-preview-keys:start \*\/[\s\S]*?\/\* collection-preview-keys:end \*\//g, '');
+    }
+    lacks(text, banned, `${file}: key handling outside collection handlers`);
+  }
+  for (const name of ['preventDefault', 'stopPropagation', 'keyCode']) assert.equal((source.match(new RegExp(`\\b${name}\\b`, 'g')) ?? []).length, 4, name);
+  lacks(source, /\bstopImmediatePropagation\b|\.key\b/);
+}
+
 describe('TV add-on: the build', () => {
   it('is one script and one stylesheet, each named for a hash of its content, and the script names the stylesheet', () => {
     assert.equal(FILES.length, 2);
@@ -2261,8 +2278,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     // The host's document listeners, the search field's input one included, are explicitly capturing and passive: they only observe.
     for (const entry of page.listeners) assert.ok(entry.endsWith(' {"capture":true,"passive":true}'), entry);
     const source = readFileSync(path.join(DIST_TV, SCRIPT), 'utf8');
-    // Collection row arrows are handled locally; document observers and Back remain passive.
-    lacks(source, /\bstopImmediatePropagation\b/);
+    assertPreviewKeyBoundary(source);
     lacks(source, /isBackKey|["']Escape["']|["']Backspace["']/);
     // Back (every remote's) on Home and on a title page is left to Jellyfin web.
     await choose(page, T_MOVIE);
@@ -2466,8 +2482,7 @@ describe('TV add-on: the page host', { timeout: 60_000 }, () => {
     // No key listener decides anything: each is capturing and passive (it can only watch), and the bundle never prevents or stops an event.
     for (const entry of page.listeners.filter((listener) => /^(?:keydown|keyup|keypress) /.test(listener))) assert.equal(entry, 'keydown {"capture":true,"passive":true}');
     const source = readFileSync(path.join(DIST_TV, SCRIPT), 'utf8');
-    // Collection row arrows are handled locally; document observers and Back remain passive.
-    lacks(source, /\bstopImmediatePropagation\b/);
+    assertPreviewKeyBoundary(source);
   });
 
   it('does nothing on Home\'s own address', async (t) => {
@@ -2542,6 +2557,7 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
       focused: () => LIVE_FOCUS(document),
       /** What the \`late\` page was given and drew (set when it renders). */
       get ctx() { return scope.__ctx; },
+      get deferredFocus() { return scope.__host.active?.preserveMissingFocus; },
       get late() { return scope.__late; },
       /** Jellyfin web showing its page: `pageshow` dispatched on it, then its auto-focus (the next effect, in the same task). */
       shown(pageEl, stealFocus) {
@@ -2597,6 +2613,27 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
     // Another title has its own memory.
     box.sync('#/jellypass/item/movie/2');
     assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'one');
+  });
+
+  it('clears deferred focus preservation when a lazy preview fails', async () => {
+    const box = await sandbox();
+    const first = showFallback(box.document);
+    box.sync('#/jellypass/late/1');
+    box.input();
+    box.late.a.focus();
+    first.remove();
+    box.sync('#/details?id=x');
+    showFallback(box.document);
+    box.sync('#/jellypass/late/1');
+    box.late.a.remove();
+    box.ctx.focus(box.late.b, true);
+    assert.equal(box.deferredFocus, true);
+    box.ctx.focus(null, false);
+    assert.equal(box.deferredFocus, false, 'a failed preview clears deferred focus');
+    // The failed row no longer owns the saved key. A later fallback can replace it normally.
+    box.ctx.focus(box.late.b);
+    box.ctx.focus(null);
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'b');
   });
 
   it('lets a page set the header\'s title once it knows it, only while it is the page shown', async () => {
@@ -7743,7 +7780,7 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
       assert.equal(section.querySelectorAll('img[src]').length, 3);
       assert.match(cards[0].querySelector('img').getAttribute('src'), /\/w185\//);
       const see = section.querySelector('.jellypass-tv-title-collection');
-      const action = view(page).querySelector('.jellypass-tv-title-get');
+      const action = view(page).querySelector('.jellypass-tv-title-hide');
       action.focus(); page.key(40); assert.equal(page.focused(), see, 'Down from actions reaches See all');
       page.key(38); assert.equal(page.focused(), action, 'Up returns to the originating action');
       page.key(40); page.key(40); assert.equal(page.focused(), cards[0]);
@@ -7762,6 +7799,75 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
       page.back();
       await page.settled();
       assert.equal(page.focused()?.getAttribute('data-tmdb-id'), '901001', 'Back restores the lazy poster');
+    });
+
+    it('shows a failed sibling badge using exactly one requests read', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const failed = { results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: 900005, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] };
+      const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`, { override: (url) => url.endsWith('/requests') ? { status: 200, body: JSON.stringify(failed) } : undefined });
+      const card = view(page).querySelector('.jellypass-tv-collection-preview button[data-tmdb-id="900005"]');
+      assert.equal(card.querySelector('.jellypass-tv-title-status-failed').textContent, "We couldn't get this");
+      assert.equal(card.getAttribute('aria-label'), "Synthetic Movie Five, We couldn't get this");
+      assert.equal(card.querySelector('.jellypass-tv-discover-badge-open'), null);
+      assert.equal(page.requests.filter((request) => new URL(request.url).pathname.endsWith('/requests')).length, 1);
+    });
+
+    it('drops film A collection after film B opens without moving focus', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const page = await openJellyfinWeb(t, app, { override: async (url) => {
+        if (url.includes('/collection/')) await held;
+      } });
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.goTo(`#/jellypass/title/movie/${T_MOVIE}`); showFallback(page.document);
+      for (let i = 0; i < 300 && !view(page)?.querySelector('.jellypass-tv-discover-skeleton-card'); i += 1) await pause(10);
+      assert.ok(view(page).querySelector('.jellypass-tv-discover-skeleton-card'));
+      page.goTo(`#/jellypass/title/tv/${T_TV}`);
+      for (let i = 0; i < 300 && text(page, 'h1') !== 'Synthetic Series Two'; i += 1) await pause(10);
+      assert.equal(text(page, 'h1'), 'Synthetic Series Two');
+      const focus = view(page).querySelector('.jellypass-tv-title-get');
+      focus.focus();
+      const before = view(page).outerHTML;
+      release(); await page.settled();
+      assert.equal(view(page).outerHTML, before);
+      assert.equal(view(page).querySelector('.jellypass-tv-collection-preview, .jellypass-tv-discover-skeleton-card'), null);
+      assert.equal(page.focused(), focus);
+    });
+
+    for (const state of ['requested', 'unavailable']) it(`does not focus See all when a ${state} film preview arrives`, async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const movie = { ...(await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`)).json(), state };
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const page = await openJellyfinWeb(t, app, { override: async (url) => {
+        if (url.endsWith(`/movie/${T_MOVIE}`)) return { status: 200, body: JSON.stringify(movie) };
+        if (url.includes('/collection/')) await held;
+      } });
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.goTo(`#/jellypass/title/movie/${T_MOVIE}`); showFallback(page.document);
+      for (let i = 0; i < 300 && !view(page)?.querySelector('.jellypass-tv-discover-skeleton-card'); i += 1) await pause(10);
+      const focus = page.focused();
+      release(); await page.settled();
+      assert.ok(view(page).querySelector('.jellypass-tv-collection-preview button[data-tmdb-id]'));
+      assert.equal(page.focused()?.getAttribute('data-jellypass-tv-focus') ?? null, focus?.getAttribute('data-jellypass-tv-focus') ?? null, 'arrival preserves existing focus');
+    });
+
+    it('only exits the last enabled action with Down and skips disabled Up targets', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`);
+      const get = view(page).querySelector('.jellypass-tv-title-get');
+      const hide = view(page).querySelector('.jellypass-tv-title-hide');
+      const see = view(page).querySelector('.jellypass-tv-title-collection');
+      get.focus(); assert.equal(page.key(40).defaultPrevented, false, 'other actions use Jellyfin navigation');
+      hide.focus(); assert.equal(page.key(40).defaultPrevented, true); assert.equal(page.focused(), see);
+      hide.disabled = true;
+      page.key(38); assert.equal(page.focused(), get, 'skip disabled origin');
+      see.focus(); get.disabled = true;
+      assert.equal(page.key(38).defaultPrevented, false, 'no disabled fallback receives focus');
+      assert.equal(page.focused(), see);
     });
 
     for (const status of [503, 404]) it(`keeps the plain link on preview failure ${status}`, async (t) => {

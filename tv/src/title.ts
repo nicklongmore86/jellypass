@@ -548,21 +548,28 @@ export class TitlePage {
       parts.push(collectionBox);
       const link = collectionLink;
       let from: HTMLElement | undefined;
+      /* collection-preview-keys:start */
       actions.addEventListener('keydown', (event) => {
         if ((event as KeyboardEvent).keyCode !== 40) return;
+        const enabled = actions.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+        if (event.target !== enabled[enabled.length - 1]) return;
         from = event.target as HTMLElement;
         event.preventDefault();
         event.stopPropagation();
         link.focus();
       });
+      /* collection-preview-keys:end */
+      /* collection-preview-keys:start */
       link.addEventListener('keydown', (event) => {
         if ((event as KeyboardEvent).keyCode !== 38) return;
-        const target = from ?? play ?? get ?? hide?.button;
+        const enabled = Array.prototype.slice.call(actions.querySelectorAll('button')) as HTMLButtonElement[];
+        const target = from && !(from as HTMLButtonElement).disabled ? from : enabled.filter((button) => !button.disabled).pop();
         if (!target) return;
         event.preventDefault();
         event.stopPropagation();
         target.focus();
       });
+      /* collection-preview-keys:end */
     }
 
     // The seasons: each a card with its status; the ones the household can ask for are toggles (aria-pressed).
@@ -643,7 +650,7 @@ export class TitlePage {
         this.#error(open, 'unauthorized', true);
         return;
       }
-      if (!answer.ok) { section.parentNode.removeChild(section); return; }
+      if (!answer.ok) { section.parentNode.removeChild(section); open.context.focus(null, false); return; }
       const heading = this.#el('h2', 'sectionTitle', COLLECTION_TEXT.partOf(answer.collection.name));
       link.textContent = 'See all';
       link.setAttribute('aria-label', `${heading.textContent}, see all`);
@@ -667,6 +674,7 @@ export class TitlePage {
         const state = this.#asked.state('movie', film.tmdbId, film.state) as HouseholdState;
         markCard(one, state);
         if (state === 'get_this' && (open.failedMovies ?? []).indexOf(film.tmdbId) >= 0) {
+          one.badge.className = 'jellypass-tv-discover-badge jellypass-tv-title-status-failed';
           one.badge.textContent = TITLE_TEXT.failed;
           one.button.setAttribute('aria-label', `${film.title}, ${TITLE_TEXT.failed}`);
         }
@@ -676,20 +684,24 @@ export class TitlePage {
         units.push(unit);
         buttons.push(one.button);
         one.button.addEventListener('focusin', () => near(index));
+        /* collection-preview-keys:start */
         one.button.addEventListener('keydown', (event) => {
           const key = (event as KeyboardEvent).keyCode;
           const target = key === 37 ? buttons[Math.max(0, index - 1)] : key === 39 ? buttons[Math.min(buttons.length - 1, index + 1)] : key === 38 ? link : undefined;
           if (target) { event.preventDefault(); event.stopPropagation(); target.focus(); }
         });
+        /* collection-preview-keys:end */
         one.button.addEventListener('click', () => { if (this.#open === open && this.#watch.holds(stamp)) this.#host.navigate(titleHash('movie', film.tmdbId)); });
         row.appendChild(one.button);
       }
+      /* collection-preview-keys:start */
       link.addEventListener('keydown', (event) => {
         if ((event as KeyboardEvent).keyCode === 40 && buttons[0]) { event.preventDefault(); event.stopPropagation(); (buttons[0] as HTMLElement).focus(); }
       });
+      /* collection-preview-keys:end */
       near(0);
-      if (open.drawn && !open.drawn.confirmed) open.context.focus(open.body.querySelector<HTMLElement>('.jellypass-tv-title-play, .jellypass-tv-title-get') ?? link);
-    }).catch(() => { if (section.parentNode) section.parentNode.removeChild(section); });
+      if (open.drawn && !open.drawn.confirmed) open.context.focus(null, false);
+    }).catch(() => { if (section.parentNode) section.parentNode.removeChild(section); if (this.#open === open && open.load === load) open.context.focus(null, false); });
   }
 
   /** On a page just drawn again, the element standing for `before` (the same season, or the same button), if any. */
