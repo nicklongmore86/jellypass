@@ -9,9 +9,9 @@ import { renderRouter } from 'expo-router/testing-library';
 
 import type { FetchLike } from '../src/api/client';
 import { BUDGET } from './support/app-api';
-import { budgetRoute } from './support/home';
-import { ORIGIN, TOKEN, keepSession, settle, store } from './support/household';
-import { titleGateway } from './support/title';
+import { API, budgetRoute } from './support/home';
+import { ORIGIN, TOKEN, answer, fixture, keepSession, settle, store, type Call } from './support/household';
+import { movieAnswer, titleGateway } from './support/title';
 
 jest.setTimeout(30_000);
 
@@ -63,5 +63,49 @@ describe.each(SCREENS)('the %s page', (name, path) => {
     });
     await settle();
     expect(gateway.routes().length - before).toBe(budget.calls - 1);
+  });
+});
+
+// A film page on a server with collections (apiVersion 6): the movie page's 3 calls, plus one GET /collection/{id},
+// after the page is drawn, for a film in a collection (its section's posters), and none for a film in no collection.
+// The numbers are pinned here, not read from docs/app-api/fetch-budget.json: the budget file's conditional allowance
+// for that call (+1 on a film page with a collection, when the server has collections, for web, TV and native) lands
+// in the web/TV collection-preview PR, which owns that file. The doc-read test above (apiVersion 1, no collection) is
+// unchanged either way.
+describe('a film page on a server with collections', () => {
+  const COLLECTION = 900100;
+  beforeEach(() => {
+    gateway = titleGateway({
+      movies: { 7: { ...movieAnswer(7), collection: { id: COLLECTION, name: 'Synthetic Collection' } } as never, 8: { ...movieAnswer(8), collection: null } as never },
+      override: (call: Call) => {
+        if (call.route === `GET ${API}/me`) return answer(200, { ...fixture('me'), apiVersion: 6 });
+        if (call.route === `GET ${API}/collection/${COLLECTION}`) {
+          return answer(200, { id: COLLECTION, name: 'Synthetic Collection', overview: '', posterUrl: null, backdropUrl: null, films: [{ ...movieAnswer(1), hidden: false, releaseDate: '2020-01-01', released: true }] });
+        }
+        return undefined;
+      },
+    });
+    mockFetch = gateway.fetch;
+  });
+
+  const CASES = [
+    ['in no collection', '/home/movie/8', 3, ['GET /me', 'GET /movie/{tmdbId}', 'GET /requests']],
+    ['in a collection', '/home/movie/7', 4, ['GET /collection/{id}', 'GET /me', 'GET /movie/{tmdbId}', 'GET /requests']],
+  ] as const;
+
+  it.each(CASES)('makes %s exactly its calls (%s: %i), each once, and nothing more while it is open', async (_name, path, total, expected) => {
+    await renderRouter({ appDir: 'src/app', overrides: {} }, { initialUrl: '/' });
+    await settle();
+    const before = gateway.routes().length;
+    await act(async () => router.push(path));
+    await settle();
+    const made = ['GET /me', ...gateway.routes().slice(before).map((route) => templated(route).replace(/\/collection\/\d+$/, '/collection/{id}'))];
+    expect(sorted(made)).toEqual(sorted(expected));
+    expect(made).toHaveLength(total);
+    await act(async () => {
+      jest.advanceTimersByTime(10 * 60_000);
+    });
+    await settle();
+    expect(gateway.routes().length - before).toBe(total - 1);
   });
 });
