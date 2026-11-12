@@ -1,4 +1,5 @@
-import { failedSeasons, getThis, setHidden, title as readTitle, type Failure, type HouseholdState, type MediaType, type SeasonSummary, type Title } from './api.js';
+import { collection as readCollection, requests as readRequests, failedSeasons, getThis, setHidden, title as readTitle, type Failure, type HouseholdState, type MediaType, type SeasonSummary, type Title } from './api.js';
+import { drawCard, markCard, setNear, skeletonCard, type Unit } from './discover-card.js';
 import type { Asked } from './asked.js';
 import { COLLECTION_TEXT, collectionHash } from './collection-model.js';
 import { HIDDEN_TEXT, hiddenFailureText } from './hidden-model.js';
@@ -19,7 +20,7 @@ import { SessionWatch } from './session-watch.js';
  * each failure, never retried by itself. Everything shown is a fixed string or a DTO field set with `textContent`.
  *
  * It is a route, so Jellyfin web's header, its Back button, its history and its focus manager are what apply: this
- * module handles no key. Back returns to where the member came from (the card it was opened from is given focus again by its page).
+ * module handles only arrows within the collection preview. Back returns to where the member came from (the card it was opened from is given focus again by its page).
  */
 
 /** Every fixed string the page shows; the "Get this" words are the household app's (app/src/render.ts, GET_THIS_TEXT). */
@@ -121,6 +122,9 @@ export interface Chosen {
 }
 
 interface Open {
+  preview?: { load: number; answer: ReturnType<typeof readCollection> };
+  failedMovies?: number[];
+  collectionDeferred?: boolean;
   chosen: Chosen;
   userId: string;
   context: PageContext;
@@ -315,9 +319,13 @@ export class TitlePage {
     const stamp = this.#watch.stamp(session);
     // A hide or unhide accepted after this read began is newer than its answer; one accepted before it is the answer's to confirm.
     const mark = this.#asked.hiddenMark();
+    let movieRequests: Awaited<ReturnType<typeof readRequests>> | undefined;
     void Promise.all([
       readTitle(fetcher, this.#origin, session.token, mediaType, tmdbId),
-      failedSeasons(fetcher, this.#origin, session.token, mediaType, tmdbId),
+      mediaType === 'movie' ? readRequests(fetcher, this.#origin, session.token).then((listed) => {
+        movieRequests = listed;
+        return listed.ok ? { ok: true as const, failed: listed.entries.some((entry) => entry.mediaType === 'movie' && entry.tmdbId === tmdbId && entry.status === 'failed') ? [0] : [] } : listed;
+      }) : failedSeasons(fetcher, this.#origin, session.token, mediaType, tmdbId),
     ]).then(([answer, failed]) => {
       if (open.load !== load || this.#open !== open) return;
       const now = this.#watch.holds(stamp);
@@ -334,6 +342,7 @@ export class TitlePage {
         else this.#error(open, refused ? 'unauthorized' : kindOf(answer as Failure), true);
         return;
       }
+      open.failedMovies = movieRequests && movieRequests.ok ? movieRequests.entries.filter((entry) => entry.mediaType === 'movie' && entry.status === 'failed').map((entry) => entry.tmdbId) : [];
       this.#asked.sync(now.userId);
       // The server's word on the flag settles the member's own earlier change on this TV (see Asked.hiddenNow).
       if (answer.title.hidden !== undefined) this.#asked.hiddenNow(answer.title.mediaType, answer.title.tmdbId, answer.title.hidden, mark);
@@ -409,7 +418,7 @@ export class TitlePage {
     if (this.#open !== open) return;
     if (open.first) {
       open.first = false;
-      open.context.focus(element);
+      open.context.focus(element, open.collectionDeferred);
     } else if (element) element.focus();
   }
 
@@ -499,6 +508,7 @@ export class TitlePage {
       });
       actions.appendChild(requests);
     }
+    let collectionLink: HTMLElement | undefined;
     // A film's collection, on a server that has collection pages (it sends the field): opens the collection's page.
     if (found.mediaType === 'movie' && found.collection) {
       const collectionId = found.collection.id;
@@ -507,7 +517,7 @@ export class TitlePage {
         if (this.#open !== open) return;
         this.#host.navigate(collectionHash(collectionId));
       });
-      actions.appendChild(link);
+      collectionLink = link;
     }
     // "Not interested" / Unhide, on a server that has hiding (it sends the flag); not while a refresh failed, as nothing here sends then.
     const hide = !refreshFailed && found.hidden !== undefined ? this.#hideControl(open, found) : undefined;
@@ -532,6 +542,35 @@ export class TitlePage {
     }
     main.appendChild(text);
     parts.push(main);
+    if (collectionLink) {
+      const collectionBox = this.#el('div', 'jellypass-tv-title-collection-link padded-left padded-right');
+      collectionBox.appendChild(collectionLink);
+      parts.push(collectionBox);
+      const link = collectionLink;
+      let from: HTMLElement | undefined;
+      /* collection-preview-keys:start */
+      actions.addEventListener('keydown', (event) => {
+        if ((event as KeyboardEvent).keyCode !== 40) return;
+        const enabled = actions.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+        if (event.target !== enabled[enabled.length - 1]) return;
+        from = event.target as HTMLElement;
+        event.preventDefault();
+        event.stopPropagation();
+        link.focus();
+      });
+      /* collection-preview-keys:end */
+      /* collection-preview-keys:start */
+      link.addEventListener('keydown', (event) => {
+        if ((event as KeyboardEvent).keyCode !== 38) return;
+        const enabled = Array.prototype.slice.call(actions.querySelectorAll('button')) as HTMLButtonElement[];
+        const target = from && !(from as HTMLButtonElement).disabled ? from : enabled.filter((button) => !button.disabled).pop();
+        if (!target) return;
+        event.preventDefault();
+        event.stopPropagation();
+        target.focus();
+      });
+      /* collection-preview-keys:end */
+    }
 
     // The seasons: each a card with its status; the ones the household can ask for are toggles (aria-pressed).
     const toggles: HTMLButtonElement[] = [];
@@ -580,12 +619,89 @@ export class TitlePage {
     }
 
     if (get) this.#wireGetThis(open, found, { get, hint, message, toggles, selectAll, getAll, picking });
+    open.collectionDeferred = collectionLink !== undefined;
     this.#fill(open, parts);
+    if (collectionLink) this.#preview(open, found, collectionLink);
     open.drawn = { found, failed, confirmed, refreshFailed, shown: [state].concat(seasons.map((season) => season.state)).join(' ') };
     const again = kept && kept.focus ? this.#same(open, kept.focus) : null;
     if (again) this.#focus(open, again);
     else if (confirmed) this.#focus(open, message);
     else this.#place(open, play ?? (get && !get.disabled ? get : toggles[0]) ?? null);
+  }
+
+  /** A bounded, optional read after the title has drawn. Never moves focus on arrival. */
+  #preview(open: Open, found: Title, link: HTMLElement): void {
+    if (!found.collection) return;
+    const session = this.#watch.current();
+    if (!session || session.userId !== open.userId) return;
+    const stamp = this.#watch.stamp(session);
+    const load = open.load;
+    const section = this.#el('section', 'jellypass-tv-collection-preview padded-left padded-right');
+    const row = this.#el('div', 'itemsContainer focuscontainer-x jellypass-tv-collection-row');
+    for (let i = 0; i < 4; i += 1) row.appendChild(skeletonCard(this.#document, 'overflowPortrait'));
+    section.appendChild(row);
+    open.body.appendChild(section);
+    if (!open.preview || open.preview.load !== load) open.preview = { load, answer: readCollection(this.#scope.fetch, this.#origin, session.token, found.collection.id) };
+    void open.preview.answer.then((answer) => {
+      if (this.#open !== open || open.load !== load || !section.parentNode) return;
+      if (!this.#watch.holds(stamp)) { this.#stale(open, (current) => this.#load(open, current, false)); return; }
+      if (!answer.ok && answer.status === 401) {
+        this.#forget();
+        this.#error(open, 'unauthorized', true);
+        return;
+      }
+      if (!answer.ok) { section.parentNode.removeChild(section); open.context.focus(null, false); return; }
+      const heading = this.#el('h2', 'sectionTitle', COLLECTION_TEXT.partOf(answer.collection.name));
+      link.textContent = 'See all';
+      link.setAttribute('aria-label', `${heading.textContent}, see all`);
+      section.insertBefore(heading, row);
+      const fallback = link.parentNode;
+      const hadFocus = open.lastFocus === link;
+      section.insertBefore(link, row);
+      if (fallback && fallback.parentNode) fallback.parentNode.removeChild(fallback);
+      if (hadFocus) link.focus();
+      while (row.firstChild) row.removeChild(row.firstChild);
+      const films = answer.collection.films.filter((film) => film.tmdbId !== found.tmdbId).slice(0, 10);
+      const units: Unit[] = [];
+      const buttons: HTMLElement[] = [];
+      const near = (index: number): void => {
+        for (let i = 0; i < units.length; i += 1) setNear(units[i] as Unit, Math.abs(i - index) <= 2);
+      };
+      for (const film of films) {
+        const unit: Unit = { element: row, images: [], near: false };
+        const card = { ...film, posterUrl: film.posterUrl ? film.posterUrl.replace('/w342/', '/w185/') : null, overview: '', backdropUrl: null, rating: null };
+        const one = drawCard(this.#document, unit, { card, shape: 'overflowPortrait', tv: this.#document.documentElement.classList.contains('layout-tv'), key: `collection-film-${film.tmdbId}` });
+        const state = this.#asked.state('movie', film.tmdbId, film.state) as HouseholdState;
+        markCard(one, state);
+        if (state === 'get_this' && (open.failedMovies ?? []).indexOf(film.tmdbId) >= 0) {
+          one.badge.className = 'jellypass-tv-discover-badge jellypass-tv-title-status-failed';
+          one.badge.textContent = TITLE_TEXT.failed;
+          one.button.setAttribute('aria-label', `${film.title}, ${TITLE_TEXT.failed}`);
+        }
+        if (!film.released) one.button.appendChild(this.#el('span', 'jellypass-tv-title-film-note', film.releaseDate ? COLLECTION_TEXT.comingOn(film.releaseDate) : COLLECTION_TEXT.notReleased));
+        if (film.hidden !== undefined && this.#asked.hiddenNow('movie', film.tmdbId, film.hidden)) one.button.appendChild(this.#el('span', 'jellypass-tv-title-film-note', COLLECTION_TEXT.hidden));
+        const index = buttons.length;
+        units.push(unit);
+        buttons.push(one.button);
+        one.button.addEventListener('focusin', () => near(index));
+        /* collection-preview-keys:start */
+        one.button.addEventListener('keydown', (event) => {
+          const key = (event as KeyboardEvent).keyCode;
+          const target = key === 37 ? buttons[Math.max(0, index - 1)] : key === 39 ? buttons[Math.min(buttons.length - 1, index + 1)] : key === 38 ? link : undefined;
+          if (target) { event.preventDefault(); event.stopPropagation(); target.focus(); }
+        });
+        /* collection-preview-keys:end */
+        one.button.addEventListener('click', () => { if (this.#open === open && this.#watch.holds(stamp)) this.#host.navigate(titleHash('movie', film.tmdbId)); });
+        row.appendChild(one.button);
+      }
+      /* collection-preview-keys:start */
+      link.addEventListener('keydown', (event) => {
+        if ((event as KeyboardEvent).keyCode === 40 && buttons[0]) { event.preventDefault(); event.stopPropagation(); (buttons[0] as HTMLElement).focus(); }
+      });
+      /* collection-preview-keys:end */
+      near(0);
+      if (open.drawn && !open.drawn.confirmed) open.context.focus(null, false);
+    }).catch(() => { if (section.parentNode) section.parentNode.removeChild(section); if (this.#open === open && open.load === load) open.context.focus(null, false); });
   }
 
   /** On a page just drawn again, the element standing for `before` (the same season, or the same button), if any. */

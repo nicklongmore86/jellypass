@@ -6,6 +6,7 @@ import {
   cardItem,
   addCardControls,
   collectionView,
+  collectionPreview,
   type CollectionHandler,
   type CollectionOutcome,
   el,
@@ -1319,7 +1320,7 @@ async function title(route: Route, signal: AbortSignal, current: () => boolean):
   const mediaType: MediaType = route.name === 'tv' ? 'tv' : 'movie';
   // My requests rejects only for a 401, which wins over a detail failure in either settle order.
   const load = async () => {
-    const [found, listed] = await Promise.allSettled([mediaType === 'tv' ? api.tv(id, signal) : api.movie(id, signal), failedSeasons(mediaType, id, signal)]);
+    const [found, listed] = await Promise.allSettled([mediaType === 'tv' ? api.tv(id, signal) : api.movie(id, signal), mediaType === 'movie' ? failedMovies(signal) : failedSeasons(mediaType, id, signal)]);
     if (listed.status === 'rejected') throw listed.reason;
     if (found.status === 'rejected') throw found.reason;
     return [found.value, listed.value] as const;
@@ -1329,9 +1330,30 @@ async function title(route: Route, signal: AbortSignal, current: () => boolean):
   const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
     const hiding = supportsHiding() ? { hidden: answer.hidden === true, run: (hidden: boolean) => changeHidden(mediaType, id, hidden) } : undefined;
     show(titleDetail(doc, answer, origin, {
-      onGet, asked, failed, confirmed, onReload: () => void render(), collections: supportsCollections(), ...(hiding ? { hiding } : {}),
+      onGet, asked, failed: mediaType === 'movie' ? new Set(failed.has(id) ? [0] : []) : failed, confirmed, onReload: () => void render(), collections: supportsCollections(), ...(hiding ? { hiding } : {}),
     }));
     if (confirmed) main.querySelector<HTMLElement>('.get-message')?.focus({ preventScroll: true });
+    void preview();
+  };
+  let previewLoad = 0;
+  const preview = async () => {
+    const link = main.querySelector<HTMLElement>('.collection-link');
+    if (!link || mediaType !== 'movie' || !('collection' in answer) || !answer.collection || !supportsCollections()) return;
+    const load = ++previewLoad;
+    const placeholder = skeletonRow(doc);
+    link.after(placeholder);
+    try {
+      const found = await api.collection(answer.collection.id, signal);
+      if (!current() || load !== previewLoad) return;
+      const section = collectionPreview(doc, found, id, failed);
+      const hadFocus = doc.activeElement !== null && link.contains(doc.activeElement);
+      link.replaceWith(section);
+      if (hadFocus) section.querySelector<HTMLElement>('a')?.focus();
+    } catch (error) {
+      if (current() && load === previewLoad && kindOf(error) === 'unauthorized') failure('unauthorized', () => void render());
+    } finally {
+      placeholder.remove();
+    }
   };
   const onGet = getThisFor(mediaType, id, signal, current, async (asked) => {
     [answer, failed] = await load();

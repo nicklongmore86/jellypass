@@ -156,6 +156,23 @@ function unguardedAbortControllers(source) {
   return found;
 }
 
+function assertPreviewKeyBoundary(source) {
+  const banned = /\bpreventDefault\b|\bstopPropagation\b|\bstopImmediatePropagation\b|\bkeyCode\b|\.key\b/;
+  const directory = path.join(import.meta.dirname, '..', 'tv', 'src');
+  for (const file of readdirSync(directory).filter((name) => name.endsWith('.ts'))) {
+    let text = readFileSync(path.join(directory, file), 'utf8');
+    if (file === 'title.ts') {
+      const blocks = [...text.matchAll(/\/\* collection-preview-keys:start \*\/([\s\S]*?)\/\* collection-preview-keys:end \*\//g)];
+      assert.equal(blocks.length, 4, 'only four local collection key handlers');
+      for (const [, block] of blocks) assert.equal((block.match(/addEventListener\('keydown'/g) ?? []).length, 1);
+      text = text.replace(/\/\* collection-preview-keys:start \*\/[\s\S]*?\/\* collection-preview-keys:end \*\//g, '');
+    }
+    lacks(text, banned, `${file}: key handling outside collection handlers`);
+  }
+  for (const name of ['preventDefault', 'stopPropagation', 'keyCode']) assert.equal((source.match(new RegExp(`\\b${name}\\b`, 'g')) ?? []).length, 4, name);
+  lacks(source, /\bstopImmediatePropagation\b|\.key\b/);
+}
+
 describe('TV add-on: the build', () => {
   it('is one script and one stylesheet, each named for a hash of its content, and the script names the stylesheet', () => {
     assert.equal(FILES.length, 2);
@@ -553,7 +570,7 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
       for (const [type, listener] of windowListeners) if (type === 'hashchange') listener(new Event('hashchange'));
     },
     /** As `METHOD /path` under /jellypass/app/v1, a title's ID as `{tmdbId}`, sorted. */
-    calls: (from = 0) => requests.slice(from).map((request) => `${request.init.method ?? 'GET'} ${new URL(request.url).pathname.replace('/jellypass/app/v1', '').replace(/^\/(movie|tv)\/[0-9]+/, '/$1/{tmdbId}')}`).sort(),
+    calls: (from = 0) => requests.slice(from).map((request) => `${request.init.method ?? 'GET'} ${new URL(request.url).pathname.replace('/jellypass/app/v1', '').replace(/^\/(movie|tv)\/[0-9]+/, '/$1/{tmdbId}').replace(/^\/collection\/[0-9]+$/, '/collection/{id}')}`).sort(),
     /** Every call as made, for comparing two runs: address, method, body and headers. */
     trace: (from = 0) => requests.slice(from).map(({ url, init }) => JSON.stringify({ url, method: init.method ?? 'GET', body: init.body ?? null, credentials: init.credentials ?? null, headers: { ...init.headers } })),
     posts: () => requests.filter((request) => request.init.method === 'POST'),
@@ -1215,7 +1232,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
   const text = (page, selector) => page.view()?.querySelector(selector)?.textContent ?? null;
   // (Not interested is the title page's one more button on a server with hiding, and "Part of …" on a film in a collection on one
   // with collections; the hiding and collection tests are their own.)
-  const buttons = (page) => [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => `${button.textContent}${button.disabled ? ' (disabled)' : ''}`);
+  const buttons = (page) => [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection):not(.jellypass-tv-card)')].map((button) => `${button.textContent}${button.disabled ? ' (disabled)' : ''}`);
   /** The Discover page open, under Jellyfin web's header, and every call answered: its cards open the title pages here. */
   const atHome = atDiscover;
   /** Chooses the Discover page's card for `tmdbId`, Jellyfin web's router follows the address it opened, and the page is read and drawn. */
@@ -1231,8 +1248,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.ok(page.view(), 'the page is open');
   };
   /** Seerr held at the request for the test's life, so the household's record is never written: every read says get_this. */
-  const startHeld = async (t) => {
-    const app = await startApp(t, webWorld(), tvOn());
+  const startHeld = async (t, options = {}) => {
+    const app = await startApp(t, webWorld(), { ...tvOn(), ...options });
     let release;
     app.seerr.state.holdRequests = new Promise((resolve) => { release = resolve; });
     t.after(async () => { release(); await app.background.settled(); });
@@ -1304,7 +1321,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     const rowClasses = classes(rowElements);
     const ours = (names) => names.filter((name) => name.startsWith('jellypass-tv'));
     const isRow = (name) => /^jellypass-tv-(?:row|card)(?:-|$)/.test(name);
-    const isView = (name) => name.startsWith('jellypass-tv-title-');
+    const isView = (name) => name.startsWith('jellypass-tv-title-') || name.startsWith('jellypass-tv-collection-');
     // The My requests page's own (tv/src/requests.ts): it is neither the title page nor the row.
     const isRequests = (name) => /^jellypass-tv-(?:requests?|hidden|views?)(?:-|$)/.test(name);
     // The service and studio pages (tv/src/discover-source.ts) are the Discover page's family: they share its classes.
@@ -1323,7 +1340,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     for (const tmdbId of [T_MOVIE, T_TV]) {
       await choose(page, tmdbId);
       const view = page.view();
-      const viewElements = [view, ...view.querySelectorAll('*')];
+      const viewElements = [view, ...view.querySelectorAll('*')].filter((element) => !element.closest('.jellypass-tv-collection-preview'));
       const viewClasses = classes(viewElements);
       assert.ok(viewClasses.includes('jellypass-tv-title-page') && viewClasses.includes('jellypass-tv-title-status'), String(tmdbId));
       if (tmdbId === T_TV) assert.ok(viewClasses.includes('jellypass-tv-title-season-pick'));
@@ -1356,8 +1373,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     await choose(page, T_MOVIE);
     assert.equal(page.location.hash, `#/jellypass/title/movie/${T_MOVIE}`);
     assert.deepEqual(page.trail, ['#/home.html', '#/jellypass/discover'], 'a history entry, so Jellyfin\'s Back returns to the Discover page');
-    assert.deepEqual(page.calls(before), BUDGET.screens['tv-movie'].atOnce);
-    assert.equal(page.requests.length - before, BUDGET.screens['tv-movie'].calls);
+    assert.deepEqual(page.calls(before), [...BUDGET.screens['tv-movie'].atOnce, ...BUDGET.conditionalAllowances.collectionPreview.afterRender].sort());
+    assert.equal(page.requests.length - before, (BUDGET.screens['tv-movie'].calls + BUDGET.conditionalAllowances.collectionPreview.calls));
     for (const request of page.requests.slice(before)) {
       assert.ok(request.url.startsWith('https://jelly-grove.example.test/jellypass/app/v1/'));
       assert.equal(request.init.credentials, 'omit');
@@ -1373,7 +1390,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(text(page, '.jellypass-tv-title-overview'), movie.overview);
     assert.deepEqual(buttons(page), ['Get this']);
     assert.ok(page.focused() === view.querySelector('.jellypass-tv-title-get'), 'focus');
-    for (const image of view.querySelectorAll('img')) assert.match(image.getAttribute('src'), /^https:\/\/image\.tmdb\.org\/t\/p\/w(?:342|780)\//);
+    for (const image of view.querySelectorAll('img[src]')) assert.match(image.getAttribute('src'), /^https:\/\/image\.tmdb\.org\/t\/p\/w(?:185|342|780)\//);
     assert.equal(view.querySelector('.jellypass-tv-title-poster img').getAttribute('src'), movie.posterUrl);
     // Laid out as Jellyfin web's item details page is, in its own classes.
     assert.ok(view.querySelector('.nameContainer > h1.itemName'));
@@ -1452,14 +1469,14 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     lacks(readFileSync(path.join(DIST_TV, SCRIPT), 'utf8'), /enableBackdrops|withBackdrop|backdropContainer|backgroundContainer/);
   });
 
-  it('returns to the Discover page on Back with the title\'s card focused, and handles no key of its own: Back is Jellyfin web\'s', async (t) => {
+  it('returns to Discover with the originating card focused and leaves every Back key to Jellyfin', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await atHome(t, app);
     for (const tmdbId of [T_MOVIE, T_TV, T_MOVIE]) {
       await choose(page, tmdbId);
       assert.ok(hosting(page));
-      // Every remote's Back and the d-pad are left to Jellyfin web: nothing is prevented or stopped.
-      for (const keyCode of [461, 10009, 27, 8, 37, 38, 39, 40, 13]) assert.equal(page.key(keyCode).defaultPrevented, false, `${keyCode}`);
+      // Back is always Jellyfin's. The collection preview tests cover its local arrow navigation.
+      for (const keyCode of [461, 10009, 27, 8, 13]) assert.equal(page.key(keyCode).defaultPrevented, false, `${keyCode}`);
       assert.ok(page.view(), 'no key closes the page');
       page.back();
       await page.settled();
@@ -1603,7 +1620,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(post.init.body, '{}');
     assert.equal(post.init.credentials, 'omit');
     assert.deepEqual({ ...post.init.headers }, { Accept: 'application/json', Authorization: `MediaBrowser Token="${TOKENS[ALICE]}"`, 'Content-Type': 'application/json' });
-    assert.deepEqual(page.calls(before), BUDGET.screens['tv-movie'].getThis);
+    assert.deepEqual(page.calls(before), [...BUDGET.screens['tv-movie'].getThis, ...BUDGET.conditionalAllowances.collectionPreview.afterRender].sort());
     assert.equal(text(page, '.jellypass-tv-title-message'), CONFIRMATION);
     assert.ok(page.focused() === page.view().querySelector('.jellypass-tv-title-message'), 'focus');
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Requested');
@@ -1785,7 +1802,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
   }
 
   it('lets Requested run out on a title page and the Discover page left alone after two minutes, with no call, and clears its timer on sign-out', async (t) => {
-    const app = await startHeld(t);
+    let serverNow = Date.now();
+    const app = await startHeld(t, { now: () => serverNow });
     const page = await atHome(t, app);
     await choose(page, T_MOVIE);
     page.click(page.view().querySelector('.jellypass-tv-title-get'));
@@ -1811,6 +1829,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(onDiscover(page, T_MOVIE), 'Available to get', 'the row');
     assert.ok(page.card(T_MOVIE).getAttribute('aria-label').endsWith(', Available to get'));
 
+    serverNow += 10_000; // A new household read-budget window between independent scenarios.
     // A series' seasons, the page left: the Discover page alone runs out, and seasons ticked on a page left open stay ticked.
     await choose(page, T_TV);
     const toggles = () => [...page.view().querySelectorAll('.jellypass-tv-title-season-pick')];
@@ -1835,6 +1854,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     page.advance(120_000);
     assert.equal(onDiscover(page, T_MOVIE), 'Available to get', 'the Discover page, with no title page open');
 
+    serverNow += 10_000;
     // Signing out (or another member signing in) forgets the overlay, and its timer with it.
     await choose(page, T_MOVIE);
     page.click(page.view().querySelector('.jellypass-tv-title-get'));
@@ -1845,6 +1865,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     page.home();
     await page.settled();
     assert.equal(page.timers(), 0, 'another member');
+    serverNow += 10_000;
     page.session.user = ALICE;
     page.session.token = TOKENS[ALICE];
     await home(page);
@@ -1986,7 +2007,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     const before = page.requests.length;
     page.click(page.view().querySelector('.jellypass-tv-title-retry'));
     await page.settled();
-    assert.deepEqual(page.calls(before), BUDGET.screens['tv-movie'].atOnce, 'the retry only reads');
+    assert.deepEqual(page.calls(before), [...BUDGET.screens['tv-movie'].atOnce, ...BUDGET.conditionalAllowances.collectionPreview.afterRender].sort(), 'the retry only reads');
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Requested');
     assert.equal(page.posts().length, 1);
     await app.background.settled();
@@ -2049,7 +2070,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     failing = 0;
     page.click(page.view().querySelector('.jellypass-tv-title-retry'));
     await page.settled();
-    assert.equal(page.requests.length - before, BUDGET.screens['tv-movie'].calls);
+    assert.equal(page.requests.length - before, (BUDGET.screens['tv-movie'].calls + BUDGET.conditionalAllowances.collectionPreview.calls));
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Available to get');
     // Asked for, then Jellyfin web's token refused: the page says so, and Requested is forgotten on the Discover page.
     page.click(page.view().querySelector('.jellypass-tv-title-get'));
@@ -2248,7 +2269,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.deepEqual([page.view() === null, page.requests.length], [true, before]);
   });
 
-  it('has no key listener of its own: every listener on the document is a capturing, passive one, and the bundle neither prevents nor stops an event', async (t) => {
+  it('keeps document listeners passive and leaves Back to Jellyfin while collection arrows stay local', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await atHome(t, app);
     assert.ok(page.listeners.length >= 6, page.listeners.join('; '));
@@ -2257,8 +2278,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     // The host's document listeners, the search field's input one included, are explicitly capturing and passive: they only observe.
     for (const entry of page.listeners) assert.ok(entry.endsWith(' {"capture":true,"passive":true}'), entry);
     const source = readFileSync(path.join(DIST_TV, SCRIPT), 'utf8');
-    lacks(source, /\bpreventDefault\b|\bstopPropagation\b|\bstopImmediatePropagation\b/);
-    lacks(source, /\bkeyCode\b|\.key\b|isBackKey|["']Escape["']|["']Backspace["']/);
+    assertPreviewKeyBoundary(source);
+    lacks(source, /isBackKey|["']Escape["']|["']Backspace["']/);
     // Back (every remote's) on Home and on a title page is left to Jellyfin web.
     await choose(page, T_MOVIE);
     for (const keyCode of [461, 10009, 27, 8]) assert.equal(page.key(keyCode).defaultPrevented, false, `${keyCode}`);
@@ -2447,7 +2468,7 @@ describe('TV add-on: the page host', { timeout: 60_000 }, () => {
     assert.equal(headerTitle(page), 'JellyPass');
   });
 
-  it('handles no key: Back is Jellyfin web\'s, and nothing is prevented or stopped', async (t) => {
+  it('leaves keys outside the collection row to Jellyfin web', async (t) => {
     const page = await open(t);
     page.goTo('#/jellypass/about');
     showFallback(page.document);
@@ -2461,7 +2482,7 @@ describe('TV add-on: the page host', { timeout: 60_000 }, () => {
     // No key listener decides anything: each is capturing and passive (it can only watch), and the bundle never prevents or stops an event.
     for (const entry of page.listeners.filter((listener) => /^(?:keydown|keyup|keypress) /.test(listener))) assert.equal(entry, 'keydown {"capture":true,"passive":true}');
     const source = readFileSync(path.join(DIST_TV, SCRIPT), 'utf8');
-    lacks(source, /\bpreventDefault\b|\bstopPropagation\b|\bstopImmediatePropagation\b/);
+    assertPreviewKeyBoundary(source);
   });
 
   it('does nothing on Home\'s own address', async (t) => {
@@ -2536,6 +2557,7 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
       focused: () => LIVE_FOCUS(document),
       /** What the \`late\` page was given and drew (set when it renders). */
       get ctx() { return scope.__ctx; },
+      get deferredFocus() { return scope.__host.active?.preserveMissingFocus; },
       get late() { return scope.__late; },
       /** Jellyfin web showing its page: `pageshow` dispatched on it, then its auto-focus (the next effect, in the same task). */
       shown(pageEl, stealFocus) {
@@ -2591,6 +2613,27 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
     // Another title has its own memory.
     box.sync('#/jellypass/item/movie/2');
     assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'one');
+  });
+
+  it('clears deferred focus preservation when a lazy preview fails', async () => {
+    const box = await sandbox();
+    const first = showFallback(box.document);
+    box.sync('#/jellypass/late/1');
+    box.input();
+    box.late.a.focus();
+    first.remove();
+    box.sync('#/details?id=x');
+    showFallback(box.document);
+    box.sync('#/jellypass/late/1');
+    box.late.a.remove();
+    box.ctx.focus(box.late.b, true);
+    assert.equal(box.deferredFocus, true);
+    box.ctx.focus(null, false);
+    assert.equal(box.deferredFocus, false, 'a failed preview clears deferred focus');
+    // The failed row no longer owns the saved key. A later fallback can replace it normally.
+    box.ctx.focus(box.late.b);
+    box.ctx.focus(null);
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'b');
   });
 
   it('lets a page set the header\'s title once it knows it, only while it is the page shown', async () => {
@@ -2902,7 +2945,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       if (state.cancelAnswer) return state.cancelAnswer;
       return { status: state.cancel, body: '{"error":"upstream said something private"}' };
     }
-    if (state.titles && /^\/jellypass\/app\/v1\/(?:movie|tv)\/[0-9]+$/.test(pathname)) return state.titles(pathname);
+    if (state.titles && /^\/jellypass\/app\/v1\/(?:movie|tv|collection)\/[0-9]+$/.test(pathname)) return state.titles(pathname);
     return state.other?.(pathname, init);
   };
   const open = async (t, app, state, options) => {
@@ -3400,7 +3443,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       page.route(`#/jellypass/title/movie/${T_MOVIE}`);
       await page.settled();
       assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Available to get');
-      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => button.textContent), ['Get this']);
+      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection):not(.jellypass-tv-card)')].map((button) => button.textContent), ['Get this']);
       // After two minutes the server's word stands again.
       page.advance(120_000);
       assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested');
@@ -3409,7 +3452,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
     it('drops a cancel answered after a sign-out and a new sign-in as the same member: the new session shows the server\'s Requested', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
       const asRequested = async (pathname) => json({ ...(await app.get(pathname)).json(), state: 'requested' });
-      const state = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true })], titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` ? asRequested(pathname) : undefined) };
+      const state = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true })], titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` || pathname.startsWith('/jellypass/app/v1/collection/') ? asRequested(pathname) : undefined) };
       const page = await open(t, app, state);
       await goToRequests(page);
       let release;
@@ -3440,7 +3483,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
     it('drops a cancel answered after a new token without a sign-out call in between', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
       const asRequested = async (pathname) => json({ ...(await app.get(pathname)).json(), state: 'requested' });
-      const state = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true })], titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` ? asRequested(pathname) : undefined) };
+      const state = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true })], titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` || pathname.startsWith('/jellypass/app/v1/collection/') ? asRequested(pathname) : undefined) };
       const page = await open(t, app, state);
       await goToRequests(page);
       let release;
@@ -3710,7 +3753,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       };
       for (const [state, linked] of [['requested', true], ['get_this', false], ['in_library', false], ['unavailable', false]]) {
         const page = await of(state, T_MOVIE);
-        const texts = [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => button.textContent);
+        const texts = [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection):not(.jellypass-tv-card)')].map((button) => button.textContent);
         assert.equal(texts.includes('My requests'), linked, state);
         if (state === 'requested') {
           assert.equal(part(page.view(), '.jellypass-tv-title-note'), 'Follow it in My requests.');
@@ -3736,10 +3779,10 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       await page.settled();
       page.route(`#/jellypass/title/movie/${T_MOVIE}`);
       await page.settled();
-      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => button.textContent), ['Get this']);
+      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection):not(.jellypass-tv-card)')].map((button) => button.textContent), ['Get this']);
       page.click(page.view().querySelector('.jellypass-tv-title-get'));
       await page.settled();
-      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection)')].map((button) => button.textContent), ['My requests']);
+      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide):not(.jellypass-tv-title-collection):not(.jellypass-tv-card)')].map((button) => button.textContent), ['My requests']);
     });
   });
 
@@ -4172,7 +4215,7 @@ describe('TV add-on: the Discover page', { timeout: 480_000 }, () => {
     const touchesCard = /(?:\.card\b|Card\b|\.cardPadder|\.cardScalable|\.cardBox|\.jellypass-tv-discover-skeleton-card|\.jellypass-tv-card\b(?!-))/;
     const offenders = rules.filter((rule) => touchesCard.test(rule.selector) && sizing.test(rule.body)).map((rule) => rule.selector);
     // The loading card (jellypass-tv-discover-skeleton-card) and the poster image's fill are the only card rules, and neither sets a size.
-    assert.deepEqual(offenders, [], 'a rule sizes a card');
+    assert.deepEqual(offenders, ['.jellypass-tv-collection-row > .card'], 'only the bounded low-memory collection preview sizes its cards');
     const margin = rules.find((rule) => rule.selector === '.jellypass-tv-row-list > .card > .cardBox');
     assert.ok(margin && /margin-left:\s*0/.test(margin.body) && /margin-right:\s*1\.2em/.test(margin.body), 'the row keeps Jellyfin\'s margin for a list\'s cards');
     const grid = rules.find((rule) => rule.selector === '.jellypass-tv-source-grid > .card > .cardBox');
@@ -7712,12 +7755,142 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
   });
 
   describe('the link from a film', () => {
+    it('loads a bounded poster preview after the overview, with remote navigation and small lazy images', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const collection = { id: COLLECTION, name: 'Synthetic Collection', overview: '', backdropUrl: null, films: Array.from({ length: 15 }, (_, i) => ({ mediaType: 'movie', tmdbId: 901000 + i, title: `Film ${i}`, year: 2020, posterUrl: `https://image.tmdb.org/t/p/w342/p${i}.jpg`, state: 'get_this', play: null, released: true, releaseDate: '2020-01-01' })) };
+      const page = await openJellyfinWeb(t, app, { override: async (url) => {
+        if (url.includes('/collection/')) { await held; return { status: 200, body: JSON.stringify(collection) }; }
+      } });
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.goTo(`#/jellypass/title/movie/${T_MOVIE}`);
+      showFallback(page.document);
+      for (let i = 0; i < 300 && !view(page)?.querySelector('.jellypass-tv-discover-skeleton-card'); i += 1) await pause(10);
+      assert.ok(view(page).querySelector('h1'));
+      assert.ok(view(page).querySelector('.jellypass-tv-discover-skeleton-card'));
+      release();
+      await page.settled();
+      const section = view(page).querySelector('.jellypass-tv-collection-preview');
+      assert.equal(section.parentNode.lastElementChild, section);
+      assert.equal(section.querySelector('h2').textContent, 'Part of Synthetic Collection');
+      const cards = [...section.querySelectorAll('button[data-tmdb-id]')];
+      assert.equal(cards.length, 10);
+      assert.equal(section.querySelectorAll('img[src]').length, 3);
+      assert.match(cards[0].querySelector('img').getAttribute('src'), /\/w185\//);
+      const see = section.querySelector('.jellypass-tv-title-collection');
+      const action = view(page).querySelector('.jellypass-tv-title-hide');
+      action.focus(); page.key(40); assert.equal(page.focused(), see, 'Down from actions reaches See all');
+      page.key(38); assert.equal(page.focused(), action, 'Up returns to the originating action');
+      page.key(40); page.key(40); assert.equal(page.focused(), cards[0]);
+      page.key(39); assert.equal(page.focused(), cards[1]);
+      page.key(37); assert.equal(page.focused(), cards[0]);
+      page.key(38); assert.equal(page.focused(), see);
+      cards[9].focus();
+      assert.equal(cards[0].querySelector('img').hasAttribute('src'), false);
+      assert.equal(page.key(10009).defaultPrevented, false, 'Back belongs to Jellyfin');
+      cards[1].focus();
+      const from = page.location.hash;
+      page.click(cards[1]);
+      assert.equal(page.location.hash, '#/jellypass/title/movie/901001');
+      page.follow(from);
+      await page.settled();
+      page.back();
+      await page.settled();
+      assert.equal(page.focused()?.getAttribute('data-tmdb-id'), '901001', 'Back restores the lazy poster');
+    });
+
+    it('shows a failed sibling badge using exactly one requests read', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const failed = { results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: 900005, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] };
+      const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`, { override: (url) => url.endsWith('/requests') ? { status: 200, body: JSON.stringify(failed) } : undefined });
+      const card = view(page).querySelector('.jellypass-tv-collection-preview button[data-tmdb-id="900005"]');
+      assert.equal(card.querySelector('.jellypass-tv-title-status-failed').textContent, "We couldn't get this");
+      assert.equal(card.getAttribute('aria-label'), "Synthetic Movie Five, We couldn't get this");
+      assert.equal(card.querySelector('.jellypass-tv-discover-badge-open'), null);
+      assert.equal(page.requests.filter((request) => new URL(request.url).pathname.endsWith('/requests')).length, 1);
+    });
+
+    it('drops film A collection after film B opens without moving focus', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const page = await openJellyfinWeb(t, app, { override: async (url) => {
+        if (url.includes('/collection/')) await held;
+      } });
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.goTo(`#/jellypass/title/movie/${T_MOVIE}`); showFallback(page.document);
+      for (let i = 0; i < 300 && !view(page)?.querySelector('.jellypass-tv-discover-skeleton-card'); i += 1) await pause(10);
+      assert.ok(view(page).querySelector('.jellypass-tv-discover-skeleton-card'));
+      page.goTo(`#/jellypass/title/tv/${T_TV}`);
+      for (let i = 0; i < 300 && text(page, 'h1') !== 'Synthetic Series Two'; i += 1) await pause(10);
+      assert.equal(text(page, 'h1'), 'Synthetic Series Two');
+      const focus = view(page).querySelector('.jellypass-tv-title-get');
+      focus.focus();
+      const before = view(page).outerHTML;
+      release(); await page.settled();
+      assert.equal(view(page).outerHTML, before);
+      assert.equal(view(page).querySelector('.jellypass-tv-collection-preview, .jellypass-tv-discover-skeleton-card'), null);
+      assert.equal(page.focused(), focus);
+    });
+
+    for (const state of ['requested', 'unavailable']) it(`does not focus See all when a ${state} film preview arrives`, async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const movie = { ...(await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`)).json(), state };
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const page = await openJellyfinWeb(t, app, { override: async (url) => {
+        if (url.endsWith(`/movie/${T_MOVIE}`)) return { status: 200, body: JSON.stringify(movie) };
+        if (url.includes('/collection/')) await held;
+      } });
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.goTo(`#/jellypass/title/movie/${T_MOVIE}`); showFallback(page.document);
+      for (let i = 0; i < 300 && !view(page)?.querySelector('.jellypass-tv-discover-skeleton-card'); i += 1) await pause(10);
+      const focus = page.focused();
+      release(); await page.settled();
+      assert.ok(view(page).querySelector('.jellypass-tv-collection-preview button[data-tmdb-id]'));
+      assert.equal(page.focused()?.getAttribute('data-jellypass-tv-focus') ?? null, focus?.getAttribute('data-jellypass-tv-focus') ?? null, 'arrival preserves existing focus');
+    });
+
+    it('only exits the last enabled action with Down and skips disabled Up targets', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`);
+      const get = view(page).querySelector('.jellypass-tv-title-get');
+      const hide = view(page).querySelector('.jellypass-tv-title-hide');
+      const see = view(page).querySelector('.jellypass-tv-title-collection');
+      get.focus(); assert.equal(page.key(40).defaultPrevented, false, 'other actions use Jellyfin navigation');
+      hide.focus(); assert.equal(page.key(40).defaultPrevented, true); assert.equal(page.focused(), see);
+      hide.disabled = true;
+      page.key(38); assert.equal(page.focused(), get, 'skip disabled origin');
+      see.focus(); get.disabled = true;
+      assert.equal(page.key(38).defaultPrevented, false, 'no disabled fallback receives focus');
+      assert.equal(page.focused(), see);
+    });
+
+    for (const status of [503, 404]) it(`keeps the plain link on preview failure ${status}`, async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`, { override: (url) => url.includes('/collection/') ? { status, body: '{"error":"unavailable"}' } : undefined });
+      assert.equal(view(page).querySelector('.jellypass-tv-collection-preview'), null);
+      assert.equal(text(page, '.jellypass-tv-title-collection'), 'Part of Synthetic Collection');
+      assert.ok(view(page).querySelector('h1'));
+    });
+
+    it('signs out when the lazy collection read returns 401', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`, { override: (url) => url.includes('/collection/') ? { status: 401, body: '{"error":"unauthorized"}' } : undefined });
+      assert.equal(text(page, '.jellypass-tv-title-error'), 'Sign in to continue');
+      assert.equal(view(page).querySelector('.jellypass-tv-collection-preview'), null);
+    });
+
     it('links a film to its collection\'s page, which opens at its own address in the budget\'s one call', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
       const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`);
-      assert.deepEqual(calls(page), BUDGET.screens['tv-movie'].atOnce, 'the link costs no call');
+      assert.deepEqual(calls(page), [...BUDGET.screens['tv-movie'].atOnce, ...BUDGET.conditionalAllowances.collectionPreview.afterRender].sort(), 'optional preview reads after title');
       const link = view(page).querySelector('.jellypass-tv-title-collection');
-      assert.equal(link.textContent, 'Part of Synthetic Collection');
+      assert.equal(link.textContent, 'See all');
       assert.equal(link.tagName, 'BUTTON', 'a remote reaches it');
       const before = page.requests.length;
       const from = page.location.hash;
@@ -7744,6 +7917,8 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
         const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`, { override: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` ? { status: 200, body: JSON.stringify(body) } : undefined) });
         assert.equal(text(page, 'h1'), 'Synthetic Movie One', name);
         assert.equal(view(page).querySelector('.jellypass-tv-title-collection'), null, name);
+        assert.equal(view(page).querySelector('.jellypass-tv-collection-preview'), null, name);
+        assert.ok(!page.requests.some((request) => request.url.includes('/collection/')), name);
         assert.ok(view(page).querySelector('.jellypass-tv-title-get'), name);
       }
       // A series has none either.

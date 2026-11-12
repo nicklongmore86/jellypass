@@ -193,7 +193,7 @@ extension point, but its route table ends in a "page not found" route (`componen
 same in the TV and the desktop layout): a real Jellyfin page, `<div id="fallbackPage" data-role="page" class="page
 mainAnimatedPage libraryPage">`, under Jellyfin's own header. An unknown hash such as `#/jellypass/about` lands on it.
 The host puts a JellyPass page in it, so Jellyfin's header, its Back and Home buttons, its history, its focus manager
-and its scrolling all apply, and the add-on handles no key: Back (the remote's, the LG's, the browser's) is Jellyfin
+and its scrolling all apply. Only the collection preview handles local arrow keys; Back (the remote's, the LG's, the browser's) is Jellyfin
 web's history, and leaves the page as it leaves any other.
 
 - **The router API** (for pages): `host.register('/jellypass/title/:mediaType/:tmdbId', render)`. `render({ document,
@@ -230,7 +230,7 @@ web's history, and leaves the page as it leaves any other.
 
 `tv/src/title.ts`: the household app's title page, a page of Jellyfin web's on the page host at
 `#/jellypass/title/<movie|tv>/<tmdbId>` (the address a card opens, and one that works opened directly: a reload or a
-bookmark). It replaces the overlay of step 2: nothing is fixed over Home, no key is handled, and no `z-index` is set.
+bookmark). It replaces the overlay of step 2: nothing is fixed over Home and no `z-index` is set. Only collection-preview arrow keys are handled locally.
 
 - **Where.** In Jellyfin web's fallback page (see "The page host"), under its real header: in the TV layout the legacy
   header with its **Back** and **Home** buttons and the page's title (the title's name, once read), in the desktop layout
@@ -265,7 +265,14 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home, no key
     "follow a series" note in the household app docs).
   - **Part of …** on a film that belongs to a collection (a film series), on a server with `apiVersion` 6: it opens the
     film's collection page (see "Collections"). The add-on never calls `/me`; a movie answer with no `collection`
-    field (an older server), or with `null`, has no such button. It costs the title page no call.
+    field (an older server), or with `null`, has no such section. Below the overview and genre facts, the preview
+    reads the collection after the title renders, reusing the title page My requests response for badges. Loading placeholders never block the title; a failed
+    preview leaves the plain link, and a collection read returning 401 shows the existing sign-in state. The section retains
+    `.jellypass-tv-title-collection` on its focusable See all button (on failure, the original Part of link).
+    The current film is omitted to leave room for its siblings. Hidden films retain their Not interested label, as on
+    the collection page. At most ten 140px cards use TMDB w185 posters, with only the focused card and two neighbours
+    on either side holding image sources (initially the first three). Left/right move within the row; Up returns to
+    See all, Down from See all enters the row. Down from the last enabled main action reaches See all; Up returns to the originating action. Jellyfin handles Back/history, restoring the selected poster once the lazy row arrives.
   - "Requested", "Can't request" and "We couldn't get this" have no button, only their note. "Requested" says "Follow it
     in My requests." and, like a title just asked for with **Get this**, a title with a failed request, or a series with
     a requested season, has a **My requests** button after the others (it only opens the page; see "My requests").
@@ -613,7 +620,7 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
   see all"**, with a chevron drawn by the stylesheet, not in the text. This is the web app's pattern (the heading is the link)
   and the accessible equivalent of a separate "See all" control: one focus stop above each row is Up from its first card, and a
   second one beside the heading would be an extra Right press for nothing. It is a button with `role="link"` rather than an
-  `<a href>` because the add-on prevents no event (a test pins that the bundle never calls `preventDefault`), and an `<a href>`
+  `<a href>` because these controls do not cancel click events, and an `<a href>`
   can only be kept from navigating by cancelling its click; Enter on a button clicks it, which an `<a>` without `href` does not.
   A studio's tile is the same, named "Pixar movies" (the app's name), its logo decorative. Both take Jellyfin's focus on a TV
   (`show-focus`) and a ring of their own (`:focus`: round the heading's words, round the tile's light face), and have a focus key
@@ -1058,7 +1065,7 @@ Each step is its own pull request, behind the same settings:
 2. **Title pages and "Get this" (done).** Choosing a card opens a JellyPass title page: first an overlay on Home, now (the
    redesign's step 3) a page of Jellyfin web's own at `#/jellypass/title/<movie|tv>/<tmdbId>` on the page host, so
    Jellyfin's header, its Back (Tizen `10009`, webOS `461`, as Jellyfin web maps them), its history and its focus
-   manager apply and the add-on handles no key. It shows the title's household state and **Play** (to Jellyfin web's own
+   manager apply; only the collection preview handles its arrow keys. It shows the title's household state and **Play** (to Jellyfin web's own
    `#/details?id=<play.itemId>`, so Jellyfin's TV player plays it), and **Get this** with a season picker for a series.
    It uses the same identical-outcome flow and fixed wording as the PWA, and the PWA's title-page calls (without
    `/me`). See "The title page".

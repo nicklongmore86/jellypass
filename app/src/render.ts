@@ -1086,7 +1086,6 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
       el(doc, 'h1', { class: 'screen-title detail-title', text: title.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }),
       detailChips(doc, title),
       genres,
-      title.mediaType === 'movie' && extras.collections ? collectionLink(doc, title.collection) : undefined,
       el(doc, 'div', { class: 'actions' }, [failedMovie ? requestBadge(doc, 'failed') : stateBadge(doc, title.state)]),
       stateNote(doc, title.state),
       failedAny ? failedNote(doc) : undefined,
@@ -1097,6 +1096,7 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
   const main = el(doc, 'div', { class: 'detail-main' }, [
     head,
     title.overview ? el(doc, 'p', { class: 'overview', text: title.overview }) : undefined,
+    title.mediaType === 'movie' && extras.collections ? collectionLink(doc, title.collection) : undefined,
   ]);
   if (title.mediaType === 'tv') main.append(seasonList(doc, title, extras.failed, parts));
   return el(doc, 'article', { class: 'detail' }, [detailHero(doc, title.backdropUrl), main]);
@@ -1877,5 +1877,26 @@ export function signInUnavailable(doc: Document, kind: SignInErrorKind, onRetry:
     ...signInHeading(doc, 'Sign in', SIGNIN_ERROR_TEXT[Object.hasOwn(SIGNIN_ERROR_TEXT, kind) ? kind : 'unavailable']),
     retry,
     jellyfinFallback(doc),
+  ]);
+}
+
+/** Same cards and household badges as the collection page; the open film is omitted. */
+export function collectionPreview(doc: Document, collection: Collection, currentId: number, failed: ReadonlySet<number>): HTMLElement {
+  const cards = collection.films.filter((film) => film.tmdbId !== currentId).map((film) => {
+    const item = cardItem(doc, film);
+    if (film.state === 'get_this' && failed.has(film.tmdbId)) {
+      const badge = requestBadge(doc, 'failed');
+      badge.setAttribute('aria-hidden', 'true');
+      item.querySelector('.badge')?.replaceWith(badge);
+      item.querySelector('a')?.setAttribute('aria-label', `${film.title}, ${badge.textContent}`);
+    }
+    if (!film.released) item.append(el(doc, 'span', { class: 'card-meta', text: COLLECTION_TEXT.notReleased }));
+    if (film.hidden) item.append(el(doc, 'span', { class: 'card-meta', text: COLLECTION_TEXT.hidden }));
+    return item;
+  });
+  return el(doc, 'section', { class: 'row collection-preview', attrs: { 'aria-label': COLLECTION_TEXT.partOf(collection.name) } }, [
+    el(doc, 'h2', { class: 'row-heading collection-link' }, [el(doc, 'a', { class: 'link', text: COLLECTION_TEXT.partOf(collection.name), attrs: { href: `#/collection/${collection.id}` } })]),
+    el(doc, 'a', { class: 'link', text: 'See all', attrs: { href: `#/collection/${collection.id}`, 'aria-label': `See all films in ${collection.name}` } }),
+    el(doc, 'ul', { class: 'row-list' }, cards),
   ]);
 }
