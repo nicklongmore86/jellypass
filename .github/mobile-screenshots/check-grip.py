@@ -32,9 +32,16 @@ def corner_bright_pixels(path):
         elif kind == b"IEND":
             break
         pos += 12 + length
-    width, height, depth, color, _, _, interlace = header
-    if depth != 8 or color not in (2, 6) or interlace != 0:
-        raise ValueError(f"unsupported PNG (depth {depth}, color type {color}, interlace {interlace})")
+    if header is None:
+        raise ValueError("no IHDR chunk")
+    # Fail closed on anything this decoder doesn't implement, before decoding: only zlib (compression method 0),
+    # standard adaptive filtering (filter method 0), no interlace, 8-bit RGB or RGBA.
+    width, height, depth, color, compression, filtering, interlace = header
+    if depth != 8 or color not in (2, 6) or compression != 0 or filtering != 0 or interlace != 0:
+        raise ValueError(
+            f"unsupported PNG (bit depth {depth}, color type {color}, compression method {compression}, "
+            f"filter method {filtering}, interlace {interlace}); expected 8, 2 or 6, 0, 0, 0"
+        )
     bpp = 3 if color == 2 else 4
     stride = width * bpp
     raw = zlib.decompress(b"".join(idat))
