@@ -9,5 +9,20 @@ appId: com.apple.Preferences
     direction: DOWN
     timeout: 30000
 - tapOn: "Multitasking & Gestures"
-- tapOn: "Full Screen Apps"
+# The tap has been lost before (a run's images all had the grip), so it is repeated until the option shows as chosen;
+# choosing it again changes nothing. Settings is given a moment to keep it before it is closed. iOS may not expose the
+# selected state (run 43138531626 failed asserting it), so the loop is best effort: take.sh fails the iPad step if the
+# images show the grip (check-grip.py).
+- repeat:
+    while:
+      notVisible:
+        text: "Full Screen Apps"
+        selected: true
+    times: 3
+    commands:
+      - tapOn: "Full Screen Apps"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- waitForAnimationToEnd:
+    timeout: 5000
 - stopApp

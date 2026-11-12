@@ -2,8 +2,8 @@ name: Mobile screenshots
 
 # App Store screenshots use a Release simulator build and a configured demo household.
 # Devices: iPhone 6.9" (1320x2868) and iPad 13" (2064x2752), both portrait.
-# The screenshots artifact contains the six numbered App Store images for each device.
-# Store image 06-sign-in shows the address screen and may reveal the configured address.
+# The screenshots artifact contains the eight numbered App Store images for each device.
+# Store image 08-sign-in shows the address screen and may reveal the configured address.
 # Never upload Maestro debug output: commands and view trees can contain expanded secrets.
 # Set MOBILE_SCREENSHOT_ADDRESS and MOBILE_SCREENSHOT_PROFILE repository secrets.
 #
@@ -26,7 +26,7 @@ concurrency:
 jobs:
   screenshots:
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       ADDRESS: ${{ secrets.MOBILE_SCREENSHOT_ADDRESS }}
       PROFILE: ${{ secrets.MOBILE_SCREENSHOT_PROFILE }}
@@ -96,16 +96,19 @@ jobs:
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
       # The iPhone with Apple's largest (6.9") screen, then the 13" iPad, newest model first.
+      # A device's step stops after 45 minutes: Maestro can lose its simulator driver and then wait for ever.
       - name: iPhone 6.9"
+        timeout-minutes: 45
         run: .github/mobile-screenshots/take.sh "$APP" screenshots/iphone-6.9 1320x2868 'iPhone 17 Pro Max' 'iPhone 16 Pro Max'
       # Taken even when the iPhone's fail, so one run shows what is wrong with both.
       - name: iPad 13"
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 45
         run: .github/mobile-screenshots/take.sh "$APP" screenshots/ipad-13 2064x2752 'iPad Pro 13-inch (M5)' 'iPad Pro 13-inch (M4)'
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: screenshots
-          path: screenshots/*/0[1-6]-*.png
+          path: screenshots/*/0[1-8]-*.png
           retention-days: 3
           if-no-files-found: error

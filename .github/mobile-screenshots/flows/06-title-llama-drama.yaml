@@ -1,0 +1,51 @@
+# Llama Drama's film page, scrolled to its collection section at the bottom: "Part of Caminandes Collection" over
+# poster cards of the collection's other two films, both Ready to watch. Reached from Search; nothing is asked for.
+# Taps are repeated until they land (03-search.yaml).
+appId: com.rtc-services.jellypass
+---
+- repeat:
+    while:
+      visible: "Back"
+    times: 5
+    commands:
+      - tapOn: "Back"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "search-field"
+- tapOn:
+    id: "search-field"
+# The field still holds the last search.
+- eraseText: 20
+- inputText: "Caminandes"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: ".*Llama Drama.*Ready to watch"
+    timeout: 30000
+- repeat:
+    while:
+      notVisible:
+        id: "detail-facts"
+    times: 5
+    commands:
+      - tapOn: ".*Llama Drama.*Ready to watch"
+      - waitForAnimationToEnd:
+          timeout: 5000
+# The section is last on the page, under the actions and the description; its posters load after the page.
+- scrollUntilVisible:
+    element:
+      id: "collection-preview"
+    direction: DOWN
+    timeout: 30000
+- extendedWaitUntil:
+    visible: ".*Llamigos.*Ready to watch"
+    timeout: 30000
+# To the end of the page, so the whole poster row sits above the tab bar.
+- scroll
+- scroll
+- scroll
+- assertVisible: "Part of Caminandes Collection"
+- assertVisible: ".*Gran Dillama.*Ready to watch"
+- assertVisible: ".*Llamigos.*Ready to watch"
+- waitForAnimationToEnd:
+    timeout: 10000

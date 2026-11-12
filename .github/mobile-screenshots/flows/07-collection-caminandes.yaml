@@ -1,0 +1,39 @@
+# The Caminandes Collection's page: the household has all three films, so each shows Ready to watch and the page offers
+# nothing to ask for. Opened from the collection section's heading on Llama Drama's page, which the last flow left
+# scrolled to that section; nothing is asked for. Taps are repeated until they land (03-search.yaml).
+appId: com.rtc-services.jellypass
+---
+- scrollUntilVisible:
+    element:
+      id: "collection-see-all"
+    direction: DOWN
+    timeout: 20000
+- repeat:
+    while:
+      notVisible:
+        id: "film-list"
+    times: 5
+    commands:
+      # The heading row's chevron, "See all films in Caminandes Collection": the row itself is touch-only, hidden from
+      # accessibility, so the chevron is the element that can be found.
+      - tapOn:
+          id: "collection-see-all"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "film-list"
+- extendedWaitUntil:
+    visible: ".*Llama Drama.*Ready to watch"
+    timeout: 30000
+# On iPhone the third film is below the fold, just over the tab bar; scrolling to the end shows all three with their
+# status. On iPad they already fit, so this does nothing.
+- scroll
+- scroll
+- assertVisible: ".*Llama Drama.*Ready to watch"
+- assertVisible: ".*Gran Dillama.*Ready to watch"
+- assertVisible: ".*Llamigos.*Ready to watch"
+# All three are in the library: no Get all, nothing to tick.
+- assertNotVisible:
+    id: "get-films"
+- waitForAnimationToEnd:
+    timeout: 10000

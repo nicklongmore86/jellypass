@@ -23,15 +23,18 @@ shift 3
 here="$(cd "$(dirname "$0")" && pwd)"
 
 # Each flow, and the listing position and name of the screenshot taken after it. The flows run in the app's order
-# (sign in comes first); the listing leads with the demo library's own titles, and Home, whose posters come from TMDB,
-# stays late.
+# (sign in comes first); the listing leads with the demo library's own titles, a film's collection section and the
+# collection's page, and Home, whose posters
+# come from TMDB, stays late.
 shots=(
-  "01-address:06-sign-in"
-  "02-home:05-home"
+  "01-address:08-sign-in"
+  "02-home:07-home"
   "03-search:03-search"
   "04-title-sintel:01-sintel"
   "05-title-tears-of-steel:02-tears-of-steel"
-  "06-requests:04-my-requests"
+  "06-title-llama-drama:05-llama-drama"
+  "07-collection-caminandes:06-caminandes-collection"
+  "08-requests:04-my-requests"
 )
 
 runtime="$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable and .platform == "iOS")] | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')"
@@ -65,8 +68,14 @@ for shot in "${shots[@]}"; do
   flow="${shot%%:*}"
   file="${out}/${shot#*:}.png"
   if ! maestro --device "$udid" test -e ADDRESS="$ADDRESS" -e PROFILE="$PROFILE" "${here}/flows/${flow}.yaml"; then
-    # Do not capture failure screens: sign-in failures may display configured values.
+    # Do not capture failure screens: sign-in failures may display configured values. Only which of the app's own
+    # fixed labels were on screen is printed, from Maestro's debug output (never uploaded).
     echo "::error::The ${flow} flow failed on ${name}"
+    echo "App labels on screen:"
+    grep -rhoF -e 'Connect to your household' -e 'Loading…' -e 'Choose your profile to sign in.' -e 'Try again' \
+      -e "Can't sign in right now" -e 'Check your connection' -e "There's no JellyPass household" -e 'Too many attempts' \
+      -e "Can't keep your sign-in" -e 'Sign in with a different name' -e 'See all Trending' "$HOME/.maestro/tests" 2>/dev/null |
+      sort | uniq -c || true
     exit 1
   fi
   # Posters arrive after the screen settles; give them a moment.
@@ -77,6 +86,10 @@ done
 # App Store Connect takes exact sizes only, and no alpha channel: simctl's PNGs have one, so it is dropped first.
 xcrun swift "${here}/strip-alpha.swift" "$out"/*.png
 failed=0
+# A lost Full Screen Apps tap leaves iPadOS's resize grip in every image's corner: fail the step, so none are uploaded.
+if [[ "$name" == iPad* ]] && ! python3 -I "${here}/check-grip.py" "$out"/*.png; then
+  failed=1
+fi
 for file in "$out"/*.png; do
   width="$(sips -g pixelWidth "$file" | awk '/pixelWidth/ {print $2}')"
   height="$(sips -g pixelHeight "$file" | awk '/pixelHeight/ {print $2}')"
