@@ -21,6 +21,11 @@ appId: com.apple.Preferences
       - tapOn: "Full Screen Apps"
       - waitForAnimationToEnd:
           timeout: 5000
+# Required: if every tap was lost, the iPad step fails here instead of taking images with the grip. (Run 43129435505
+# showed iOS exposes the state: the loop tapped once, then saw the option selected.)
+- assertVisible:
+    text: "Full Screen Apps"
+    selected: true
 - waitForAnimationToEnd:
     timeout: 5000
 - stopApp
