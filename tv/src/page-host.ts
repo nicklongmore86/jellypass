@@ -246,7 +246,8 @@ export class PageHost {
         focus: (fallback, preserveMissing) => {
           const now = this.active;
           if (!now || now.container !== container) return;
-          now.view.focus = fallback;
+          // Lazy content may finish before pageshow: retain the primary fallback for its focus correction.
+          if (fallback) now.view.focus = fallback;
           if (preserveMissing !== undefined) now.preserveMissingFocus = preserveMissing;
           if (!now.acted) this.restoreFocus(now);
         },
