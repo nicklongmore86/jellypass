@@ -21,6 +21,34 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [4.5.0] - 2026-11-12
+
+This is a minor release. Film pages in the web app and the TV add-on gain a
+preview of the film's collection (a row of its other films' posters), with
+fixes to how the TV add-on's preview keeps focus and lays out release dates.
+The server itself is unchanged. **An existing install upgrades without any
+change to its configuration:** it adds, removes and renames no setting. The
+state file (schema 9), the household app API (`v1`, `apiVersion` 6), webhook
+payloads, the administrator API and the gateway are as in 4.4.0; the preview
+uses only app API calls that already exist. This is a minor release because
+the web app and the TV add-on gain a feature. Read these before upgrading:
+
+- **The state file is unchanged** (schema 9, with the same fields as 4.4.0);
+  nothing is migrated, so 4.4.0 reads a state file written by 4.5.0.
+- **No CDN purge is needed.** Both TV add-on files have new names,
+  `jellypass-tv.ae12b4bb8c0c.js` and `jellypass-tv.12e659e424d7.css` (they
+  were `jellypass-tv.e303c953b710.js` and `jellypass-tv.04e1ed3b7a1d.css` in
+  4.4.0). The `/web/` page and the Samsung app's manifest are sent
+  `no-store`. Some household app script files also get new names and its
+  service worker a new cache.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:4.4.0` and recreate the container. No
+  state-file or setting change is needed. Film pages in the web app and the TV
+  add-on then show the plain "Part of …" link again, without the posters.
+- **The iPhone, iPad and Android app ships separately.** Its own collection
+  preview needs no server change (it works with 4.4.0 or later) and is
+  described in `mobile/CHANGELOG.md`.
+
 ### Added
 
 - Film title pages in the household web app and TV add-on now preview the other films in their collection, with household status badges and See all. TV previews keep at most ten small posters and load images around focus.
@@ -4022,7 +4050,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.4.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.5.0...HEAD
+[4.5.0]: https://github.com/nicklongmore86/jellypass/compare/v4.4.0...v4.5.0
 [4.4.0]: https://github.com/nicklongmore86/jellypass/compare/v4.3.0...v4.4.0
 [4.3.0]: https://github.com/nicklongmore86/jellypass/compare/v4.2.1...v4.3.0
 [4.2.1]: https://github.com/nicklongmore86/jellypass/compare/v4.2.0...v4.2.1
