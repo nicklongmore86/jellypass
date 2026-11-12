@@ -4,7 +4,8 @@
 # is dark-only, and in full screen that 160x160 corner has no bright pixel (mean of R, G and B 100 or more) in any of
 # the eight listing images; with the grip it has about 430 (425 on sign-in, run 43120329669). More than 100 bright
 # pixels, a margin well clear of both, counts as the grip.
-# Standard library only: reads 8-bit RGB or RGBA, non-interlaced PNGs, which is what strip-alpha.swift writes.
+# Standard library only: reads 8-bit RGB or RGBA, non-interlaced PNGs, which is what strip-alpha.swift writes. Anything
+# else, and any damaged file (bad CRC, truncation, wrong amount of image data), is refused, so it can't pass by accident.
 import struct
 import sys
 import zlib
@@ -19,21 +20,41 @@ def corner_bright_pixels(path):
         data = f.read()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("not a PNG")
+    # Walk the chunks, failing closed: each must fit in the file with a correct CRC, IHDR must come first, and the file
+    # must reach IEND (a truncated file never passes).
     pos = 8
     idat = []
     header = None
+    ended = False
     while pos < len(data):
+        if pos + 12 > len(data):
+            raise ValueError(f"truncated chunk header at byte {pos}")
         length, kind = struct.unpack(">I4s", data[pos : pos + 8])
+        end = pos + 12 + length
+        if end > len(data):
+            raise ValueError(f"{kind!r} chunk at byte {pos} declares {length} bytes, past the end of the file")
         body = data[pos + 8 : pos + 8 + length]
+        (crc,) = struct.unpack(">I", data[pos + 8 + length : end])
+        if zlib.crc32(kind + body) & 0xFFFFFFFF != crc:
+            raise ValueError(f"{kind!r} chunk at byte {pos} has a bad CRC")
+        if header is None and kind != b"IHDR":
+            raise ValueError(f"first chunk is {kind!r}, not IHDR")
         if kind == b"IHDR":
+            if header is not None:
+                raise ValueError("more than one IHDR chunk")
+            if length != 13:
+                raise ValueError(f"IHDR is {length} bytes, not 13")
             header = struct.unpack(">IIBBBBB", body)
         elif kind == b"IDAT":
             idat.append(body)
         elif kind == b"IEND":
+            ended = True
             break
-        pos += 12 + length
+        pos = end
     if header is None:
         raise ValueError("no IHDR chunk")
+    if not ended:
+        raise ValueError("no IEND chunk (truncated file)")
     # Fail closed on anything this decoder doesn't implement, before decoding: only zlib (compression method 0),
     # standard adaptive filtering (filter method 0), no interlace, 8-bit RGB or RGBA.
     width, height, depth, color, compression, filtering, interlace = header
@@ -42,9 +63,21 @@ def corner_bright_pixels(path):
             f"unsupported PNG (bit depth {depth}, color type {color}, compression method {compression}, "
             f"filter method {filtering}, interlace {interlace}); expected 8, 2 or 6, 0, 0, 0"
         )
+    if width < CORNER or height < CORNER:
+        raise ValueError(f"image is {width}x{height}, smaller than the {CORNER}x{CORNER} corner")
     bpp = 3 if color == 2 else 4
     stride = width * bpp
-    raw = zlib.decompress(b"".join(idat))
+    # The zlib stream must end exactly at the end of the IDAT data, and hold exactly one filter byte plus one row of
+    # pixels per row: missing or extra bytes mean the image isn't what the header says.
+    inflater = zlib.decompressobj()
+    raw = inflater.decompress(b"".join(idat))
+    if not inflater.eof:
+        raise ValueError("image data ends before the end of its zlib stream")
+    if inflater.unused_data:
+        raise ValueError(f"{len(inflater.unused_data)} bytes after the end of the image's zlib stream")
+    expected = height * (stride + 1)
+    if len(raw) != expected:
+        raise ValueError(f"image data is {len(raw)} bytes after decompression, not {expected}")
     prev = bytearray(stride)
     bright = 0
     for y in range(height):
