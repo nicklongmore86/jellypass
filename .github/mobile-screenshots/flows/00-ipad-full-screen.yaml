@@ -10,7 +10,9 @@ appId: com.apple.Preferences
     timeout: 30000
 - tapOn: "Multitasking & Gestures"
 # The tap has been lost before (a run's images all had the grip), so it is repeated until the option shows as chosen;
-# choosing it again changes nothing. Settings is given a moment to keep it before it is closed.
+# choosing it again changes nothing. Settings is given a moment to keep it before it is closed. iOS may not expose the
+# selected state (run 43138531626 failed asserting it), so the loop is best effort: take.sh fails the iPad step if the
+# images show the grip (check-grip.py).
 - repeat:
     while:
       notVisible:
@@ -21,11 +23,6 @@ appId: com.apple.Preferences
       - tapOn: "Full Screen Apps"
       - waitForAnimationToEnd:
           timeout: 5000
-# Required: if every tap was lost, the iPad step fails here instead of taking images with the grip. (Run 43129435505
-# showed iOS exposes the state: the loop tapped once, then saw the option selected.)
-- assertVisible:
-    text: "Full Screen Apps"
-    selected: true
 - waitForAnimationToEnd:
     timeout: 5000
 - stopApp

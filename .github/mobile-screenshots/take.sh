@@ -86,6 +86,10 @@ done
 # App Store Connect takes exact sizes only, and no alpha channel: simctl's PNGs have one, so it is dropped first.
 xcrun swift "${here}/strip-alpha.swift" "$out"/*.png
 failed=0
+# A lost Full Screen Apps tap leaves iPadOS's resize grip in every image's corner: fail the step, so none are uploaded.
+if [[ "$name" == iPad* ]] && ! python3 -I "${here}/check-grip.py" "$out"/*.png; then
+  failed=1
+fi
 for file in "$out"/*.png; do
   width="$(sips -g pixelWidth "$file" | awk '/pixelWidth/ {print $2}')"
   height="$(sips -g pixelHeight "$file" | awk '/pixelHeight/ {print $2}')"
