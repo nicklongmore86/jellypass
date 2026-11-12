@@ -141,6 +141,8 @@ schema 9, so 4.2.1 can run on its state file (see the
 [4.3.0 notes](CHANGELOG.md#430---2026-11-09)).
 4.4.0 changes no setting and keeps state schema 9, so 4.3.0 can run on its
 state file (see the [4.4.0 notes](CHANGELOG.md#440---2026-11-10)).
+4.5.0 changes no setting and keeps state schema 9, so 4.4.0 can run on its
+state file (see the [4.5.0 notes](CHANGELOG.md#450---2026-11-12)).
 
 To build from source instead, run these inside a clone of this repository
 (the container runs as UID 1000, so it needs a data directory it can write):
