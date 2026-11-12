@@ -25,6 +25,10 @@ listed at the top of the release notes.
 
 - Film title pages in the household web app and TV add-on now preview the other films in their collection, with household status badges and See all. TV previews keep at most ten small posters and load images around focus.
 
+### Fixed
+
+- TV film collection previews preserve initial Play / Get this focus on fast loads and keep release dates together. Late expired collection responses are covered on web and TV so they cannot sign out a different page.
+
 ## [4.4.0] - 2026-11-10
 
 This is a minor release. It adds film collections and **Get all missing

@@ -5704,6 +5704,28 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(errors, []);
     });
 
+    it('ignores a late collection 401 after navigating away', async (t) => {
+      const app = await startApp(t);
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const errors = [];
+      t.mock.method(console, 'error', (...args) => errors.push(args));
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: async (url) => {
+        if (url.includes('/collection/')) { await held; return jsonAnswer({ error: 'unauthorized' }, 401); }
+      } });
+      await page.until(() => page.main().querySelector('.row .skeleton-card'), 'held preview');
+      page.go('#/account');
+      await page.until(() => page.main().querySelector('h1')?.textContent === 'Account', 'new screen');
+      const before = page.main().innerHTML;
+      release();
+      await page.until(() => page.pending() === 0, 'late response drained');
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(page.main().innerHTML, before);
+      assert.equal(page.main().querySelector('.collection-preview, .skeleton-card'), null);
+      assert.deepEqual(errors, []);
+    });
+
     for (const status of [503, 404]) it(`keeps the plain link on collection preview failure ${status}`, async (t) => {
       const app = await startApp(t);
       const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => url.includes('/collection/') ? jsonAnswer({ error: 'unavailable' }, status) : undefined });

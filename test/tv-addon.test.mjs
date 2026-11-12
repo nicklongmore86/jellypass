@@ -260,6 +260,7 @@ describe('TV add-on: the build', () => {
     }
     // Focus is drawn with :focus, which a remote's focus always is (the row's cards use Jellyfin web's own, `.card:focus`).
     assert.ok(css.includes('.jellypass-tv-title-button:focus'));
+    assert.match(css, /\.jellypass-tv-collection-row \.jellypass-tv-title-film-date\s*\{\s*white-space:\s*nowrap\s*;?\s*\}/, 'release dates stay together within the poster row');
   });
 
   it('builds the same files from the same source', async (t) => {
@@ -7801,12 +7802,29 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
       assert.equal(page.focused()?.getAttribute('data-tmdb-id'), '901001', 'Back restores the lazy poster');
     });
 
+    for (const action of ['get', 'play']) for (const acted of [false, true]) it(`preserves primary ${action} focus after an early preview and pageshow (member acted: ${acted})`, async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const movie = (await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`)).json();
+      const own = (await app.get(`/jellypass/app/v1/movie/${OWN_MOVIE}`)).json();
+      const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`, { override: (url) => action === 'play' && url.endsWith(`/movie/${T_MOVIE}`) ? { status: 200, body: JSON.stringify({ ...movie, state: 'in_library', play: own.play }) } : undefined });
+      assert.ok(view(page).querySelector('.jellypass-tv-collection-preview button[data-tmdb-id]'));
+      const primary = view(page).querySelector(`.jellypass-tv-title-${action}`);
+      const other = view(page).querySelector('.jellypass-tv-title-hide');
+      if (acted) page.key(39);
+      const fallback = page.document.getElementById('fallbackPage');
+      fallback.dispatchEvent(new page.Event('pageshow', { bubbles: true }));
+      other.focus(); // Jellyfin's own auto-focus runs in the pageshow task.
+      await pause(30);
+      assert.ok(page.focused() === (acted ? other : primary), 'initial focus survives early row render unless the member acts');
+    });
+
     it('shows a failed sibling badge using exactly one requests read', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
       const failed = { results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: 900005, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] };
       const page = await openAt(t, app, `#/jellypass/title/movie/${T_MOVIE}`, { override: (url) => url.endsWith('/requests') ? { status: 200, body: JSON.stringify(failed) } : undefined });
       const card = view(page).querySelector('.jellypass-tv-collection-preview button[data-tmdb-id="900005"]');
       assert.equal(card.querySelector('.jellypass-tv-title-status-failed').textContent, "We couldn't get this");
+      assert.equal(card.querySelector('.jellypass-tv-title-film-date').textContent, '2999-12-31');
       assert.equal(card.getAttribute('aria-label'), "Synthetic Movie Five, We couldn't get this");
       assert.equal(card.querySelector('.jellypass-tv-discover-badge-open'), null);
       assert.equal(page.requests.filter((request) => new URL(request.url).pathname.endsWith('/requests')).length, 1);
@@ -7834,6 +7852,42 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
       assert.equal(view(page).outerHTML, before);
       assert.equal(view(page).querySelector('.jellypass-tv-collection-preview, .jellypass-tv-discover-skeleton-card'), null);
       assert.equal(page.focused(), focus);
+    });
+
+    it('ignores film A late collection 401 after film B opens', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const second = { ...(await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`)).json(), tmdbId: 900010, title: 'Synthetic Movie Ten', collection: null };
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const page = await openJellyfinWeb(t, app, { override: async (url, init) => {
+        if (url.endsWith('/movie/900010')) return { status: 200, body: JSON.stringify(second) };
+        if (init.method === 'POST') return { status: 202, body: '{}' };
+        if (url.includes('/collection/')) { await held; return { status: 401, body: '{"error":"unauthorized"}' }; }
+      } });
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.goTo(`#/jellypass/title/movie/${T_MOVIE}`); showFallback(page.document);
+      for (let i = 0; i < 300 && !view(page)?.querySelector('.jellypass-tv-discover-skeleton-card'); i += 1) await pause(10);
+      assert.ok(view(page).querySelector('.jellypass-tv-discover-skeleton-card'));
+      page.goTo('#/jellypass/title/movie/900010');
+      for (let i = 0; i < 300 && text(page, 'h1') !== 'Synthetic Movie Ten'; i += 1) await pause(10);
+      assert.equal(text(page, 'h1'), 'Synthetic Movie Ten');
+      const focus = view(page).querySelector('.jellypass-tv-title-get');
+      focus.focus();
+      // An accepted request is held in the TV's local overlay until the server catches up.
+      page.click(view(page).querySelector('.jellypass-tv-title-get'));
+      for (let i = 0; i < 300 && text(page, '.jellypass-tv-title-status') !== 'Requested'; i += 1) await pause(10);
+      assert.equal(text(page, '.jellypass-tv-title-status'), 'Requested');
+      const before = view(page).outerHTML;
+      release(); await page.settled();
+      assert.equal(view(page).outerHTML, before);
+      assert.equal(view(page).querySelector('.jellypass-tv-collection-preview, .jellypass-tv-discover-skeleton-card'), null);
+      assert.ok(page.timers() > 0, 'late 401 must not forget the accepted-request overlay');
+      page.goTo(`#/jellypass/title/tv/${T_TV}`);
+      for (let i = 0; i < 300 && text(page, 'h1') === 'Synthetic Movie Ten'; i += 1) await pause(10);
+      page.goTo('#/jellypass/title/movie/900010');
+      await page.settled();
+      assert.equal(text(page, '.jellypass-tv-title-status'), 'Requested', 'the new page retains the accepted request');
     });
 
     for (const state of ['requested', 'unavailable']) it(`does not focus See all when a ${state} film preview arrives`, async (t) => {

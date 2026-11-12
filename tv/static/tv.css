@@ -962,3 +962,5 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
 .jellypass-tv-collection-row > .card { width: 140px; min-width: 140px; flex: 0 0 140px; }
 
 .jellypass-tv-collection-row .jellypass-tv-title-film-note { display: block; white-space: normal; font-size: 80%; }
+
+.jellypass-tv-collection-row .jellypass-tv-title-film-date { white-space: nowrap; }

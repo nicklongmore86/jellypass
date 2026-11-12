@@ -678,7 +678,14 @@ export class TitlePage {
           one.badge.textContent = TITLE_TEXT.failed;
           one.button.setAttribute('aria-label', `${film.title}, ${TITLE_TEXT.failed}`);
         }
-        if (!film.released) one.button.appendChild(this.#el('span', 'jellypass-tv-title-film-note', film.releaseDate ? COLLECTION_TEXT.comingOn(film.releaseDate) : COLLECTION_TEXT.notReleased));
+        if (!film.released) {
+          const note = this.#el('span', 'jellypass-tv-title-film-note', COLLECTION_TEXT.notReleased);
+          if (film.releaseDate) {
+            note.appendChild(this.#document.createTextNode(' · '));
+            note.appendChild(this.#el('span', 'jellypass-tv-title-film-date', film.releaseDate));
+          }
+          one.button.appendChild(note);
+        }
         if (film.hidden !== undefined && this.#asked.hiddenNow('movie', film.tmdbId, film.hidden)) one.button.appendChild(this.#el('span', 'jellypass-tv-title-film-note', COLLECTION_TEXT.hidden));
         const index = buttons.length;
         units.push(unit);
