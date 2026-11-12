@@ -27,7 +27,7 @@ listed at the top of the release notes.
 
 ### Fixed
 
-- TV film collection previews preserve initial Play / Get this focus on fast loads and keep release dates together. Late expired collection responses are covered on web and TV so they cannot sign out a different page.
+- TV film collection previews preserve initial Play / Get this focus on fast loads and keep release dates together.
 
 ## [4.4.0] - 2026-11-10
 

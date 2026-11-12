@@ -7818,6 +7818,36 @@ describe('TV add-on: "Get all missing seasons" and collections', { timeout: 240_
       assert.ok(page.focused() === (acted ? other : primary), 'initial focus survives early row render unless the member acts');
     });
 
+    for (const status of [200, 503]) it(`keeps member focus on Hide when a held preview returns ${status} after pageshow`, async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      t.after(() => release());
+      const page = await openJellyfinWeb(t, app, { override: async (url) => {
+        if (url.includes('/collection/')) {
+          await held;
+          if (status === 503) return { status, body: '{"error":"unavailable"}' };
+        }
+      } });
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.goTo(`#/jellypass/title/movie/${T_MOVIE}`); showFallback(page.document);
+      for (let i = 0; i < 300 && !view(page)?.querySelector('.jellypass-tv-discover-skeleton-card'); i += 1) await pause(10);
+      assert.ok(view(page).querySelector('.jellypass-tv-discover-skeleton-card'), 'preview is still held');
+      page.document.getElementById('fallbackPage').dispatchEvent(new page.Event('pageshow', { bubbles: true }));
+      await pause(30);
+      assert.ok(page.focused() === view(page).querySelector('.jellypass-tv-title-get'), 'pageshow correction has focused the primary action');
+      page.key(39);
+      const hide = view(page).querySelector('.jellypass-tv-title-hide');
+      hide.focus();
+      const focus = t.mock.method(hide, 'focus');
+      release();
+      await page.settled();
+      assert.equal(Boolean(view(page).querySelector('.jellypass-tv-collection-preview button[data-tmdb-id]')), status === 200, 'preview response has rendered');
+      assert.equal(view(page).querySelector('.jellypass-tv-discover-skeleton-card'), null, 'held preview has finished');
+      assert.ok(page.focused() === hide, 'late preview must leave focus on the member’s Hide button');
+      assert.equal(focus.mock.callCount(), 0, 'late preview must not refocus the member’s Hide button');
+    });
+
     it('shows a failed sibling badge using exactly one requests read', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
       const failed = { results: [{ id: 'f'.repeat(22), mediaType: 'movie', tmdbId: 900005, status: 'failed', seasons: [], byYou: true, cancellable: false, requestedOn: '2026-11-01' }] };
