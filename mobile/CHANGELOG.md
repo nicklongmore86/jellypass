@@ -15,6 +15,19 @@ build.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-23
+
+A minor release: the button that asks for a title is now called **Request**,
+and the words around it follow. Nothing else changes. It works with **JellyPass
+server 3.2.0 or later** (app API `v1`), as 1.0.0 to 1.5.1 do; the new words are
+the app's own, so no server upgrade is needed. As in 1.5.1, collections need
+**JellyPass server 4.4.0 or later** (`apiVersion` 6), the wait in "Too many
+tries. Try again in 3 minutes." needs **JellyPass server 4.3.0 or later**
+(`apiVersion` 5), **Not interested** needs JellyPass server 4.0.0 or later
+(`apiVersion` 3), and Cancel request and the day each title was requested need
+JellyPass server 3.5.0 or later (`apiVersion` 2). Members update by installing
+the new TestFlight build, or the new APK over the old one.
+
 ### Changed
 
 - **"Get this" is now "Request"**, as in the web app, so the words say what
@@ -23,8 +36,7 @@ build.
   films" start with "Request", "Get selected (N)" is "Request selected (N)", a
   failed request reads "Request failed", the confirmation is "Thanks — your
   request has been sent to your household.", and the poster badges read
-  *Request* and *Can't ask*. Only the words change; any JellyPass server the
-  app already works with still works.
+  *Request* and *Can't ask*.
 
 ## [1.5.1] - 2026-11-12
 
@@ -389,7 +401,8 @@ is not supported.
 - **iPhone, iPad and Android.** Portrait on phones; iPad and Android tablets
   turn. iOS is distributed through TestFlight and Android as an APK.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.5.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.6.0...HEAD
+[1.6.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.6.0
 [1.5.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.5.1
 [1.5.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.5.0
 [1.4.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.4.1
