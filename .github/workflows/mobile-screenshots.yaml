@@ -2,8 +2,8 @@ name: Mobile screenshots
 
 # App Store screenshots use a Release simulator build and a configured demo household.
 # Devices: iPhone 6.9" (1320x2868) and iPad 13" (2064x2752), both portrait.
-# The screenshots artifact contains the eight numbered App Store images for each device.
-# Store image 08-sign-in shows the address screen and may reveal the configured address.
+# The screenshots artifact contains the nine numbered App Store images for each device.
+# Store image 09-sign-in shows the address screen and may reveal the configured address.
 # Never upload Maestro debug output: commands and view trees can contain expanded secrets.
 # Set MOBILE_SCREENSHOT_ADDRESS and MOBILE_SCREENSHOT_PROFILE repository secrets.
 #
@@ -109,6 +109,6 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: screenshots
-          path: screenshots/*/0[1-8]-*.png
+          path: screenshots/*/0[1-9]-*.png
           retention-days: 3
           if-no-files-found: error

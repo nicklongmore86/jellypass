@@ -23,10 +23,7 @@ appId: com.rtc-services.jellypass
 - extendedWaitUntil:
     visible: "The General.*"
     timeout: 30000
-# On iPhone the filters push the third sample behind the tab bar; scrolling to the end shows all three. On iPad they
-# already fit, so this does nothing.
-- scroll
-- scroll
-- assertVisible: "Sherlock Jr.*"
+# Captured unscrolled, so the filters stay in view under the header. On iPhone the last sample may sit behind the tab
+# bar, as any list does.
 - waitForAnimationToEnd:
     timeout: 10000
