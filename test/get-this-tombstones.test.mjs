@@ -99,7 +99,7 @@ const requestRecord = (app) => app.store.listAppRequests().map(([, record]) => r
 /** Seerr makes a request as Alice now (the one her intent sent, late), available at once. */
 const madeLate = (app, id) => app.seerr.state.requests[SEERR_IDS[ALICE]].push(request({ id, seerrUser: SEERR_IDS[ALICE], status: 5 }));
 
-describe('"Get this": a recovery that cannot tell which request its intent made (Codex 1)', { timeout: 60_000 }, () => {
+describe('"Request": a recovery that cannot tell which request its intent made (Codex 1)', { timeout: 60_000 }, () => {
   it('attaches no declined or ambiguous candidate: a tombstone covers the member\'s requests, so the real one, made late, is a join', async (t) => {
     const now = Date.now();
     const candidates = {
@@ -147,7 +147,7 @@ describe('"Get this": a recovery that cannot tell which request its intent made 
   });
 });
 
-describe('"Get this": an intent whose request Seerr made only after it timed out (Codex 2)', { timeout: 60_000 }, () => {
+describe('"Request": an intent whose request Seerr made only after it timed out (Codex 2)', { timeout: 60_000 }, () => {
   it('gives way to a tombstone, not to nothing: the delayed request is a join, the public movie stays public', async (t) => {
     let now = Date.now();
     const app = await start(t, world({ items: [movieItem()] }), {
@@ -166,7 +166,7 @@ describe('"Get this": an intent whose request Seerr made only after it timed out
     assert.equal(app.store.hasHandledRequest('7300333'), true);
   });
 
-  it('covers neither another member\'s request nor the member\'s own genuine "Get this" made afterwards', async (t) => {
+  it('covers neither another member\'s request nor the member\'s own genuine "Request" made afterwards', async (t) => {
     let now = Date.now();
     const app = await start(t, world({}), { stateFile: { ...SEED, appRequestIntents: { lost: lostIntent(now) } }, now: () => now });
     now += APP_INTENT_TIMEOUT_MS + 1000;
@@ -183,7 +183,7 @@ describe('"Get this": an intent whose request Seerr made only after it timed out
   });
 });
 
-describe('"Get this": a name lookup with more items than one page (Codex 3)', { timeout: 60_000 }, () => {
+describe('"Request": a name lookup with more items than one page (Codex 3)', { timeout: 60_000 }, () => {
   // Movies whose names contain the title's, each another title (another TMDB ID).
   const others = (count) => Array.from({ length: count }, (_, index) => ({
     Id: `7${index.toString(16).padStart(31, '0')}`, Name: `Synthetic Movie One Part ${index}`, Type: 'Movie',
@@ -211,7 +211,7 @@ describe('"Get this": a name lookup with more items than one page (Codex 3)', { 
   });
 });
 
-describe('"Get this": a household replaced before its intent is recovered (Codex 4)', { timeout: 60_000 }, () => {
+describe('"Request": a household replaced before its intent is recovered (Codex 4)', { timeout: 60_000 }, () => {
   it('keeps the tombstone but gives the request to no household: the new one under the same ID never sees it', async (t) => {
     const now = Date.now();
     const state = world({ requests: { [SEERR_IDS[ALICE]]: [request({ id: 7300444, seerrUser: SEERR_IDS[ALICE], status: 1 })] } });
@@ -242,7 +242,7 @@ describe('"Get this": a household replaced before its intent is recovered (Codex
   });
 });
 
-describe('"Get this": a household\'s join and another household\'s genuine grant of the same series (Codex 5)', { timeout: 60_000 }, () => {
+describe('"Request": a household\'s join and another household\'s genuine grant of the same series (Codex 5)', { timeout: 60_000 }, () => {
   /**
    * Bob's genuine request for season 1 is available; Alice's "Get this" for season 2 is made while the series arrives,
    * and settles as `existing-series` (its grant follows the join rules). `order` says how the two webhooks arrive.
@@ -309,7 +309,7 @@ describe('"Get this": a household\'s join and another household\'s genuine grant
   });
 });
 
-describe('"Get this": a safety decision whose record is pruned (Codex 6)', { timeout: 60_000 }, () => {
+describe('"Request": a safety decision whose record is pruned (Codex 6)', { timeout: 60_000 }, () => {
   it('keeps the request on the join rules after its record is pruned by newer ones: retried in Seerr, the movie stays public', async (t) => {
     const app = await start(t, world({}));
     const hold = holdAfterMade(app);
@@ -339,7 +339,7 @@ describe('"Get this": a safety decision whose record is pruned (Codex 6)', { tim
   });
 });
 
-describe('"Get this": an intent that cannot be reconciled for long (Codex 7)', { timeout: 60_000 }, () => {
+describe('"Request": an intent that cannot be reconciled for long (Codex 7)', { timeout: 60_000 }, () => {
   it('stops holding up another household\'s genuine grant once the deadline has passed, and keeps the member\'s request a join', async (t) => {
     let now = Date.now();
     const state = world({
@@ -369,7 +369,7 @@ describe('"Get this": an intent that cannot be reconciled for long (Codex 7)', {
   });
 });
 
-describe('"Get this": the administrator\'s readout of what is outstanding', { timeout: 60_000 }, () => {
+describe('"Request": the administrator\'s readout of what is outstanding', { timeout: 60_000 }, () => {
   const DAY = 24 * 60 * 60 * 1000;
   const at = (offset) => new Date(Date.now() + offset).toISOString();
   const marker = (created, expires, requestIds, extra = {}) => ({ mediaType: 'movie', tmdbId: T_MOVIE, requestIds, createdAt: at(created), expiresAt: at(expires), ...extra });

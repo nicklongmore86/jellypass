@@ -79,7 +79,7 @@ describe('from Home', () => {
     expect(title()).toBe('Marvel Studios movies');
     expect(gridNames()).toHaveLength(20);
     expect(gridNames().slice(0, 4)).toEqual([
-      'studio-420 1, 2015, Movie, Available to get',
+      'studio-420 1, 2015, Movie, Available to request',
       'studio-420 2, 2016, Movie, Ready to watch',
       "studio-420 3, 2017, Movie, Can't request",
       'studio-420 4, 2018, Movie, Requested',
@@ -93,7 +93,7 @@ describe('from Home', () => {
     expect(gateway.calls.slice(before).map((call) => call.url.replace(ORIGIN, ''))).toEqual([`${API}/discover/studio/420?page=2`]);
     expect(gridNames()).toHaveLength(40);
 
-    await pressNode(linkNamed('studio-420 21, 2015, Movie, Available to get'));
+    await pressNode(linkNamed('studio-420 21, 2015, Movie, Available to request'));
     expect(app.getPathname()).toBe('/home/movie/5021');
     await pressNode(buttonNamed('Back'));
     expect(app.getPathname()).toBe('/home/studio/420');
@@ -123,12 +123,12 @@ describe("a network's tabs", () => {
     await pressNode(tab('Series'));
     expect(tabs()).toEqual(['All', 'Series ✓', 'Films']);
     expect(title()).toBe('Series on Netflix');
-    expect(gridNames()[0]).toBe('network-213-series 1, 2015, Series, Available to get');
+    expect(gridNames()[0]).toBe('network-213-series 1, 2015, Series, Available to request');
     expect(justWatch()).toBe(false);
 
     await pressNode(tab('Films'));
     expect(title()).toBe('Films on Netflix');
-    expect(gridNames()[0]).toBe('network-213-films 1, 2015, Movie, Available to get');
+    expect(gridNames()[0]).toBe('network-213-films 1, 2015, Movie, Available to request');
     expect(justWatch()).toBe(true);
     // The tab chosen again asks for nothing.
     await pressNode(tab('Films'));
@@ -252,11 +252,11 @@ describe('late answers', () => {
     serveHousehold({ source: (list) => (list === 'network-213-all' ? all.promise : undefined) });
     await open('/home/network/213');
     await pressNode(tab('Films'));
-    expect(gridNames()[0]).toBe('network-213-films 1, 2015, Movie, Available to get');
+    expect(gridNames()[0]).toBe('network-213-films 1, 2015, Movie, Available to request');
     await act(async () => all.release(answer(200, sourceAnswer('network-213-all'))));
     await settle();
     expect(tabs()).toEqual(['All', 'Series', 'Films ✓']);
-    expect(gridNames()[0]).toBe('network-213-films 1, 2015, Movie, Available to get');
+    expect(gridNames()[0]).toBe('network-213-films 1, 2015, Movie, Available to request');
   });
 
   it("drop a Load more asked for before the switch: All's second page never lands on Films", async () => {
@@ -301,7 +301,7 @@ describe('New only', () => {
     expect(sourceChip().props.accessibilityState).toEqual({ checked: true });
     expect([sourceChip().props.accessibilityRole, sourceChip().props.accessibilityLabel]).toEqual(['checkbox', "New only: show only titles you don't have or haven't requested"]);
     expect(within(sourceChip()).queryAllByText('New only')).toHaveLength(1);
-    expect(gridNames().slice(0, 2)).toEqual(["studio-420 1, 2015, Movie, Available to get", "studio-420 3, 2017, Movie, Can't request"]);
+    expect(gridNames().slice(0, 2)).toEqual(["studio-420 1, 2015, Movie, Available to request", "studio-420 3, 2017, Movie, Can't request"]);
     expect(gridNames().some((name) => /Ready to watch|Requested/.test(name))).toBe(false);
     expect(since().length - before).toBe(0);
     await pressNode(buttonNamed('Back'));
@@ -314,9 +314,9 @@ describe('the overlay', () => {
   it('shows Requested right after Get this on a title opened from the page, with no call', async () => {
     await open('/home/studio/2');
     const card = (state: string) => screen.queryAllByRole('link', { name: `studio-2 1, 2015, Movie, ${state}` });
-    expect(card('Available to get')).toHaveLength(1);
-    await pressNode(card('Available to get')[0]!);
-    await pressNode(buttonNamed(/^Get this/));
+    expect(card('Available to request')).toHaveLength(1);
+    await pressNode(card('Available to request')[0]!);
+    await pressNode(buttonNamed(/^Request/));
     const before = gateway.calls.length;
     await pressNode(buttonNamed('Back'));
     expect(card('Requested')).toHaveLength(1);

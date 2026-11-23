@@ -15,7 +15,7 @@ const ITEM_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 export const STATE_LABELS: Record<HouseholdState, string> = {
   in_library: 'Ready to watch',
-  get_this: 'Available to get',
+  get_this: 'Available to request',
   unavailable: "Can't request",
   requested: 'Requested',
 };
@@ -24,20 +24,20 @@ export const STATE_LABELS: Record<HouseholdState, string> = {
 export const REQUEST_LABELS: Record<CoarseStatus, string> = {
   requested: 'Requested',
   ready: 'Ready to watch',
-  failed: "We couldn't get this",
+  failed: "Request failed",
 };
 
 /** "Get this" words. The confirmation is one fixed sentence: nothing about the answer changes it, or tells what followed. */
 export const GET_THIS_TEXT = {
-  button: 'Get this',
+  button: 'Request',
   sending: 'Sending…',
   chooseSeasons: 'Choose the seasons you want',
   chooseBelow: 'Choose the seasons you want below.',
   selectAll: 'Select all',
   clearAll: 'Clear all',
   /** Asks at once for every season the household does not have and has not asked for: the same one call as Select all, then Get this. */
-  allMissingSeasons: 'Get all missing seasons',
-  confirmation: "Thanks — we'll get this for your household.",
+  allMissingSeasons: 'Request all missing seasons',
+  confirmation: "Thanks — your request has been sent to your household.",
   failedNote: 'Ask your JellyPass admin to try again.',
   rate_limited: 'Too many tries, try again in a few minutes.',
   offline: "You're offline. Check your connection, then try again.",
@@ -70,14 +70,14 @@ export const COLLECTION_TEXT = {
   partOf: (name: string) => `Part of ${name}`,
   films: 'Films',
   chooseFilms: 'Choose the films you want',
-  getAll: 'Get all missing films',
-  getSelected: (count: number) => `Get selected (${count})`,
+  getAll: 'Request all missing films',
+  getSelected: (count: number) => `Request selected (${count})`,
   sending: (done: number, total: number) => `Sending ${done} of ${total}…`,
   notReleased: 'Not released yet',
   /** A film the member hid from Discover: still listed, still tickable, never ticked at first. */
   hidden: 'Not interested',
   noneMissing: 'Your household has every released film here, or has asked for it.',
-  asked: (count: number) => `Thanks — we'll get ${count === 1 ? 'this film' : `these ${count} films`} for your household.`,
+  asked: (count: number) => `Thanks — your request for ${count === 1 ? 'this film' : `these ${count} films`} has been sent to your household.`,
   askedList: 'Asked for',
   notAskedList: 'Not asked for',
   none: 'No films listed.',
@@ -1332,7 +1332,7 @@ export function seasonView(doc: Document, season: Season, seriesTitle: string | 
 
 export const REQUESTS_TEXT = {
   title: 'My requests',
-  empty: 'Nothing requested yet. Press Get this on a title to ask for it.',
+  empty: 'Nothing requested yet. Press Request on a title to ask for it.',
   loading: 'Loading title…',
   titleMissing: 'Title unavailable',
   byYou: 'Asked for by you',

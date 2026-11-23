@@ -1143,7 +1143,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.equal((await atJellyfin('/Users/Me', alice)).status, 401);
   });
 
-  it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {
+  it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Request" decision input for "Jellyfin already has it"', async () => {
     const original = await client.getItem(fixture.itemId);
     await client.updateItem({ ...original, ProviderIds: { ...original.ProviderIds, Tmdb: '424242' } });
     const itemId = fixture.itemId.replaceAll('-', '').toLowerCase();

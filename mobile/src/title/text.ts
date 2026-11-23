@@ -6,13 +6,13 @@ import type { Movie, Series } from '../api/types';
 
 /** Get this words. The confirmation is one fixed sentence: nothing about the answer changes it, or tells what followed. */
 export const GET_THIS_TEXT = {
-  button: 'Get this',
+  button: 'Request',
   sending: 'Sending…',
   chooseSeasons: 'Choose the seasons you want',
   chooseBelow: 'Choose the seasons you want below.',
   selectAll: 'Select all',
   clearAll: 'Clear all',
-  confirmation: "Thanks — we'll get this for your household.",
+  confirmation: "Thanks — your request has been sent to your household.",
   failedNote: 'Ask your JellyPass admin to try again.',
   rate_limited: 'Too many tries, try again in a few minutes.',
   offline: "You're offline. Check your connection, then try again.",

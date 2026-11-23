@@ -7,7 +7,7 @@ import { GET_THIS_TEXT, rateLimitedText } from '../title/text';
 
 export const REQUESTS_TEXT = {
   title: 'My requests',
-  empty: 'Nothing requested yet. Press Get this on a title to ask for it.',
+  empty: 'Nothing requested yet. Press Request on a title to ask for it.',
   loading: 'Loading title…',
   titleMissing: 'Title unavailable',
   byYou: 'Asked for by you',

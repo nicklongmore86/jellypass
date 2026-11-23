@@ -14,8 +14,8 @@ export const COLLECTION_TEXT = {
   partOf: (name: string): string => `Part of ${name}`,
   films: 'Films',
   chooseFilms: 'Choose the films you want',
-  getAll: 'Get all missing films',
-  getSelected: (count: number): string => `Get selected (${count})`,
+  getAll: 'Request all missing films',
+  getSelected: (count: number): string => `Request selected (${count})`,
   notReleased: 'Not released yet',
   /** A film the member hid from Discover: still listed and tickable, never ticked at first. */
   hidden: 'Not interested',

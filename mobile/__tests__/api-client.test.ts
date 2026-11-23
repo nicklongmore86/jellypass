@@ -311,7 +311,7 @@ describe('error answers', () => {
     expect(await same.me()).toEqual(fixture('me'));
   });
 
-  it('never reads "Get this"\'s answer', async () => {
+  it('never reads "Request"\'s answer', async () => {
     const accepted = answer(202, 'whatever it says');
     const { api } = clientWith(() => accepted);
     await expect(api.getThis('movie', 900001)).resolves.toBeUndefined();

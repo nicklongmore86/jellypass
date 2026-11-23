@@ -104,7 +104,7 @@ async function getThis(app, pathname = GET_MOVIE, body = undefined, options = {}
   return answer;
 }
 
-describe('household app "Get this": the immediate answer', { timeout: 60_000 }, () => {
+describe('household app "Request": the immediate answer', { timeout: 60_000 }, () => {
   it('answers the same fixed 202, byte for byte, in every world and whether or not the caller is eligible', async (t) => {
     const answers = {};
     for (const [name, { state }] of Object.entries(getThisWorlds())) {
@@ -155,7 +155,7 @@ describe('household app "Get this": the immediate answer', { timeout: 60_000 }, 
   });
 });
 
-describe('household app "Get this": branches', { timeout: 60_000 }, () => {
+describe('household app "Request": branches', { timeout: 60_000 }, () => {
   it('runs the branch the doc gives each world, and never asks Seerr for a title Jellyfin already has', async (t) => {
     for (const [name, { state, branch }] of Object.entries(getThisWorlds())) {
       const app = await start(t, state);
@@ -311,7 +311,7 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
   });
 });
 
-describe('household app "Get this": callers with a Seerr quota', { timeout: 60_000 }, () => {
+describe('household app "Request": callers with a Seerr quota', { timeout: 60_000 }, () => {
   // Any limit at all, used or not, for either media type: "Get this" is not offered.
   const quotaKinds = {
     'a movie quota': { movie: { limit: 3, days: 7 } },
@@ -346,7 +346,7 @@ describe('household app "Get this": callers with a Seerr quota', { timeout: 60_0
     assert.match(expected[0], /"state":"unavailable"/);
   });
 
-  it('runs nothing for their "Get this", in every world: the same 202, no title read, no join, no interest, no request', async (t) => {
+  it('runs nothing for their "Request", in every world: the same 202, no title read, no join, no interest, no request', async (t) => {
     let expected;
     for (const [kind, quota] of Object.entries(quotaKinds)) {
       for (const [name, { state }] of Object.entries(getThisWorlds({ quotas: { [SEERR_IDS[ALICE]]: quota } }))) {
@@ -408,7 +408,7 @@ describe('household app "Get this": callers with a Seerr quota', { timeout: 60_0
   });
 });
 
-describe('household app "Get this": every outcome follows the request', { timeout: 60_000 }, () => {
+describe('household app "Request": every outcome follows the request', { timeout: 60_000 }, () => {
   /** Changes the Seerr request a record follows, then brings the records up to date. */
   async function outcome(app, change) {
     change(app.seerr.state);
@@ -494,7 +494,7 @@ describe('household app "Get this": every outcome follows the request', { timeou
   });
 });
 
-describe('household app "Get this": households', { timeout: 60_000 }, () => {
+describe('household app "Request": households', { timeout: 60_000 }, () => {
   it('keeps a record with the household it was made for, whatever membership does later', async (t) => {
     const app = await start(t, world({ tmdbMovies }), { households: [
       { id: 'grove', name: 'Grove', userIds: [ALICE, ANN, CAROL] },
@@ -634,7 +634,7 @@ describe('household app "Get this": households', { timeout: 60_000 }, () => {
   });
 });
 
-describe('household app "Get this": what the household sees afterwards', { timeout: 60_000 }, () => {
+describe('household app "Request": what the household sees afterwards', { timeout: 60_000 }, () => {
   it('shows the same title state and list after a request and after an interest, byte for byte', async (t) => {
     const worlds = getThisWorlds();
     const seen = {};
@@ -782,7 +782,7 @@ describe('household app "Get this": what the household sees afterwards', { timeo
   });
 });
 
-describe('household app "Get this": input, budgets, shutdown and metrics', { timeout: 60_000 }, () => {
+describe('household app "Request": input, budgets, shutdown and metrics', { timeout: 60_000 }, () => {
   it('refuses invalid input with the fixed 400 before counting or deciding anything', async (t) => {
     const app = await start(t, world({ tmdbMovies }));
     for (const [pathname, body] of [
@@ -974,14 +974,14 @@ describe('household app "Get this": input, budgets, shutdown and metrics', { tim
     assert.doesNotMatch(metrics, /9000(01|10)|tmdb/i);
   });
 
-  it('answers 404 for "Get this" and the household\'s requests when the app has no request service', async (t) => {
+  it('answers 404 for "Request" and the household\'s requests when the app has no request service', async (t) => {
     const app = await start(t, world(), { requests: false });
     assert.equal((await app.post(GET_MOVIE)).status, 404);
     assert.equal((await app.get(`${APP}/requests`)).status, 404);
   });
 });
 
-describe('household app "Get this": a collection\'s films', { timeout: 60_000 }, () => {
+describe('household app "Request": a collection\'s films', { timeout: 60_000 }, () => {
   /** A collection of eight films nobody holds, and the film T, which household B may hold. */
   const FILMS = Array.from({ length: 8 }, (_, index) => 900030 + index);
   const collectionWorld = (extra = {}) => world({
@@ -991,7 +991,7 @@ describe('household app "Get this": a collection\'s films', { timeout: 60_000 },
   });
   const getFilm = (app, tmdbId, options) => app.post(`${APP}/movie/${tmdbId}/get`, undefined, options);
 
-  it('asks for each film with its own "Get this": eight films count eight, each its own entry, cancelled one at a time', async (t) => {
+  it('asks for each film with its own "Request": eight films count eight, each its own entry, cancelled one at a time', async (t) => {
     t.mock.method(console, 'warn', () => undefined);
     const app = await start(t, collectionWorld(), { getThisLimits: { perUser: 9, perClient: 100, perHousehold: 100 } });
     for (const tmdbId of FILMS) assert.equal((await getFilm(app, tmdbId)).text, ACCEPTED);
@@ -1060,7 +1060,7 @@ describe('household app "Get this": a collection\'s films', { timeout: 60_000 },
   });
 });
 
-describe('"Get this" records in the store', () => {
+describe('"Request" records in the store', () => {
   const record = (overrides = {}) => ({
     householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'interest', status: 'pending',
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...overrides,

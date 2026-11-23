@@ -210,7 +210,7 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   animation under Reduce Motion, and the screen reader hears which title is showing. A tap opens the title. Where
   Previous, the dots and Next don't fit on one line (a 320 pt phone), the dots take a line of their own above them.
 - **Cards.** A poster card shows the title and "2024 · Movie"; a big card "2024 · ★ 7.8 TMDB". The status is a dot and
-  the PWA's word (Ready to watch, Available to get, Can't request, Requested; with My requests' "We couldn't get this",
+  the PWA's word (Ready to watch, Available to request, Can't request, Requested; with My requests' "Request failed",
   the PWA's five) on the image's top-left. Each card is one link named "title, year, rating, status", the status said
   once (the chip is hidden from screen readers). Phones: posters 132 pt, big cards 92% of the column (the next peeks).
   From 768 pt wide (iPad): posters 168 pt, big cards 36% of the column, the hero 21:9 and w1280 backdrops.
@@ -300,6 +300,9 @@ text free to grow, the badges, phone and iPad columns) and `row-pages.test.ts`.
 
 ## Title pages and Get this (`src/title`, `src/screens/TitleScreen.tsx`)
 
+The button is labelled **Request** (it was **Get this** before 1.6.0; the code and this README still call the flow
+"Get this", after its API path).
+
 The PWA's detail pages (`titleDetail` and `seasonView` in `app/src/render.ts`) on the stack of the tab they were opened
 from: `/home/movie/<id>`, `/home/tv/<id>` and `/home/tv/<id>/season/<n>` from Home's cards and hero, the same under
 `/search/…` from Search's results and `/requests/…` from My requests (a season from its card on the series page, on the
@@ -310,16 +313,16 @@ same stack; `src/navigation/titles.ts`, `src/screens/TitleRoutes.tsx`). An addre
   run time or "N seasons", specials not counted, "★ 7.4 TMDB" said as "TMDB rating 7.4 out of 10"), genre pills, the
   status chip (said once) and its one muted note ("Check My requests to follow it.", "This title can't be requested.",
   or the admin note for a title the household asked for that failed, from `GET /requests`), the overview, and **one**
-  full-width cyan action: **Play** when in the library, **Get this** when the household can ask, nothing otherwise. A
-  series partly in the library keeps Play and shows Get this outlined. A season page lists its episodes.
+  full-width cyan action: **Play** when in the library, **Request** when the household can ask, nothing otherwise. A
+  series partly in the library keeps Play and shows Request outlined. A season page lists its episodes.
 - **Play** opens the API's `play.url` only when the client's allowlist (`safePlayUrl`) says it is exactly the
   household's own `/web/#/details?id=<itemId>`, in the system browser (`Linking.openURL`). Anything else: no button.
 - **Seasons** are cards: one link to the season (name, "N episodes" and status, said once), the status chip, and, where
   the household can ask, a round selection circle that is a real checkbox (44 pt, named for its season). **Select all**
   (more than one to pick) only moves the circles; **Get this** sends exactly the seasons chosen (`{"seasons":[…]}`; HD
   only, as the API asks for nothing else) and is disabled until one is.
-  **Get all missing seasons** (beside the season list, whenever one is left to get) sends, in that one same request,
-  every season still Available to get (from 1 on, not one asked for or failed on the page): exactly what Select all
+  **Request all missing seasons** (beside the season list, whenever one is left to get) sends, in that one same request,
+  every season still Available to request (from 1 on, not one asked for or failed on the page): exactly what Select all
   then Get this would. It asks only for the seasons the server lists now; a season announced later is not followed.
 - **Collections** (`src/collection`, `src/screens/CollectionScreen.tsx`; server `apiVersion` 6). A film in a TMDB
   collection (a film series) says **Part of <name>**, a link to `/<tab>/collection/<id>` on the same stack. A server
@@ -328,7 +331,7 @@ same stack; `src/navigation/titles.ts`, `src/screens/TitleRoutes.tsx`). An addre
   film the household can still ask for has a selection circle, ticked at first when it is released and never when it
   is not or the member hid it ("Not interested", which it says). A film whose request failed says so and has none:
   asking again changes nothing until an administrator acts. One button asks for the ticked films, one `POST /movie/<id>/get` each, in order and never two at once (each
-  counts once against the server's Get this limits, and each is its own entry in My requests): **Get all missing films**
+  counts once against the server's Get this limits, and each is its own entry in My requests): **Request all missing films**
   while the ticks are the first ones, **Get selected (N)** otherwise. The first refusal stops the run: the page says
   "Asked for: …", "Not asked for: …" and why (a 429's wait, "Too many tries. Try again in 10 minutes."), and the
   collection is read again whenever anything was asked for.
@@ -338,7 +341,7 @@ same stack; `src/navigation/titles.ts`, `src/screens/TitleRoutes.tsx`). An addre
   answer and anything else get the PWA's three fixed messages and the button back; nothing is ever sent again by
   itself. A 401 signs the member out (the series read behind a season page is best effort, but its 401 too).
 - **Requested right after Get this** (`asked.ts`, the PWA's `app/src/asked.ts` from PR #76): the server records a
-  request a moment after it answers, so a page read straight afterwards can still say "Available to get". The app keeps,
+  request a moment after it answers, so a page read straight afterwards can still say "Available to request". The app keeps,
   in memory only, the keys `movie:<id>`, `tv:<id>` and `tv:<id>:<season>` its member just asked for, added only after a
   2xx in the same session as when it was sent (no sign-in move while it was out, even back to the same token). A key
   ends after two minutes by the monotonic clock or the wall clock moving forward (a clock set back never stretches it),
@@ -380,7 +383,7 @@ magnifier hidden from screen readers, at most 100 characters) in a band that sti
 
 **My requests** is the PWA's `requestsScreen()`: the household's requests from `GET /requests`, each an entry with its
 title's thumbnail (46 × 68 pt, TMDB's poster only), its title and "year · Movie/Series", the coarse status (Requested,
-Ready to watch, We couldn't get this), who asked ("Asked for by you" or "… by someone in your household"), the day it was
+Ready to watch, Request failed), who asked ("Asked for by you" or "… by someone in your household"), the day it was
 requested, each season of a series with its own status, and, where anything failed, "Ask your JellyPass admin to try
 again." with no button. Since 1.1.0 the list can be filtered, and a member can cancel a request from it.
 
@@ -390,7 +393,7 @@ again." with no button. Since 1.1.0 the list can be filtered, and a member can c
   showing. A title that cannot be read says "Title unavailable" and keeps its status. Every title answer is seen by
   `asked.ts`, so Home, Search and the title pages show the state read here.
 - **States.** "Loading title…" until a title is named, a skeleton while the list loads, the PWA's empty line ("Nothing
-  requested yet. Press Get this on a title to ask for it."), and the same fixed messages with **Try again**; nothing is
+  requested yet. Press Request on a title to ask for it."), and the same fixed messages with **Try again**; nothing is
   retried by itself, and a 401 (the list or a title) signs the member out.
 - **An entry** is one link (named once with everything it shows, at least 44 pt) to its title on the My requests tab's
   own stack. The list stops widening at 46rem (736 pt) on iPad.

@@ -21,6 +21,19 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- **"Get this" is now "Request"** in the web app and the TV add-on, so the
+  words say what happens: the title is asked for on the household's server.
+  "Available to get" is now "Available to request", "Get all missing seasons"
+  and "Get all missing films" start with "Request", "Get selected (N)" is
+  "Request selected (N)", a failed request reads "Request failed", and the
+  confirmation is "Thanks — your request has been sent to your household." The
+  TV add-on's poster badges read *Request* and *Can't ask*. The administrator
+  UI's cancel prompt says the household goes back to "Available to request".
+  Only the words change: the app API paths (`…/get`), settings, metrics and
+  state file keep their names.
+
 ## [4.5.0] - 2026-11-12
 
 This is a minor release. Film pages in the web app and the TV add-on gain a

@@ -15,6 +15,17 @@ build.
 
 ## [Unreleased]
 
+### Changed
+
+- **"Get this" is now "Request"**, as in the web app, so the words say what
+  happens: the title is asked for on the household's server. "Available to get"
+  is now "Available to request", "Get all missing seasons" and "Get all missing
+  films" start with "Request", "Get selected (N)" is "Request selected (N)", a
+  failed request reads "Request failed", the confirmation is "Thanks — your
+  request has been sent to your household.", and the poster badges read
+  *Request* and *Can't ask*. Only the words change; any JellyPass server the
+  app already works with still works.
+
 ## [1.5.1] - 2026-11-12
 
 A patch release: a film's collection is easier to see, as a row of posters of

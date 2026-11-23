@@ -101,7 +101,7 @@ describe('searching', () => {
     await wait(1);
     expect(made()).toEqual(['dune@1']);
     expect(resultNames().slice(0, 4)).toEqual([
-      'dune 1, 2010, Movie, Available to get',
+      'dune 1, 2010, Movie, Available to request',
       'dune 2, 2011, Series, Ready to watch',
       "dune 3, 2012, Movie, Can't request",
       'dune 4, 2013, Series, Requested',
@@ -162,7 +162,7 @@ describe('searching', () => {
     await gate.release('second@1');
     await gate.release('first@1');
     expect(made()).toEqual(['first@1', 'second@1']);
-    expect(resultNames()[0]).toBe('second 1, 2010, Movie, Available to get');
+    expect(resultNames()[0]).toBe('second 1, 2010, Movie, Available to request');
     // The older call was aborted when the newer one went out.
     const first = gateway.calls.find((call) => call.url.includes('q=first'))!;
     expect(first.init.signal.aborted).toBe(true);
@@ -184,7 +184,7 @@ describe('Load more', () => {
     expect(made()).toEqual(['dune@1', 'dune@2']);
     await gate.release('dune@2');
     expect(resultNames()).toHaveLength(40);
-    expect(resultNames()[20]).toBe('dune 21, 2010, Movie, Available to get');
+    expect(resultNames()[20]).toBe('dune 21, 2010, Movie, Available to request');
     await pressNode(buttonNamed('Load more'));
     await gate.release('dune@3');
     expect(resultNames()).toHaveLength(60);
@@ -205,7 +205,7 @@ describe('Load more', () => {
     await gate.release('arrival@1');
     await gate.release('dune@2');
     expect(resultNames()).toHaveLength(20);
-    expect(resultNames()[0]).toBe('arrival 1, 2010, Movie, Available to get');
+    expect(resultNames()[0]).toBe('arrival 1, 2010, Movie, Available to request');
   });
 });
 
@@ -286,9 +286,9 @@ describe('a result', () => {
     const card = (state: string) => screen.queryAllByRole('link', { name: `dune 6, 2015, Series, ${state}` });
     expect(card('Ready to watch')).toHaveLength(1);
     await pressNode(card('Ready to watch')[0]!);
-    expect(spokenStatus()).toEqual(['Available to get']);
+    expect(spokenStatus()).toEqual(['Available to request']);
     await pressNode(checkboxNamed('Season 1'));
-    await pressNode(buttonNamed('Get this: Series 3006'));
+    await pressNode(buttonNamed('Request: Series 3006'));
     const before = gateway.calls.length;
     await pressNode(buttonNamed('Back'));
     // The title page's answer (get_this) is fresher than the search's, and the overlay says Requested over it.

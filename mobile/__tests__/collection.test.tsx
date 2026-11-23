@@ -161,23 +161,23 @@ describe('a collection page', () => {
     expect(screen.queryAllByTestId('film-row')).toHaveLength(6);
     expect(screen.queryAllByRole('link', { name: 'Film 1, 2020, Ready to watch' })).toHaveLength(1);
     expect(screen.queryAllByRole('link', { name: 'Film 4, 2020, Requested' })).toHaveLength(1);
-    expect(screen.queryAllByRole('link', { name: `Film 6, 2999, Available to get, ${COLLECTION_TEXT.notReleased}` })).toHaveLength(1);
+    expect(screen.queryAllByRole('link', { name: `Film 6, 2999, Available to request, ${COLLECTION_TEXT.notReleased}` })).toHaveLength(1);
     expect(checkboxes()).toEqual(['Film 2 ✓', 'Film 3 ✓', 'Film 5 ✓', 'Film 6']);
     expect(getButton(COLLECTION_TEXT.getAll).props.accessibilityState?.disabled).toBe(false);
     expect(posts()).toEqual([]);
   });
 
-  it('says "Get selected (N)" once the ticks differ, and asks for nothing with none ticked', async () => {
+  it('says "Request selected (N)" once the ticks differ, and asks for nothing with none ticked', async () => {
     await open(`/home/collection/${COLLECTION_ID}`);
     await pressNode(checkboxNamed('Film 3'));
-    expect(getButton('Get selected (2)')).toBeTruthy();
+    expect(getButton('Request selected (2)')).toBeTruthy();
     await pressNode(checkboxNamed('Film 6'));
-    expect(getButton('Get selected (3)')).toBeTruthy();
+    expect(getButton('Request selected (3)')).toBeTruthy();
     await pressNode(checkboxNamed('Film 6'));
     await pressNode(checkboxNamed('Film 3'));
     expect(getButton(COLLECTION_TEXT.getAll)).toBeTruthy();
     for (const name of ['Film 2', 'Film 3', 'Film 5']) await pressNode(checkboxNamed(name));
-    expect(getButton('Get selected (0)').props.accessibilityState?.disabled).toBe(true);
+    expect(getButton('Request selected (0)').props.accessibilityState?.disabled).toBe(true);
     expect(shows(COLLECTION_TEXT.chooseBelow)).toBe(true);
     expect(posts()).toEqual([]);
   });
@@ -221,7 +221,7 @@ describe('a collection page', () => {
     });
     await open(`/home/collection/${COLLECTION_ID}`);
     await pressNode(checkboxNamed('Film 6'));
-    await pressNode(getButton('Get selected (4)'));
+    await pressNode(getButton('Request selected (4)'));
     // Film 5 and Film 6 were never sent.
     expect(posts()).toEqual(['POST /movie/2/get', 'POST /movie/3/get']);
     expect(message()).toEqual(['Asked for: Film 2.', 'Not asked for: Film 3, Film 5, Film 6.', 'Too many tries. Try again in 10 minutes.']);
@@ -255,12 +255,12 @@ describe('a collection page', () => {
   it('marks a film the member hid as Not interested and leaves it unticked, though it can be ticked by hand', async () => {
     useHousehold({ collection: () => collectionAnswer([film(2, 'get_this', true), { ...film(3, 'get_this', true), hidden: true }, film(5, 'get_this', true)]) });
     await open(`/home/collection/${COLLECTION_ID}`);
-    expect(screen.queryAllByRole('link', { name: `Film 3, 2020, Available to get, ${COLLECTION_TEXT.hidden}` })).toHaveLength(1);
+    expect(screen.queryAllByRole('link', { name: `Film 3, 2020, Available to request, ${COLLECTION_TEXT.hidden}` })).toHaveLength(1);
     expect(shows(COLLECTION_TEXT.hidden)).toBe(true);
     expect(checkboxes()).toEqual(['Film 2 ✓', 'Film 3', 'Film 5 ✓']);
     expect(getButton(COLLECTION_TEXT.getAll)).toBeTruthy();
     await pressNode(checkboxNamed('Film 3'));
-    expect(getButton('Get selected (3)')).toBeTruthy();
+    expect(getButton('Request selected (3)')).toBeTruthy();
   });
 
   it('offers nothing when every film is held or asked for', async () => {
@@ -332,7 +332,7 @@ describe('a collection page', () => {
   });
 });
 
-describe('"Get all missing seasons"', () => {
+describe('"Request all missing seasons"', () => {
   const bodies = () => gateway.calls.filter((call) => call.init.method === 'POST').map((call) => call.init.body);
 
   it('asks for every season still to get in one request, as Select all and Get this would', async () => {

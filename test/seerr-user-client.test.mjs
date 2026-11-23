@@ -531,7 +531,7 @@ describe('Seerr user link check', () => {
   });
 });
 
-describe('Seerr title records for "Get this"', () => {
+describe('Seerr title records for "Request"', () => {
   it('reads a title\'s requests with the admin key, keeping only what the branches decide from', async () => {
     respond = () => Response.json(seerrFixture('tv'));
     const record = await new SeerrClient(BASE_URL, API_KEY).titleRequests('tv', 900002);

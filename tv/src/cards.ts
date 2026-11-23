@@ -12,7 +12,7 @@ import { JELLYFIN_CLASSES, listClasses } from './jellyfin-web.js';
 /** The coarse statuses, worded as the household app words them. */
 export const STATE_LABELS: Record<HouseholdState, string> = {
   in_library: 'Ready to watch',
-  get_this: 'Available to get',
+  get_this: 'Available to request',
   unavailable: "Can't request",
   requested: 'Requested',
 };

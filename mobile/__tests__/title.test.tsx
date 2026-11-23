@@ -113,7 +113,7 @@ describe('a movie page', () => {
     expect(flat(backdrop).borderRadius).toBe(30);
     // The phone has no poster beside the title.
     expect(screen.queryAllByTestId('detail-poster', { includeHiddenElements: true })).toHaveLength(0);
-    expect(screen.queryAllByRole('button', { name: /^Get this/ })).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: /^Request/ })).toHaveLength(0);
     await pressNode(buttonNamed('Play Film 7'));
     expect(openURL.mock.calls).toEqual([[PLAY_URL]]);
   });
@@ -133,15 +133,15 @@ describe('a movie page', () => {
     await open('/home/movie/7');
     expect(spokenStatus()).toEqual([word]);
     expect(shows(note)).toBe(true);
-    expect(screen.queryAllByRole('button', { name: /^(Get this|Play)/ })).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: /^(Request|Play)/ })).toHaveLength(0);
   });
 
   it('shows a film the household asked for that failed as "We couldn\'t get this", with the admin note and no button', async () => {
     useHousehold({ requests: { results: [{ id: 'AAAAAAAAAAAAAAAAAAAAAA', mediaType: 'movie', tmdbId: 7, status: 'failed', seasons: [], byYou: true }] } });
     await open('/home/movie/7');
-    expect(spokenStatus()).toEqual(["We couldn't get this"]);
+    expect(spokenStatus()).toEqual(["Request failed"]);
     expect(shows(GET_THIS_TEXT.failedNote)).toBe(true);
-    expect(screen.queryAllByRole('button', { name: /^Get this/ })).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: /^Request/ })).toHaveLength(0);
   });
 
   it('shows Not found for a title the API does not know, with no Try again', async () => {
@@ -171,14 +171,14 @@ describe('a movie page', () => {
   });
 });
 
-describe('Get this', () => {
+describe('Request', () => {
   it('sends a film once, says "Sending…" with everything disabled while it is out, then the one confirmation and Requested', async () => {
     const gate = held();
     useHousehold({ getThis: gate.getThis });
     await open('/home/movie/7');
-    expect(spokenStatus()).toEqual(['Available to get']);
-    await pressNode(buttonNamed('Get this: Film 7'));
-    const sending = buttonNamed('Get this: Film 7');
+    expect(spokenStatus()).toEqual(['Available to request']);
+    await pressNode(buttonNamed('Request: Film 7'));
+    const sending = buttonNamed('Request: Film 7');
     expect([String(sending.props.accessibilityState?.disabled), String(sending.props.accessibilityState?.busy)]).toEqual(['true', 'true']);
     expect(shows(GET_THIS_TEXT.sending)).toBe(true);
     await pressNode(sending);
@@ -188,7 +188,7 @@ describe('Get this', () => {
     expect(getMessage()).toBe(GET_THIS_TEXT.confirmation);
     // The server still says get_this (it records a moment later): the overlay says Requested.
     expect(spokenStatus()).toEqual(['Requested']);
-    expect(screen.queryAllByRole('button', { name: /^Get this/ })).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: /^Request/ })).toHaveLength(0);
     expect(posts().map((call) => call.route)).toEqual([`POST ${API}/movie/7/get`]);
   });
 
@@ -199,7 +199,7 @@ describe('Get this', () => {
   ])('says the same fixed confirmation whatever the 2xx (%s)', async (_what, respond) => {
     useHousehold({ getThis: respond });
     await open('/home/movie/7');
-    await pressNode(buttonNamed('Get this: Film 7'));
+    await pressNode(buttonNamed('Request: Film 7'));
     expect(getMessage()).toBe(GET_THIS_TEXT.confirmation);
   });
 
@@ -214,10 +214,10 @@ describe('Get this', () => {
   ] as const)('says the fixed words for %s, offers the button again, and never sends again by itself', async (_what, respond, words) => {
     useHousehold({ getThis: respond as (call: Call) => ReturnType<typeof answer> });
     await open('/home/movie/7');
-    await pressNode(buttonNamed('Get this: Film 7'));
+    await pressNode(buttonNamed('Request: Film 7'));
     expect(getMessage()).toBe(words);
-    expect(spokenStatus()).toEqual(['Available to get']);
-    const again = buttonNamed('Get this: Film 7');
+    expect(spokenStatus()).toEqual(['Available to request']);
+    const again = buttonNamed('Request: Film 7');
     expect(again.props.accessibilityState?.disabled).toBe(false);
     await wait(5 * 60_000);
     expect(posts()).toHaveLength(1);
@@ -226,7 +226,7 @@ describe('Get this', () => {
   it('signs the member out on a 401 and forgets the overlay', async () => {
     useHousehold({ getThis: () => answer(401, { error: 'unauthorized' }), override: (call) => (call.route === 'GET /Users/Public' ? answer(200, []) : undefined) });
     const app = await open('/home/movie/7');
-    await pressNode(buttonNamed('Get this: Film 7'));
+    await pressNode(buttonNamed('Request: Film 7'));
     await settle();
     expect(storedSession()).toBeUndefined();
     expect(app.getPathname()).toBe('/');
@@ -243,11 +243,11 @@ describe('Get this', () => {
       },
     });
     await open('/home/movie/7');
-    await pressNode(buttonNamed('Get this: Film 7'));
+    await pressNode(buttonNamed('Request: Film 7'));
     expect(getMessage()).toBe(GET_THIS_TEXT.confirmation);
     expect(shows('Something went wrong. Try again in a moment.')).toBe(true);
     expect(screen.queryAllByRole('button', { name: 'Try again' })).toHaveLength(1);
-    expect(screen.queryAllByRole('button', { name: /^Get this/ })).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: /^Request/ })).toHaveLength(0);
   });
 });
 
@@ -260,8 +260,8 @@ describe('a series page', () => {
     expect(screen.queryAllByRole('link').filter((node) => /^(Specials|Season)/.test(String(node.props.accessibilityLabel))).map((node) => node.props.accessibilityLabel)).toEqual([
       "Specials, 2 episodes, Can't request",
       'Season 1, 8 episodes, Ready to watch',
-      'Season 2, 9 episodes, Available to get',
-      'Season 3, 10 episodes, Available to get',
+      'Season 2, 9 episodes, Available to request',
+      'Season 3, 10 episodes, Available to request',
       "Season 4, 11 episodes, Can't request",
     ]);
     expect(checkboxes()).toEqual(['Season 2', 'Season 3']);
@@ -272,7 +272,7 @@ describe('a series page', () => {
     useHousehold({ series: { 9: seriesAnswer(9, ['in_library', 'get_this']) } });
     await open('/home/tv/9');
     expect(flat(buttonNamed('Play Series 9')).backgroundColor).toBe('#00a4dc');
-    const get = buttonNamed('Get this: Series 9');
+    const get = buttonNamed('Request: Series 9');
     expect(flat(get).backgroundColor).not.toBe('#00a4dc');
     expect(flat(get).borderColor).toBe('#00a4dc');
   });
@@ -280,7 +280,7 @@ describe('a series page', () => {
   it('asks for nothing until a season is chosen; Select all only moves the circles; Get this sends exactly those chosen', async () => {
     useHousehold({ series: { 9: seriesAnswer(9, ['get_this', 'get_this', 'get_this']) } });
     await open('/home/tv/9');
-    expect(buttonNamed('Get this: Series 9').props.accessibilityState?.disabled).toBe(true);
+    expect(buttonNamed('Request: Series 9').props.accessibilityState?.disabled).toBe(true);
     expect(shows(GET_THIS_TEXT.chooseBelow)).toBe(true);
     await pressNode(buttonNamed('Select all'));
     expect(checkboxes()).toEqual(['Season 1 ✓', 'Season 2 ✓', 'Season 3 ✓']);
@@ -290,14 +290,14 @@ describe('a series page', () => {
     await pressNode(checkboxNamed('Season 3'));
     await pressNode(checkboxNamed('Season 1'));
     expect(shows(GET_THIS_TEXT.chooseBelow)).toBe(false);
-    await pressNode(buttonNamed('Get this: Series 9'));
+    await pressNode(buttonNamed('Request: Series 9'));
     expect(bodies()).toEqual([JSON.stringify({ seasons: [1, 3] })]);
     expect(getMessage()).toBe(GET_THIS_TEXT.confirmation);
     // Read again: the seasons asked for show Requested and are not offered again; the other still is.
     expect(checkboxes()).toEqual(['Season 2']);
     expect(spokenStatus()).toEqual(['Requested']);
     expect(screen.queryAllByRole('link', { name: 'Season 1, 8 episodes, Requested' })).toHaveLength(1);
-    expect(screen.queryAllByRole('link', { name: 'Season 2, 9 episodes, Available to get' })).toHaveLength(1);
+    expect(screen.queryAllByRole('link', { name: 'Season 2, 9 episodes, Available to request' })).toHaveLength(1);
   });
 
   it('disables the circles and Select all while Get this is out', async () => {
@@ -305,7 +305,7 @@ describe('a series page', () => {
     useHousehold({ series: { 9: seriesAnswer(9, ['get_this', 'get_this']) }, getThis: gate.getThis });
     await open('/home/tv/9');
     await pressNode(checkboxNamed('Season 2'));
-    await pressNode(buttonNamed('Get this: Series 9'));
+    await pressNode(buttonNamed('Request: Series 9'));
     expect(checkboxNamed('Season 1').props.accessibilityState?.disabled).toBe(true);
     expect(buttonNamed('Select all').props.accessibilityState?.disabled).toBe(true);
     await act(async () => gate.release(202));
@@ -319,13 +319,13 @@ describe('a series page', () => {
     });
     await open('/home/tv/9');
     expect(checkboxes()).toEqual(['Season 1']);
-    expect(screen.queryAllByRole('link', { name: "Season 2, 9 episodes, We couldn't get this" })).toHaveLength(1);
+    expect(screen.queryAllByRole('link', { name: "Season 2, 9 episodes, Request failed" })).toHaveLength(1);
     expect(shows(GET_THIS_TEXT.failedNote)).toBe(true);
   });
 
   it('opens a season\'s page from its card, with Back to the series', async () => {
     const app = await open('/home/tv/9');
-    await pressNode(linkNamed('Season 2, 9 episodes, Available to get'));
+    await pressNode(linkNamed('Season 2, 9 episodes, Available to request'));
     expect(app.getPathname()).toBe('/home/tv/9/season/2');
     await pressNode(buttonNamed('Back'));
     expect(app.getPathname()).toBe('/home/tv/9');
@@ -341,8 +341,8 @@ describe('a season page', () => {
     expect(screen.queryAllByTestId('tmdb-image', { includeHiddenElements: true }).map((node) => String(node.props.source?.uri))).toContain(
       'https://image.tmdb.org/t/p/w780/backdrop-9.jpg',
     );
-    expect(spokenStatus()).toEqual(['Available to get']);
-    await pressNode(buttonNamed('Get this: Series 9 Season 2'));
+    expect(spokenStatus()).toEqual(['Available to request']);
+    await pressNode(buttonNamed('Request: Series 9 Season 2'));
     expect(bodies()).toEqual([JSON.stringify({ seasons: [2] })]);
     expect(getMessage()).toBe(GET_THIS_TEXT.confirmation);
     expect(spokenStatus()).toEqual(['Requested']);
@@ -369,7 +369,7 @@ describe('a season page', () => {
     });
     await open('/home/tv/9/season/2');
     expect(headings()[0]).toBe('Season 2');
-    expect(spokenStatus()).toEqual(['Available to get']);
+    expect(spokenStatus()).toEqual(['Available to request']);
     expect(storedSession()).toBeDefined();
   });
 
@@ -377,7 +377,7 @@ describe('a season page', () => {
     useHousehold({ seasons: { '9:1': seasonAnswer(9, 1, 'in_library') } });
     await open('/home/tv/9/season/1');
     expect(spokenStatus()).toEqual(['Ready to watch']);
-    expect(screen.queryAllByRole('button', { name: /^Get this/ })).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: /^Request/ })).toHaveLength(0);
   });
 });
 
@@ -387,13 +387,13 @@ describe('Requested right after Get this', () => {
   it('shows on Home\'s card at once, with no call, and on the title page the server still calls get_this', async () => {
     useHousehold({ series: { 1002: seriesAnswer(1002, ['get_this']) } });
     await open('/');
-    await pressNode(homeCard('Available to get')[0]!);
+    await pressNode(homeCard('Available to request')[0]!);
     await pressNode(checkboxNamed('Season 1'));
-    await pressNode(buttonNamed('Get this: Series 1002'));
+    await pressNode(buttonNamed('Request: Series 1002'));
     const before = gateway.routes().length;
     await pressNode(buttonNamed('Back'));
     expect(homeCard('Requested')).toHaveLength(1);
-    expect(homeCard('Available to get')).toHaveLength(0);
+    expect(homeCard('Available to request')).toHaveLength(0);
     expect(gateway.routes().length).toBe(before);
   });
 
@@ -404,9 +404,9 @@ describe('Requested right after Get this', () => {
     let server: 'get_this' | typeof state = 'get_this';
     useHousehold({ override: (call) => (call.route === `GET ${API}/tv/1002` ? answer(200, seriesAnswer(1002, [server])) : undefined) });
     await open('/');
-    await pressNode(homeCard('Available to get')[0]!);
+    await pressNode(homeCard('Available to request')[0]!);
     await pressNode(checkboxNamed('Season 1'));
-    await pressNode(buttonNamed('Get this: Series 1002'));
+    await pressNode(buttonNamed('Request: Series 1002'));
     await pressNode(buttonNamed('Back'));
     expect(homeCard('Requested')).toHaveLength(1);
     // The server has recorded it now: opening the title again reads that, and the Requested key is dropped.
@@ -416,7 +416,7 @@ describe('Requested right after Get this', () => {
     // Back on Home at once: the row still holds its first answer (get_this), but the fresher one wins.
     await pressNode(buttonNamed('Back'));
     expect(homeCard(word)).toHaveLength(1);
-    expect(homeCard('Available to get')).toHaveLength(0);
+    expect(homeCard('Available to request')).toHaveLength(0);
   });
 
   // AppState is React Native's Jest mock: what the app listens with is in its calls.
@@ -432,27 +432,27 @@ describe('Requested right after Get this', () => {
 
   it('ends after two minutes on the title page left open: the server\'s get_this is shown again, with no call', async () => {
     await open('/home/movie/7');
-    await pressNode(buttonNamed('Get this: Film 7'));
+    await pressNode(buttonNamed('Request: Film 7'));
     expect(spokenStatus()).toEqual(['Requested']);
     const before = gateway.routes().length;
     await wait(ASKED_TTL_MS - 1_000);
     expect(spokenStatus()).toEqual(['Requested']);
     await wait(1_000);
-    expect(spokenStatus()).toEqual(['Available to get']);
+    expect(spokenStatus()).toEqual(['Available to request']);
     expect(gateway.routes().length).toBe(before);
   });
 
   it('ends after two minutes on Home left open: its card shows the server\'s state again, with no call', async () => {
     useHousehold({ series: { 1002: seriesAnswer(1002, ['get_this']) } });
     await open('/');
-    await pressNode(homeCard('Available to get')[0]!);
+    await pressNode(homeCard('Available to request')[0]!);
     await pressNode(checkboxNamed('Season 1'));
-    await pressNode(buttonNamed('Get this: Series 1002'));
+    await pressNode(buttonNamed('Request: Series 1002'));
     await pressNode(buttonNamed('Back'));
     expect(homeCard('Requested')).toHaveLength(1);
     const before = gateway.routes().length;
     await wait(ASKED_TTL_MS);
-    expect(homeCard('Available to get')).toHaveLength(1);
+    expect(homeCard('Available to request')).toHaveLength(1);
     expect(homeCard('Requested')).toHaveLength(0);
     expect(gateway.routes().length).toBe(before);
   });
@@ -460,9 +460,9 @@ describe('Requested right after Get this', () => {
   it('ends on coming back to the foreground once the wall clock has moved two minutes while the app slept', async () => {
     useHousehold({ series: { 1002: seriesAnswer(1002, ['get_this']) } });
     await open('/');
-    await pressNode(homeCard('Available to get')[0]!);
+    await pressNode(homeCard('Available to request')[0]!);
     await pressNode(checkboxNamed('Season 1'));
-    await pressNode(buttonNamed('Get this: Series 1002'));
+    await pressNode(buttonNamed('Request: Series 1002'));
     await pressNode(buttonNamed('Back'));
     const before = gateway.routes().length;
     // Suspended: the wall clock moved on, the monotonic clock (and the timer) did not.
@@ -470,25 +470,25 @@ describe('Requested right after Get this', () => {
     await foreground('background');
     expect(homeCard('Requested')).toHaveLength(1);
     await foreground('active');
-    expect(homeCard('Available to get')).toHaveLength(1);
+    expect(homeCard('Available to request')).toHaveLength(1);
     expect(homeCard('Requested')).toHaveLength(0);
     expect(gateway.routes().length).toBe(before);
   });
 
   it('ends on the title page left open when the app comes back to the foreground after a long sleep', async () => {
     await open('/home/movie/7');
-    await pressNode(buttonNamed('Get this: Film 7'));
+    await pressNode(buttonNamed('Request: Film 7'));
     expect(spokenStatus()).toEqual(['Requested']);
     jest.setSystemTime(Date.now() + 10 * ASKED_TTL_MS);
     await foreground('active');
-    expect(spokenStatus()).toEqual(['Available to get']);
+    expect(spokenStatus()).toEqual(['Available to request']);
   });
 
   it('is dropped once the server says anything but get_this', async () => {
     let state: 'get_this' | 'in_library' = 'get_this';
     useHousehold({ override: (call) => (call.route === `GET ${API}/movie/7` ? answer(200, movieAnswer(7, state)) : undefined) });
     await open('/home/movie/7');
-    await pressNode(buttonNamed('Get this: Film 7'));
+    await pressNode(buttonNamed('Request: Film 7'));
     state = 'in_library';
     await pressNode(buttonNamed('Back'));
     await act(async () => router.push('/home/movie/7'));
@@ -498,7 +498,7 @@ describe('Requested right after Get this', () => {
     await pressNode(buttonNamed('Back'));
     await act(async () => router.push('/home/movie/7'));
     await settle();
-    expect(spokenStatus()).toEqual(['Available to get']);
+    expect(spokenStatus()).toEqual(['Available to request']);
   });
 });
 
@@ -524,9 +524,9 @@ function pagePressables(): Node[] {
 describe('accessibility', () => {
   it.each([
     ['a film in the library', '/home/movie/7', { movies: { 7: movieAnswer(7, 'in_library') } }, ['Play Film 7']],
-    ['a film to get', '/home/movie/7', {}, ['Get this: Film 7']],
-    ['a series', '/home/tv/9', { series: { 9: seriesAnswer(9, ['in_library', 'get_this', 'get_this']) } }, ['Play Series 9', 'Get this: Series 9', 'Select all']],
-    ['a season', '/home/tv/9/season/2', {}, ['Get this: Series 9 Season 2']],
+    ['a film to get', '/home/movie/7', {}, ['Request: Film 7']],
+    ['a series', '/home/tv/9', { series: { 9: seriesAnswer(9, ['in_library', 'get_this', 'get_this']) } }, ['Play Series 9', 'Request: Series 9', 'Select all']],
+    ['a season', '/home/tv/9/season/2', {}, ['Request: Series 9 Season 2']],
   ] as const)('keeps every control on %s named and a thumb\'s size', async (_what, path, household, expected) => {
     useHousehold(household as TitleHousehold);
     await open(path);
@@ -613,7 +613,7 @@ describe('privacy', () => {
     useHousehold({ series: { 9: seriesAnswer(9, ['get_this']) } });
     await open('/home/tv/9');
     await pressNode(checkboxNamed('Season 1'));
-    await pressNode(buttonNamed('Get this: Series 9'));
+    await pressNode(buttonNamed('Request: Series 9'));
     expect(store.setItemAsync).not.toHaveBeenCalled();
     const images = screen.queryAllByTestId('tmdb-image', { includeHiddenElements: true }).map((node) => String(node.props.source?.uri));
     expect(images.length).toBeGreaterThan(0);

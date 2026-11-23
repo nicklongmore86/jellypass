@@ -270,6 +270,8 @@ The machine-readable contract is [docs/app-api/v1.openapi.json](app-api/v1.opena
 
 #### Get this
 
+Members see this as the **Request** button (it was labelled **Get this** before
+server 4.6.0 and app 1.6.0; the API path, settings and metrics keep the old name).
 "Get this" asks for a title for the caller's household, the same way whatever
 the title's situation, and answers `202 {"status":"accepted"}` at once, before
 anything about the caller or the title is looked up. What happens next runs in
@@ -337,9 +339,9 @@ film's page links to its collection (since `apiVersion` 6: "Part of The …
 Collection"); the collection page lists every film with the household's state
 and ticks the released films the household can still get (films not out yet,
 and films the member marked Not interested, are shown, not ticked, and left
-out of **Get all missing films**; they can be ticked by hand). A film the
-household asked for that could not be got shows "We couldn't get this" and is
-not offered again. **Get all missing films** or **Get selected** sends one "Get
+out of **Request all missing films**; they can be ticked by hand). A film the
+household asked for that could not be got shows "Request failed" and is
+not offered again. **Request all missing films** or **Get selected** sends one "Get
 this" per film, one after another, so each film counts 1 against the limits
 above (eight films are eight), is its own entry in My requests and in the
 administrators' Requests tab, and is cancelled on its own. When a call is
@@ -348,7 +350,7 @@ films were asked for and which were not, with the wait. Films another household
 holds are handled as on their own pages, and nothing about that household
 shows. Collections are reached only from a film's page, not from search.
 
-> **Planned / not yet built:** "Get all missing seasons" requests only the
+> **Planned / not yet built:** "Request all missing seasons" requests only the
 > seasons that exist when it is pressed. A future version should let a member
 > follow a series, so each new season is requested automatically when it is
 > released. This is not implemented.
@@ -358,7 +360,7 @@ shows. Collections are reached only from a film's page, not from search.
 (Requested), `ready` (Ready to watch, and only for a caller whose own Jellyfin
 view has the title or season: anyone else in the household, kept from it by a
 library, a parental limit or a blocked tag, sees `requested`) or `failed` (We
-couldn't get this: declined or failed), with each season's status for a series; `byYou` says
+request failed: declined or failed), with each season's status for a series; `byYou` says
 whether the caller asked (otherwise someone else in the household); `id` is
 opaque; `requestedOn` is the day (`YYYY-MM-DD`, never a time) the household
 last asked; `cancellable` says whether the caller may cancel it. No requester
@@ -447,10 +449,10 @@ With `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves the
 app itself at its address, for example `https://media.example.com/jellypass/app/`: an
 installable web app (a PWA) to browse what is in the household's Jellyfin
 library and find more to watch. It shows each title's state (`Ready to watch`
-with a **Play** button, `Available to get`, `Requested` or `Can't request`) and offers
-**Get this** where a title can be asked for; the confirmation is the same
+with a **Play** button, `Available to request`, `Requested` or `Can't request`) and offers
+**Request** where a title can be asked for; the confirmation is the same
 sentence whatever happens afterwards. A title the household asked for that
-failed shows `We couldn't get this` with no button and the line "Ask your
+failed shows `Request failed` with no button and the line "Ask your
 JellyPass admin to try again.", because the API does not ask again while the
 failed record stands. Nothing about it
 exists on the administrator host, or on household hosts while the app is

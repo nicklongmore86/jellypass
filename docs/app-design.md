@@ -843,7 +843,7 @@ elsewhere; the files are never proxied to Jellyfin.
   over it; a navy gradient when a title has no backdrop), then, below it on the page's navy: a large bold title, a chip row
   (year, runtime or "N seasons" (specials are not a season), "★ 7.5 TMDB"), genre pills, the status chip and **one**
   full-width cyan action: **Play** (in the library, only with the household's own Jellyfin link) or **Get this**
-  (available to get). "Requested", "We couldn't get this" and "Can't request" show the chip and one muted fixed note
+  (available to get). "Requested", "Request failed" and "Can't request" show the chip and one muted fixed note
   ("Check My requests to follow it.", the admin note, "This title can't be requested."), never a button. A series partly in
   the library keeps **Play** as its primary and shows **Get this** as the outlined secondary. The poster is hidden on
   phones and a 9 rem thumbnail from 48 rem. A season page uses its series' backdrop. All text is on the page's own navy.
@@ -868,10 +868,10 @@ elsewhere; the files are never proxied to Jellyfin.
   `localStorage` or Cache Storage, and `history.scrollRestoration` is `manual`. Checked by the owner on a real iPhone
   (2.4.1): the in-app Back and swipe-back, with the position put back, including the poster rows' `scrollLeft`.
 - **States.** Shown exactly as the DTO says, coarsely: `in_library` is "Ready to watch" with a **Play** button (only
-  when `play.url` is exactly the household host's own `/web/#/details?id=<itemId>`), `get_this` is "Available to get"
+  when `play.url` is exactly the household host's own `/web/#/details?id=<itemId>`), `get_this` is "Available to request"
   with a **Get this** button (since step 2b, a season picker on a series page; the wording says nothing about other
   households), `unavailable` is "Can't request", and `requested` (answered since step 2a) is "Requested". A title or
-  season whose household record in `GET /requests` is `failed` shows "We couldn't get this" with no button (see "The
+  season whose household record in `GET /requests` is `failed` shows "Request failed" with no button (see "The
   PWA's button (step 2b)"). Step 1b called `in_library` "In your library" and `get_this` "Available to request soon",
   with no button. Nothing is shown that is not a DTO field.
 - **Rendering.** Every string is a fixed one or a DTO field set with `textContent`; no HTML is ever parsed (no
@@ -1199,7 +1199,7 @@ branch**, at most every 6 hours, at most 50 reads a run, those read longest ago 
 its Seerr request (pending or approved, declined, failed, completed); one whose request was deleted (by an
 administrator, in Seerr) is `deleted`, the request's own record and every household's interest in it alike (not
 listed, as Seerr no longer lists it, and the title can be asked for again: before step 2c an interest became `failed`
-instead, "We couldn't get this", while the requester's record went); a completed record of any branch is `deleted`
+instead, "Request failed", while the requester's record went); a completed record of any branch is `deleted`
 once the title's media record is. A cancelled record (`withdrawn`, see "Cancelling (step 2c)") is never refreshed, and
 a refresh never writes over a cancel: what it read from Seerr is written in AccessService's write queue (where a
 cancel's withdrawal is written) and only if the record is still as it was read (its status and `updatedAt`, and not
@@ -1240,7 +1240,7 @@ tombstones", "Replay order"). A request a tombstone covers is granted the same w
 `{id, mediaType, tmdbId, status, seasons, byYou, cancellable, requestedOn}` (the last two since `apiVersion` 2, see
 "Cancelling (step 2c)"). `status` is coarse: `requested` (Requested: pending or approved),
 `ready` (Ready to watch: completed, and in the caller's own view; otherwise `requested`, see "Readiness") or `failed`
-(We couldn't get this: declined or failed); `deleted` records are not
+(Request failed: declined or failed); `deleted` records are not
 listed. The caller's view is read for **every** listed title, ready or not (at most 8 at a time): a movie from their
 cached library (no Jellyfin call), a series' episodes as them only when their own view has the series (one read per
 such series, so at most 200 per call). A title whose read fails is listed as if the caller's view did not have it (its
@@ -1376,7 +1376,7 @@ picker for a series. Whatever the API accepted, the screen shows the same one se
 household.") the moment the call is accepted, then reads its own data again; nothing the app shows or sends depends on
 which branch ran. If that second read fails, the confirmation stays, nothing that could send again is offered, and the
 screen shows its fixed "Something went wrong" line with a **Try again** that only loads the page again.
-**A title the household asked for that failed** ("We couldn't get this") has no Get this button: while the failed record
+**A title the household asked for that failed** ("Request failed") has no Get this button: while the failed record
 stands the API does not ask again, so the app says so in one fixed line, "Ask your JellyPass admin to try again." (a
 failed season of a series is left out of the picker the same way). `unavailable` still shows as "Can't request".
 
@@ -1674,7 +1674,7 @@ the browser session's state changes must come from the admin origin, bodies must
 household's "Get this" records and acts on their Seerr requests with the admin key. Decided with the user
 (2026-10-28): Approve is included (so administrators need not open Seerr for members without auto-approve); an
 administrator's cancel (like a delete in Seerr) sends every household following the request back to **Get this**; a
-decline shows them **We couldn't get this**; "Also remove from Radarr" is offered for movies only, and only while
+decline shows them **Request failed**; "Also remove from Radarr" is offered for movies only, and only while
 Jellyfin does not have the movie (never for a series: Seerr would remove the whole series from Sonarr, files
 included); a request is dated by its day only.
 
@@ -1718,7 +1718,7 @@ repeated after it took effect, it answers the same outcome with `changed: false`
   households keep following it. Approved or further already: unchanged.
 - **Decline** (Seerr `POST /request/:id/decline`, a pending request only), in one turn of the write queue with what
   it records, so no webhook, replay, backfill or title hold decides the request's grant in between: every record still
-  following it (`pending` or `failed`) is `declined` at once, so each household sees **We couldn't get this** without
+  following it (`pending` or `failed`) is `declined` at once, so each household sees **Request failed** without
   waiting for the refresh, and a **declined withdrawal** (`AppWithdrawal` with `requester`, every household that named
   it, and `declinedAt`) is added. The decline applies to every follower, not only the requester's household. Should
   the title still arrive through the declined request (a late `MEDIA_AVAILABLE`, its replay, the backfill or
@@ -1780,7 +1780,7 @@ household or credential.
 
 ## Coarse statuses
 
-The app shows only three request statuses: `Requested`, `Ready to watch`, `We couldn't get this`. Seerr's pending,
+The app shows only three request statuses: `Requested`, `Ready to watch`, `Request failed`. Seerr's pending,
 approved, processing and partially available states all show as `Requested`; declined and failed requests as `We
 couldn't get this`. No notifications yet. In `GET /requests` they are `requested`, `ready` and `failed`.
 
@@ -2135,14 +2135,14 @@ each is cancelled on its own. Films another household holds or asked for go thro
 interest, or nothing), as from the film's own page. A client stops at the first refusal and says which films were
 asked for and which were not; for a `429` it shows the wait from `Retry-After`. Clients tick every released film the
 household can still ask for, leave films not out yet and films the member hid ("Not interested", shown as such) unticked
-(and out of "Get all missing films"), and show the collection link only on `apiVersion >= 6`. A film whose household
+(and out of "Request all missing films"), and show the collection link only on `apiVersion >= 6`. A film whose household
 request failed is shown as failed and never offered, from `GET /requests` read with the collection as a film's page
 reads it: asking again would be accepted and change nothing, since a failed request stands until an administrator acts. Collections are reached only from a film's page; search does not list them.
 
-**All missing seasons.** A series page's "Get all missing seasons" button sends the one call Select all then Get this
+**All missing seasons.** A series page's "Request all missing seasons" button sends the one call Select all then Get this
 sends: every season the household neither has nor asked for, as listed now. No server change.
 
-**Planned / not yet built: following a series.** "Get all missing seasons" requests only the seasons that exist when
+**Planned / not yet built: following a series.** "Request all missing seasons" requests only the seasons that exist when
 it is pressed. A later version should let a member follow a series, so each new season is requested for the household
 when it is released. Nothing of that exists yet.
 

@@ -1615,7 +1615,7 @@ export const ADMIN_APP_JS = `
     const copy = {
       approve: ['Approve request', 'Approve ' + title + ' in Seerr? It is sent to ' + (row.mediaType === 'movie' ? 'Radarr' : 'Sonarr') + ' to download.', ''],
       decline: ['Decline request', 'Decline ' + title + ' in Seerr? ' + (others === 1 ? 'The household that asked sees' : 'All ' + others + ' households following it see') + ' “We couldn’t get this”.', ''],
-      cancel: ['Cancel request', 'Cancel ' + title + ' for every household? ' + (others === 1 ? 'The household that asked goes' : 'All ' + others + ' households go') + ' back to “Get this”, and the request is deleted in Seerr.',
+      cancel: ['Cancel request', 'Cancel ' + title + ' for every household? ' + (others === 1 ? 'The household that asked goes' : 'All ' + others + ' households go') + ' back to “Available to request”, and the request is deleted in Seerr.',
         (row.mediaType === 'movie' && row.actions.removeFromRadarr ? 'Without removing it from Radarr, it may still download. It is then held for no household until you release it'
           : 'It may still download. It is then held for no household until you release it') + '. A request that follows the join rules (a title or series Jellyfin already had) is the exception: a public title stays public.'],
     }[action];
