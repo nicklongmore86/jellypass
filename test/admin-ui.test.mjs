@@ -579,7 +579,7 @@ describe('admin UI Requests tab', () => {
     const dialog = page.document.getElementById('request-action-dialog');
     assert.ok(dialog.hasAttribute('open'));
     assert.equal(page.document.getElementById('request-radarr-option').hidden, true, 'never for a series');
-    assert.match(page.document.getElementById('request-action-text').textContent, /back to “Get this”/);
+    assert.match(page.document.getElementById('request-action-text').textContent, /back to “Available to request”/);
     assert.deepEqual(posts, [], 'nothing is sent before the confirmation');
     page.document.getElementById('request-action-form').dispatchEvent(new page.window.Event('submit'));
     await page.settle();

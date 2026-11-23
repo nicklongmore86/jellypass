@@ -82,7 +82,7 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
     assert.deepEqual([asked.status, asked.json(), asked.headers['access-control-allow-origin']], [202, { status: 'accepted' }, 'null']);
   });
 
-  it('shows the app a refused "Get this"\'s Retry-After, with the same wait in the body for a runtime that hides it', async (t) => {
+  it('shows the app a refused "Request"\'s Retry-After, with the same wait in the body for a runtime that hides it', async (t) => {
     t.mock.method(console, 'warn', () => undefined);
     const app = await startApp(t, webWorld(), { ...tvOn(), getThisLimits: { perUser: 1, perClient: 100, perHousehold: 100, windowMs: 60_000 } });
     const ask = () => app.post(`/jellypass/app/v1/movie/${T_MOVIE}/get`, undefined, { headers: { Origin: 'null' } });

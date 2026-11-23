@@ -44,7 +44,7 @@ describe('JELLYFIN_UNTESTED_VERSION_OK', () => {
   });
 });
 
-describe('"Get this" limits', () => {
+describe('"Request" limits', () => {
   afterEach(restoreEnvironment);
 
   it('default to 30 per user, 60 per address and 60 per household in each 10 minutes', () => {

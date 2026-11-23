@@ -4,8 +4,8 @@
 import { spawnSync } from 'child_process';
 import { join } from 'path';
 
-import { ALL_SEASONS_TEXT, COLLECTION_TEXT, COLLECTIONS_API_VERSION, partOfText } from '../src/collection/text';
-import { ERROR_TEXT, REQUEST_LABELS } from '../src/home/text';
+import { COLLECTIONS_API_VERSION, partOfText } from '../src/collection/text';
+import { ERROR_TEXT } from '../src/home/text';
 import { STALLED_TEXT } from '../src/signin/wording';
 import { rateLimitedText } from '../src/title/text';
 
@@ -43,7 +43,7 @@ describe('mobile release notes', () => {
     }
     // The app's own words, as it shows them.
     expect(flat).toContain(partOfText('…'));
-    expect(flat).toContain(REQUEST_LABELS.failed);
+    expect(flat).toContain("We couldn't get this");
     expect(notes).not.toMatch(/download|eas-cli|workflow|\btests?\b|maxWorkers/i);
   });
 
@@ -71,8 +71,8 @@ describe('mobile release notes', () => {
       expect(flat.indexOf(note)).toBeLessThan(added);
     }
     // The app's own words, as it shows them.
-    expect(flat).toContain(`**${COLLECTION_TEXT.getAll}**`);
-    expect(flat).toContain(`**${ALL_SEASONS_TEXT}**`);
+    expect(flat).toContain('**Get all missing films**');
+    expect(flat).toContain('**Get all missing seasons**');
     expect(flat).toContain(rateLimitedText(180, 'unused'));
     expect(notes).not.toMatch(/download|eas-cli|workflow|\btests?\b|maxWorkers/i);
   });

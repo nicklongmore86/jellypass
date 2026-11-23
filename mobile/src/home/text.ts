@@ -7,7 +7,7 @@ import type { Card, CoarseStatus, HouseholdState } from '../api/types';
 /** A title's status for the household, as a word next to a dot. An unknown state is decoded as `unavailable`. */
 export const STATE_LABELS: Record<HouseholdState, string> = {
   in_library: 'Ready to watch',
-  get_this: 'Available to get',
+  get_this: 'Available to request',
   unavailable: "Can't request",
   requested: 'Requested',
 };
@@ -20,15 +20,15 @@ export const STATE_LABELS: Record<HouseholdState, string> = {
 export const BADGE_WORDS: Record<HouseholdState, string> = {
   in_library: 'In library',
   requested: 'Requested',
-  get_this: 'Get this',
-  unavailable: "Can't get",
+  get_this: 'Request',
+  unavailable: "Can't ask",
 };
 
 /** The coarse status of a request in "My requests" (and of a title the household asked for that failed). */
 export const REQUEST_LABELS: Record<CoarseStatus, string> = {
   requested: 'Requested',
   ready: 'Ready to watch',
-  failed: "We couldn't get this",
+  failed: "Request failed",
 };
 
 /** The PWA's ERROR_TEXT. The message depends only on the kind of failure, never on anything in an answer. */

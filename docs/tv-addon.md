@@ -244,7 +244,7 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home and no 
   `button-submit` colour), the note for the status, the overview (`overview`) and "Genres" (`itemDetailsGroup`). A
   series lists its seasons below, with their episode counts and statuses. Colours are Jellyfin's theme
   (`--jf-palette-*`), apart from the status colours, which are the add-on's own and the same as before. The statuses are
-  "Ready to watch", "Available to get", "Requested", "Can't request", and "We couldn't get this" for a title or season the
+  "Ready to watch", "Available to request", "Requested", "Can't request", and "Request failed" for a title or season the
   household asked for that failed (read from `GET /requests`).
 - **Backdrop, always.** The title's backdrop (the API's `w780` TMDB image) is drawn across the whole screen, behind the
   page and under Jellyfin's header (a `position: fixed` box, darkened, with no `z-index`), **whatever Jellyfin web's
@@ -258,7 +258,7 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home and no 
     toggle buttons (`aria-pressed`) with **Select all** when there is more than one; **Get this** stays disabled with
     "Choose the seasons you want below." until one is chosen, and sends exactly the seasons chosen (HD only: the API
     asks for nothing else). A series partly in the library keeps **Play** as its primary, with **Get this** beside it.
-  - **Get all missing seasons**, beside **Select all** above the season cards whenever at least one season can be asked
+  - **Request all missing seasons**, beside **Select all** above the season cards whenever at least one season can be asked
     for (even one): it ticks every season offered and sends them in the one call **Select all** then **Get this**
     makes (`POST /tv/{id}/get` with those seasons, the same answers and words). Only seasons the series has now and the
     household neither has nor asked for are sent; a season added later is not asked for by itself (see the planned
@@ -273,7 +273,7 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home and no 
     the collection page. At most ten 140px cards use TMDB w185 posters, with only the focused card and two neighbours
     on either side holding image sources (initially the first three). Left/right move within the row; Up returns to
     See all, Down from See all enters the row. Down from the last enabled main action reaches See all; Up returns to the originating action. Jellyfin handles Back/history, restoring the selected poster once the lazy row arrives.
-  - "Requested", "Can't request" and "We couldn't get this" have no button, only their note. "Requested" says "Follow it
+  - "Requested", "Can't request" and "Request failed" have no button, only their note. "Requested" says "Follow it
     in My requests." and, like a title just asked for with **Get this**, a title with a failed request, or a series with
     a requested season, has a **My requests** button after the others (it only opens the page; see "My requests").
 - **Focus.** Jellyfin's focus manager moves the d-pad within the page and the header. Once the title is read, focus goes
@@ -320,14 +320,14 @@ Discover entry). It is the title page's family (its classes, backdrop, buttons, 
 
 - **Two calls** when it opens, `GET /collection/{id}` and `GET /requests` (`tv-collection` in
   `docs/app-api/fetch-budget.json`); an address whose id is not one says "Not found" and calls nothing. My requests is
-  read, as the title page reads it, for the films whose request failed: such a film says "We couldn't get this" and has
+  read, as the title page reads it, for the films whose request failed: such a film says "Request failed" and has
   no toggle (asking again changes nothing until an administrator acts), so it is never sent as if newly asked for.
 - **The films**, in the server's order (oldest first), each with a small poster, its name, year and household status.
   A film the household can ask for is a toggle (`aria-pressed`, the season cards' look and focus ring): ticked when it
   is out already, **not** ticked when it is not released yet ("Not released yet", with its date when TMDB has one), which
   can still be ticked by hand. A film the member hid from Discover says "Not interested" and is not ticked either (it can be
   ticked by hand). A film in the library, requested, failed or that can't be requested has no toggle.
-- **One button**: **Get all missing films** while the ticks are every film out and missing, **Get selected (N)**
+- **One button**: **Request all missing films** while the ticks are every film out and missing, **Get selected (N)**
   otherwise, disabled at 0. A press sends one `POST /movie/{tmdbId}/get` per film ticked (Seerr's model: a request per
   film, each counted against the "Get this" limits, so eight films are eight), one after another in the list's order,
   never two at once, and stops at the first that fails. Each accepted film is shown as Requested at once (the overlay)
@@ -343,7 +343,7 @@ Discover entry). It is the title page's family (its classes, backdrop, buttons, 
 
 `tv/src/search.ts`. On Jellyfin web's **Search** page, once the member has typed something, one **Discover** section is
 added **after Jellyfin's own results** (as the page's last child, put back below them whenever Jellyfin web redraws its
-results): the cards of `GET /search?q=<query>&page=1` (first page only, up to 20) that are **Available to get**, and no
+results): the cards of `GET /search?q=<query>&page=1` (first page only, up to 20) that are **Available to request**, and no
 others, so a title Jellyfin's results already show (`in_library`), a Requested one and one that can't be requested are
 left out. It is drawn by `tv/src/cards.ts` (the heading **Discover**, a `verticalSection`, Jellyfin's
 `card overflowPortraitCard` markup, never `itemsContainer`; the former Home row used the same component), under its own marker (`data-jellypass-tv-search-row`). It is
@@ -438,11 +438,11 @@ screen, and Back is its history), and it adds no document listener.
   year and poster (from its title, below), `Movie` or `Series` with its seasons on the same details line (`Season 2`,
   `Seasons 1–3, 5`), the **status once** (the app's rule of #87: one pill for a movie, a series of one season or seasons
   that all share a status, listed as text, else one pill per season and none for the request; the pill's words are
-  **Requested**, **Ready to watch** and **We couldn't get this**, the last with "Ask your JellyPass admin to try again."),
+  **Requested**, **Ready to watch** and **Request failed**, the last with "Ask your JellyPass admin to try again."),
   **Asked for by you** or **Asked for by someone in your household**, and **Requested on** the day the server sent
   (`requestedOn`, the UTC day, written as the member's locale writes it, no time, with explicit date fields because
   Chromium 63 has no `dateStyle`). An unknown status reads as the failed one. An empty list says "Nothing requested yet.
-  Choose Get this on a title to ask for it."
+  Choose Request on a title to ask for it."
 - **Names, ten at a time.** The list names only what is shown: the first ten requests get one title call each
   (`GET /movie/{id}` or `GET /tv/{id}`), at most four at once, and **Load more** names the next ten (and moves focus to the
   first of them). A title that can't be read leaves the request with its status and "Title unavailable". A title named in
@@ -466,7 +466,7 @@ screen, and Back is its history), and it adds no document listener.
   wrong. Try again in a moment." and a **Try again** that only reads. Nothing is ever retried by itself, and no answer's text
   is ever shown.
 - **The overlay's withdrawal** (`tv/src/asked.ts`, the app's `withdraw`): an accepted cancel shows the title, and each of its
-  seasons, as **Available to get** for two minutes while the server still says requested, so the Discover pages (the card
+  seasons, as **Available to request** for two minutes while the server still says requested, so the Discover pages (the card
   says Get this again, from the answer they already hold), the Search row and the title page need no call. Each key (the title's, a
   season's) stops being covered as soon as the server says anything but requested for it, all of them when the member asks
   for the title again, and the whole of it when the sign-in changes or is refused.
@@ -516,7 +516,7 @@ of this is drawn and nothing is asked**.
   Discover page's cached rows). Rows may therefore be shorter (nothing is
   fetched to fill them): the Discover page keeps its 14-card rows from the cards it holds.
 - **Search** keeps a title the member hid, so it can be found again: the **Discover** row of the Search page still draws hidden
-  titles that can be had (Available to get), each with "Hidden from Discover" under its year (and in its accessible name), and
+  titles that can be had (Available to request), each with "Hidden from Discover" under its year (and in its accessible name), and
   its page offers Unhide. A hidden title that is Requested, in the library or not requestable is not in that row (as for every
   title), and is reached from the Hidden view.
 - **The Hidden view** (`tv/src/hidden-page.ts`): **My requests** has two buttons at the top, **Requests** and **Hidden** (a
@@ -578,8 +578,8 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
   thumbnail beside the text), not cards.
 - **Cards.** Jellyfin's own `overflowPortraitCard` or `overflowBackdropCard` with the shared `jellypass-tv-card` focus ring, at most
   **14 per row**, each with a **small badge in words** (a pill in the poster's top right corner, like Jellyfin's own indicators: *In library*,
-  *Requested*, *Get this*, *Can't get*; the card's accessible name keeps the whole sentence, *In your library*, *Requested*,
-  *Available to get*, *Can't request*; the state
+  *Requested*, *Request*, *Can't ask*; the card's accessible name keeps the whole sentence, *In your library*, *Requested*,
+  *Available to request*, *Can't request*; the state
   the API gave the caller's household, through the "Get this" overlay, so a title just asked for reads Requested with no call), in
   a colour that goes with the words (never colour alone, white on each above 5:1). **New only** hides
   *In your library* and *Requested* and fills the row from the rest of the answer; it asks nothing. It is **on by default** (see below). Choosing a card opens the title
@@ -852,7 +852,7 @@ server and the API are unchanged. It is three modules of the add-on:
   call plan per chip (what the budget file lists); a **row shows at most 14 cards** on a TV (the study's 12 to 14: about a
   screen and a half of posters; the API's 20 are two screens, too many decoded images for a 2019 set, and a service's own
   page has the rest); the hero takes 5 slides from the first row's first cards with a backdrop; and the **badges**, from the
-  card's state alone (the household's own view): "In your library", "Requested", "Available to get", "Can't request" (the
+  card's state alone (the household's own view): "In your library", "Requested", "Available to request", "Can't request" (the
   app's words, except that the app says "Ready to watch" for a title in the library). "New only" hides `in_library`
   and `requested` cards and fills the row from what is left.
 - **Answer cache** (`tv/src/discover-data.ts`, `DiscoverData`): per session, in memory only, keyed by address (the first page
@@ -1059,7 +1059,7 @@ With the add-on on for the household and the app signed in to its host:
 Each step is its own pull request, behind the same settings:
 
 1. **Foundation (done).** Settings, gateway injection, the build, the Home row (Trending). **Row redesigned (done):**
-   it is headed **Discover**, shows only titles Available to get (not in the member's library, not Requested), in Jellyfin web's own card markup (study: direction A).
+   it is headed **Discover**, shows only titles Available to request (not in the member's library, not Requested), in Jellyfin web's own card markup (study: direction A).
    **Row removed (2026-11-10):** the owner took the row off Jellyfin web's Home (not enough control over what appears there);
    the Discover page and the Search row remain, and My requests moved to a button on the Discover page.
 2. **Title pages and "Get this" (done).** Choosing a card opens a JellyPass title page: first an overlay on Home, now (the
@@ -1070,7 +1070,7 @@ Each step is its own pull request, behind the same settings:
    It uses the same identical-outcome flow and fixed wording as the PWA, and the PWA's title-page calls (without
    `/me`). See "The title page".
 3. **Search (done, redesign step 5).** A **Discover** row on Jellyfin web's own Search page, under its results, from the app's
-   search (Available to get only), one call per settled query. No screen or keyboard of our own: it reuses Jellyfin
+   search (Available to request only), one call per settled query. No screen or keyboard of our own: it reuses Jellyfin
    web's search field, so on a TV it is the TV's own keyboard, voice or letter picker. See "The Search row".
 4. **My requests (done, redesign step 6).** The household's requests with their coarse statuses, named ten at a time, with
    the filters and **Cancel request**, as the PWA does: a page of Jellyfin web's at `#/jellypass/requests`, reached first from a

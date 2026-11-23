@@ -197,7 +197,7 @@ describe('the cards', () => {
   it('are links named by title, year and rating, then the status, said once', async () => {
     await start();
     expect(link('trending 1, 2020, Movie, TMDB rating 6.0 out of 10, Ready to watch')).toBeTruthy();
-    expect(link('trending 2, 2021, Series, TMDB rating 6.5 out of 10, Available to get')).toBeTruthy();
+    expect(link('trending 2, 2021, Series, TMDB rating 6.5 out of 10, Available to request')).toBeTruthy();
     expect(link('popular-movies 3, 2022, TMDB rating 7.0 out of 10, Can\'t request')).toBeTruthy();
     expect(link('popular-tv 4, 2023, TMDB rating 7.5 out of 10, Requested')).toBeTruthy();
     // Every card's link; the studios' tiles and the See all links by the rows' headings are links to their pages, with no status.
@@ -222,7 +222,7 @@ describe('the cards', () => {
     gateway = titleGateway();
     mockFetch = gateway.fetch;
     const app = await start();
-    await pressNode(link('trending 2, 2021, Series, TMDB rating 6.5 out of 10, Available to get'));
+    await pressNode(link('trending 2, 2021, Series, TMDB rating 6.5 out of 10, Available to request'));
     expect(app.getPathname()).toBe('/home/tv/1002');
     expect(headings()).toContain('Series 1002');
     expect(gateway.routes()).toContain(`GET ${API}/tv/1002`);
@@ -619,8 +619,8 @@ describe('the status badge on a poster', () => {
       expect(flat(text!).fontSize).toBeGreaterThanOrEqual(11);
       expect(Number(flat(chip).paddingVertical)).toBeLessThanOrEqual(2.4);
     }
-    expect([...words].sort()).toEqual(["Can't get", 'Get this', 'In library', 'Requested']);
-    for (const full of ['Available to get', "Can't request", 'Ready to watch']) {
+    expect([...words].sort()).toEqual(["Can't ask", 'In library', 'Request', 'Requested']);
+    for (const full of ['Available to request', "Can't request", 'Ready to watch']) {
       expect(links().some((name) => name.endsWith(`, ${full}`))).toBe(true);
     }
   });
@@ -651,7 +651,7 @@ describe('the status badge on a poster', () => {
       expect(text!.props.allowFontScaling).not.toBe(false);
     }
     // Each card's accessible name still says it.
-    expect(links().some((name) => name.endsWith(', Available to get'))).toBe(true);
+    expect(links().some((name) => name.endsWith(', Available to request'))).toBe(true);
   });
 
   it('draws the status in the card\'s flow, between the image and the title, when it is below', async () => {

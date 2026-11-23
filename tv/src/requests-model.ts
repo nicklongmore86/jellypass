@@ -14,12 +14,12 @@ export const REQUESTS_HASH = '#/jellypass/requests';
 export const REQUEST_LABELS: Record<CoarseStatus, string> = {
   requested: 'Requested',
   ready: 'Ready to watch',
-  failed: "We couldn't get this",
+  failed: "Request failed",
 };
 
 export const REQUESTS_TEXT = {
   title: 'My requests',
-  empty: 'Nothing requested yet. Choose Get this on a title to ask for it.',
+  empty: 'Nothing requested yet. Choose Request on a title to ask for it.',
   loading: 'Loading title…',
   loadingList: 'Loading requests…',
   titleMissing: 'Title unavailable',

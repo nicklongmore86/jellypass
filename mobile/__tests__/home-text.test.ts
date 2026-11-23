@@ -129,7 +129,7 @@ describe('card text', () => {
   it('names a card by title, year and rating, then its status', () => {
     expect(cardName(card)).toBe('Dune, 2021, TMDB rating 7.8 out of 10, Ready to watch');
     expect(cardName(card, true)).toBe('Dune, 2021, Movie, TMDB rating 7.8 out of 10, Ready to watch');
-    expect(cardName({ ...card, year: null, rating: null, state: 'get_this' })).toBe('Dune, Available to get');
+    expect(cardName({ ...card, year: null, rating: null, state: 'get_this' })).toBe('Dune, Available to request');
   });
 
   it('cuts a long overview at a word, and leaves a short one alone', () => {
@@ -149,12 +149,12 @@ describe('the short words shared with the TV add-on', () => {
   });
 
   it('keeps each badge word short and different from the full wording, and an unknown state reads as "Can\'t get"', () => {
-    expect(BADGE_WORDS).toEqual({ in_library: 'In library', requested: 'Requested', get_this: 'Get this', unavailable: "Can't get" });
+    expect(BADGE_WORDS).toEqual({ in_library: 'In library', requested: 'Requested', get_this: 'Request', unavailable: "Can't ask" });
     for (const [state, word] of Object.entries(BADGE_WORDS)) {
       expect(word.length).toBeLessThanOrEqual(10);
       if (state !== 'requested') expect(word).not.toBe(STATE_LABELS[state as keyof typeof STATE_LABELS]);
     }
-    expect(badgeWord('surprise' as never)).toBe("Can't get");
+    expect(badgeWord('surprise' as never)).toBe("Can't ask");
   });
 
   it('names the New only chip for a screen reader by what it does', () => {

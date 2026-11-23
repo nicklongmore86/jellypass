@@ -127,7 +127,7 @@ describe('cancelling: the endpoint', { timeout: 60_000 }, () => {
     assert.deepEqual(await entries(app), []);
   });
 
-  it('refuses a malformed ID or body with the fixed 400, a caller without a session with 401, and shares the "Get this" budgets', async (t) => {
+  it('refuses a malformed ID or body with the fixed 400, a caller without a session with 401, and shares the "Request" budgets', async (t) => {
     const app = await start(t, world());
     for (const [id, body] of [['A'.repeat(21), undefined], ['A'.repeat(23), undefined], [`${'A'.repeat(21)}.`, undefined], ['A'.repeat(22), { seasons: [1] }], ['A'.repeat(22), '[]']]) {
       const answer = await post(app, `${APP}/requests/${id}/cancel`, body);
@@ -370,7 +370,7 @@ describe('cancelling: who and what', { timeout: 60_000 }, () => {
 });
 
 describe('cancelling: delayed webhooks and the backfill', { timeout: 60_000 }, () => {
-  it('replays a webhook deferred for a "Get this" intent through the withdrawal', async (t) => {
+  it('replays a webhook deferred for a "Request" intent through the withdrawal', async (t) => {
     const app = await start(t, world({ autoApprove: true }));
     await getThis(app);
     await cancel(app);
@@ -456,7 +456,7 @@ describe('cancelling: races', { timeout: 60_000 }, () => {
     assert.equal((await admin(app, '/v1/app/held')).json().total, 1);
   });
 
-  it('takes turns with another household\'s "Get this" for the title: a follower recorded first keeps the request', async (t) => {
+  it('takes turns with another household\'s "Request" for the title: a follower recorded first keeps the request', async (t) => {
     const app = await start(t, world());
     await getThis(app);
     let release;
@@ -482,7 +482,7 @@ describe('cancelling: races', { timeout: 60_000 }, () => {
     assert.deepEqual((await entries(app, AS_BOB)).map((listed) => listed.status), ['requested']);
   });
 
-  it('takes turns with another household\'s "Get this" for the title: one recorded after the delete makes its own request', async (t) => {
+  it('takes turns with another household\'s "Request" for the title: one recorded after the delete makes its own request', async (t) => {
     const app = await start(t, world());
     await getThis(app);
     const release = holdGrants(app);
@@ -813,7 +813,7 @@ describe('title holds: every hold, every item, and the safety markers as they ar
     }
   });
 
-  it('waits while a "Get this" intent names the title, then holds it', async (t) => {
+  it('waits while a "Request" intent names the title, then holds it', async (t) => {
     const app = await start(t, world());
     await holds(app, 1);
     const intent = await app.store.addAppRequestIntent({

@@ -249,12 +249,12 @@ describe('TV Discover data layer: the model', () => {
   });
 
   it('words the four states as the app does, with a tone that is never the only sign', () => {
-    assert.deepEqual(['in_library', 'requested', 'get_this', 'unavailable'].map((state) => mod.badgeOf(state).label), ['In your library', 'Requested', 'Available to get', "Can't request"]);
+    assert.deepEqual(['in_library', 'requested', 'get_this', 'unavailable'].map((state) => mod.badgeOf(state).label), ['In your library', 'Requested', 'Available to request', "Can't request"]);
     assert.deepEqual(['in_library', 'requested', 'get_this', 'unavailable'].map((state) => mod.badgeOf(state).tone), ['owned', 'pending', 'open', 'closed']);
     assert.equal(mod.badgeOf('anything else').label, "Can't request");
     // The app's own words (app/src/render.ts) for three of them; for a title in the library the owner chose "In your library" on the TV.
     const app = readFileSync(path.join(ROOT, 'app', 'src', 'render.ts'), 'utf8');
-    for (const line of ["requested: 'Requested'", "get_this: 'Available to get'", `unavailable: "Can't request"`, "in_library: 'Ready to watch'"]) assert.ok(app.includes(line), `the app still has ${line}`);
+    for (const line of ["requested: 'Requested'", "get_this: 'Available to request'", `unavailable: "Can't request"`, "in_library: 'Ready to watch'"]) assert.ok(app.includes(line), `the app still has ${line}`);
     const held = ['in_library', 'requested', 'get_this', 'unavailable'].filter((state) => mod.isHeld({ state }));
     assert.deepEqual(held, ['in_library', 'requested']);
   });

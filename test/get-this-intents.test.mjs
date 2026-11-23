@@ -88,7 +88,7 @@ async function holdAfterMade(app) {
 const deferred = (app) => app.store.listDeferredWebhooks().map((event) => event.request.id);
 const requestRecord = (app) => app.store.listAppRequests().map(([, record]) => record).find((record) => record.branch === 'request');
 
-describe('"Get this": a webhook that arrives before Seerr answers the request (Codex 1)', { timeout: 60_000 }, () => {
+describe('"Request": a webhook that arrives before Seerr answers the request (Codex 1)', { timeout: 60_000 }, () => {
   it('defers it, then grants it by the join rules: a public title stays public, a held one is joined', async (t) => {
     for (const held of [false, true]) {
       const app = await start(t, world({ tmdbMovies, autoApprove: true }));
@@ -154,7 +154,7 @@ describe('"Get this": a webhook that arrives before Seerr answers the request (C
   });
 });
 
-describe('"Get this": a restart while a request is being made (Codex 2)', { timeout: 60_000 }, () => {
+describe('"Request": a restart while a request is being made (Codex 2)', { timeout: 60_000 }, () => {
   /** A state file as JellyPass leaves it when it stops after Seerr made Alice's request and before it answered. */
   async function stoppedMidRequest(t, state) {
     const first = await start(t, state);
@@ -235,7 +235,7 @@ describe('"Get this": a restart while a request is being made (Codex 2)', { time
   });
 });
 
-describe('"Get this": a settle-time read that fails (Codex 3)', { timeout: 60_000 }, () => {
+describe('"Request": a settle-time read that fails (Codex 3)', { timeout: 60_000 }, () => {
   /** Alice's request is made while the title arrives, and Jellyfin cannot answer when it settles. */
   async function unsettled(t, { arrives = true } = {}) {
     let now = Date.now();
@@ -311,7 +311,7 @@ describe('"Get this": a settle-time read that fails (Codex 3)', { timeout: 60_00
   });
 });
 
-describe('"Get this": titles without TMDB metadata or a Seerr link (Codex 4)', { timeout: 60_000 }, () => {
+describe('"Request": titles without TMDB metadata or a Seerr link (Codex 4)', { timeout: 60_000 }, () => {
   it('never requests a title Jellyfin holds without either: found by name (and year), it goes to the join branch', async (t) => {
     for (const held of [false, true]) {
       const app = await start(t, world({
@@ -342,7 +342,7 @@ describe('"Get this": titles without TMDB metadata or a Seerr link (Codex 4)', {
   });
 });
 
-describe('"Get this": the request branch\'s last steps (Codex 5)', { timeout: 60_000 }, () => {
+describe('"Request": the request branch\'s last steps (Codex 5)', { timeout: 60_000 }, () => {
   it('writes the intent and confirms the caller first: the Jellyfin read is the last step before the request is sent', async (t) => {
     const app = await start(t, world({ tmdbMovies }));
     const events = [];
@@ -398,7 +398,7 @@ describe('"Get this": the request branch\'s last steps (Codex 5)', { timeout: 60
   });
 });
 
-describe('"Get this": the intent is on disk before its request is sent', { timeout: 60_000 }, () => {
+describe('"Request": the intent is on disk before its request is sent', { timeout: 60_000 }, () => {
   const intent = () => ({
     householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
     observedAbsentAt: new Date().toISOString(), createdAt: new Date().toISOString(), status: 'submitting',
@@ -479,7 +479,7 @@ describe('"Get this": the intent is on disk before its request is sent', { timeo
   });
 });
 
-describe('"Get this": a reconciliation that runs while a call\'s intent is being written', { timeout: 60_000 }, () => {
+describe('"Request": a reconciliation that runs while a call\'s intent is being written', { timeout: 60_000 }, () => {
   // Each test here fails on 19d193c, where a call claimed its intent only once the state file had it: a reconciliation
   // that listed it meanwhile retired it, and the call then sent nothing (`request_unsaved`).
   /**

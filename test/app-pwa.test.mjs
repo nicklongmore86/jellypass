@@ -1169,7 +1169,7 @@ describe('household app page: rendering', () => {
     const { document, cardItem, STATE_LABELS } = await renderer();
     assert.deepEqual(STATE_LABELS, {
       in_library: 'Ready to watch',
-      get_this: 'Available to get',
+      get_this: 'Available to request',
       unavailable: "Can't request",
       requested: 'Requested',
     });
@@ -1273,7 +1273,7 @@ describe('household app page: rendering', () => {
     assert.ok(series.querySelector('a.button') === null, 'no Play without the title in the library');
     assert.ok(series.querySelector('button') === null, 'and no request button unless the screen can ask');
     const seasons = [...series.querySelectorAll('.season')];
-    assert.deepEqual(seasons.map((season) => season.querySelector('.badge').textContent), ['Ready to watch', 'Available to get', "Can't request"]);
+    assert.deepEqual(seasons.map((season) => season.querySelector('.badge').textContent), ['Ready to watch', 'Available to request', "Can't request"]);
     assert.deepEqual(seasons.map((season) => season.querySelector('a').getAttribute('href')),
       ['#/tv/900002/season/1', '#/tv/900002/season/2', '#/tv/900002/season/3']);
     assert.deepEqual(seasons.map((season) => season.querySelector('.card-meta').textContent), ['8 episodes', '1 episode', '']);
@@ -1348,7 +1348,7 @@ describe('household app page: rendering', () => {
       assert.ok(items[0].querySelector('a').contains(items[0].querySelector('.card-title')));
       assert.equal(items[0].querySelector('.card-title').textContent, 'Synthetic Movie Three');
       assert.equal(items[0].querySelector('.card-meta').textContent, '2021 · ★ 7.5 TMDB');
-      assert.equal(items[0].querySelector('.badge').textContent, 'Available to get');
+      assert.equal(items[0].querySelector('.badge').textContent, 'Available to request');
       assert.equal(items[1].querySelector('.card-meta'), null, 'no year and no rating: no empty line');
       assert.equal(items[0].querySelectorAll('button, a.button').length, 0);
       // Title and "year · ★ rating TMDB" are BELOW the image, never inside the picture's frame; the solid chip is on the image.
@@ -1360,7 +1360,7 @@ describe('household app page: rendering', () => {
       assert.equal(frame.querySelectorAll('.card-title, .card-meta').length, 0, 'no text over the picture');
       assert.equal(frame.querySelectorAll('img').length, 1);
       assert.equal(text.querySelector('.card-title').textContent, 'Synthetic Movie Three');
-      assert.equal(items[0].querySelector(':scope > .badge').textContent, 'Available to get', 'the chip is a sibling positioned on the image corner');
+      assert.equal(items[0].querySelector(':scope > .badge').textContent, 'Available to request', 'the chip is a sibling positioned on the image corner');
     });
 
     it('falls back to the poster, then to a plain gradient card, and drops a URL that is not TMDB\'s', async () => {
@@ -1396,7 +1396,7 @@ describe('household app page: rendering', () => {
     });
   });
 
-  describe('"Get this" and "My requests" markup', () => {
+  describe('"Request" and "My requests" markup', () => {
     const series = (overrides = {}) => ({
       ...card({ mediaType: 'tv', tmdbId: 900002, title: 'Synthetic Series Two', state: 'get_this' }), genres: [], runtime: 45,
       seasons: [
@@ -1418,8 +1418,8 @@ describe('household app page: rendering', () => {
       const onGet = async (seasons) => { calls.push(seasons); return 'accepted'; };
       const detail = movie('get_this', { onGet });
       const button = detail.querySelector('button');
-      assert.equal(button.textContent, 'Get this');
-      assert.equal(button.getAttribute('aria-label'), 'Get this: Synthetic Movie Three');
+      assert.equal(button.textContent, 'Request');
+      assert.equal(button.getAttribute('aria-label'), 'Request: Synthetic Movie Three');
       assert.equal(button.getAttribute('type'), 'button');
       assert.ok(detail.querySelector('.get-seasons') === null);
       assert.equal(detail.querySelector('.get-message').getAttribute('role'), 'status');
@@ -1429,7 +1429,7 @@ describe('household app page: rendering', () => {
       for (const state of ['in_library', 'requested', 'unavailable']) assert.ok(movie(state, { onGet }).querySelector('button') === null, state);
       assert.ok(movie('get_this', {}).querySelector('button') === null, 'a screen that cannot ask shows none');
       assert.ok(movie('get_this', {}).querySelector('.get-this') === null);
-      assert.equal(GET_THIS_TEXT.button, 'Get this');
+      assert.equal(GET_THIS_TEXT.button, 'Request');
     });
 
     it('disables the button while a call is in flight and shows each failure in its own fixed words', async () => {
@@ -1453,7 +1453,7 @@ describe('household app page: rendering', () => {
         release();
         await new Promise((resolve) => setTimeout(resolve, 0));
         assert.equal(button.disabled, false, `${kind}: can try again`);
-        assert.equal(button.textContent, 'Get this');
+        assert.equal(button.textContent, 'Request');
         assert.equal(button.getAttribute('aria-busy'), null);
         assert.equal(detail.querySelector('.get-message').textContent, text, kind);
         assert.ok(detail.querySelector('.get-message').classList.contains('get-error'));
@@ -1467,7 +1467,7 @@ describe('household app page: rendering', () => {
 
     it('shows one fixed confirmation, whatever the screen was redrawn for', async () => {
       const { document, titleDetail, seasonView, GET_THIS_TEXT } = await renderer();
-      assert.equal(GET_THIS_TEXT.confirmation, "Thanks — we'll get this for your household.");
+      assert.equal(GET_THIS_TEXT.confirmation, "Thanks — your request has been sent to your household.");
       const onGet = async () => 'accepted';
       const confirmations = [
         titleDetail(document, { ...card({ state: 'get_this' }), genres: [], runtime: 90 }, origin, { onGet, confirmed: true, asked: new Set() }),
@@ -1508,7 +1508,7 @@ describe('household app page: rendering', () => {
       // The series' own state is `get_this` here, and a series `requested` for one season still lets the rest be chosen.
       const partly = titleDetail(document, series({ state: 'requested' }), origin, { onGet: async () => 'accepted' });
       assert.equal(partly.querySelectorAll('input[type="checkbox"]').length, 2);
-      assert.equal(partly.querySelectorAll('.season .badge')[0].textContent, 'Available to get');
+      assert.equal(partly.querySelectorAll('.season .badge')[0].textContent, 'Available to request');
       // No requestable season, no picker; seasons just asked for are not offered again.
       const none = titleDetail(document, series({ state: 'unavailable', seasons: [{ seasonNumber: 1, name: 'Season 1', episodeCount: 1, state: 'unavailable' }] }), origin, { onGet: async () => 'accepted' });
       assert.ok(none.querySelector('.get-this') === null);
@@ -1523,7 +1523,7 @@ describe('household app page: rendering', () => {
         { onGet: async (seasons) => { asked.push(seasons); return 'accepted'; }, ...extras });
       const screen = view('get_this');
       const button = screen.querySelector('button');
-      assert.equal(button.getAttribute('aria-label'), 'Get this: Synthetic Series Two Season 2');
+      assert.equal(button.getAttribute('aria-label'), 'Request: Synthetic Series Two Season 2');
       assert.ok(screen.querySelector('fieldset') === null, 'one season needs no picker');
       assert.equal(button.disabled, false);
       click(document, Event, button);
@@ -1534,21 +1534,21 @@ describe('household app page: rendering', () => {
 
     it('shows "We couldn\'t get this" where the household asked and it did not work out, and the other coarse states as the API gives them', async () => {
       const { document, titleDetail, seasonView, requestBadge, REQUEST_LABELS, STATE_LABELS } = await renderer();
-      assert.deepEqual(REQUEST_LABELS, { requested: 'Requested', ready: 'Ready to watch', failed: "We couldn't get this" });
-      assert.equal(requestBadge(document, 'failed').textContent, "We couldn't get this");
+      assert.deepEqual(REQUEST_LABELS, { requested: 'Requested', ready: 'Ready to watch', failed: "Request failed" });
+      assert.equal(requestBadge(document, 'failed').textContent, "Request failed");
       assert.equal(STATE_LABELS.in_library, 'Ready to watch');
       assert.equal(STATE_LABELS.unavailable, "Can't request");
       assert.equal(STATE_LABELS.requested, 'Requested');
       const onGet = async () => 'accepted';
       const movie = titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin, { onGet, failed: new Set([0]) });
-      assert.deepEqual([...movie.querySelectorAll('.badge')].map((badge) => badge.textContent), ["We couldn't get this"]);
+      assert.deepEqual([...movie.querySelectorAll('.badge')].map((badge) => badge.textContent), ["Request failed"]);
       assert.ok(movie.querySelector('button') === null, 'and it is not offered again: the backend holds the failed record');
       assert.equal(movie.querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
       const seasons = titleDetail(document, series(), origin, { onGet, failed: new Set([3]) });
       assert.deepEqual([...seasons.querySelectorAll('.season .badge')].map((badge) => badge.textContent),
-        ['Available to get', 'Ready to watch', 'Available to get', "We couldn't get this", 'Requested', "Can't request"]);
+        ['Available to request', 'Ready to watch', 'Available to request', "Request failed", 'Requested', "Can't request"]);
       const season = seasonView(document, { tmdbId: 900002, seasonNumber: 3, name: 'Season 3', overview: '', episodes: [], state: 'get_this' }, 'S', { failed: new Set([3]) });
-      assert.equal(season.querySelector('.badge').textContent, "We couldn't get this");
+      assert.equal(season.querySelector('.badge').textContent, "Request failed");
       assert.ok(season.querySelector('button') === null);
       assert.equal(season.querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
       assert.deepEqual([...seasons.querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['2'], 'a failed season is not a choice');
@@ -1570,7 +1570,7 @@ describe('household app page: rendering', () => {
       assert.equal(item.querySelectorAll(':scope > .badge').length, 0);
       assert.equal(item.querySelector('.request-who').textContent, 'Asked for by you');
       assert.deepEqual([...item.querySelectorAll('.request-season')].map((season) => season.textContent),
-        ['Season 1Ready to watch', 'Season 2Requested', "Season 3We couldn't get thisAsk your JellyPass admin to try again."]);
+        ['Season 1Ready to watch', 'Season 2Requested', "Season 3Request failedAsk your JellyPass admin to try again."]);
       assert.equal(item.querySelectorAll('.badge').length, 3);
       assert.equal(item.querySelectorAll('.failed-note').length, 1);
       assert.equal(item.querySelector('.card-meta').textContent, 'Series');
@@ -1584,12 +1584,12 @@ describe('household app page: rendering', () => {
       assert.equal(item.querySelector('.card-title').textContent, 'Title unavailable');
       const movie = requestItem(document, { id: 'x', mediaType: 'movie', tmdbId: 5, status: 'failed', byYou: false, seasons: [] });
       assert.ok(movie.querySelector('.request-seasons') === null);
-      assert.equal(movie.querySelector(':scope > .badge').textContent, "We couldn't get this");
+      assert.equal(movie.querySelector(':scope > .badge').textContent, "Request failed");
       assert.equal(movie.querySelector('.card-meta').textContent, 'Movie');
       assert.equal(movie.querySelectorAll('.badge').length, 1);
       assert.equal(movie.querySelector(':scope > .failed-note').textContent, 'Ask your JellyPass admin to try again.');
       // An unknown status (never sent) is shown as the safe one rather than as raw text.
-      assert.equal(requestItem(document, { ...entry, status: 'canary-status', seasons: [] }).querySelector(':scope > .badge').textContent, "We couldn't get this");
+      assert.equal(requestItem(document, { ...entry, status: 'canary-status', seasons: [] }).querySelector(':scope > .badge').textContent, "Request failed");
     });
 
     it('shows one status pill per request: a single season or seasons sharing one status say them on the meta line', async () => {
@@ -1613,7 +1613,7 @@ describe('household app page: rendering', () => {
       assert.equal(shared.querySelector('.card-meta').textContent, 'Series · Seasons 1–3');
       assert.equal(shared.querySelectorAll('.request-season').length, 0);
       const gap = requestItem(document, { ...base, status: 'failed', seasons: [3, 1].map((seasonNumber) => ({ seasonNumber, status: 'failed' })) });
-      assert.deepEqual(pills(gap), ["We couldn't get this"]);
+      assert.deepEqual(pills(gap), ["Request failed"]);
       assert.equal(gap.querySelector('.card-meta').textContent, 'Series · Seasons 1, 3');
       assert.equal(gap.querySelectorAll('.failed-note').length, 1);
       assert.equal(gap.querySelector(':scope > .failed-note').textContent, 'Ask your JellyPass admin to try again.');
@@ -1625,7 +1625,7 @@ describe('household app page: rendering', () => {
       assert.equal(mixed.querySelector('.card-meta').textContent, 'Series');
       assert.equal(mixed.querySelectorAll('.failed-note').length, 0);
       // Each status said once in what a screen reader reads.
-      for (const [item, status] of [[single, 'Requested'], [shared, 'Ready to watch'], [gap, "We couldn't get this"]]) {
+      for (const [item, status] of [[single, 'Requested'], [shared, 'Ready to watch'], [gap, "Request failed"]]) {
         assert.equal(item.textContent.split(status).length - 1, 1, status);
       }
       assert.deepEqual([requestSeasonsText([1]), requestSeasonsText([1, 2]), requestSeasonsText([3, 1, 2]), requestSeasonsText([1, 3]), requestSeasonsText([5, 1, 2, 3, 7, 8])],
@@ -1799,7 +1799,7 @@ describe('household app page: rendering', () => {
       assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-rating').textContent), ['★ 7.8 TMDB', '★ 6.8 TMDB', '★ 5.8 TMDB', '★ 4.8 TMDB', '★ 3.8 TMDB']);
       assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-rating').getAttribute('aria-label')), ['TMDB rating 7.8 out of 10', 'TMDB rating 6.8 out of 10', 'TMDB rating 5.8 out of 10', 'TMDB rating 4.8 out of 10', 'TMDB rating 3.8 out of 10']);
       assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-overview').textContent), [1, 2, 3, 4, 5].map((n) => `Synthetic hero overview ${n}.`));
-      assert.deepEqual(slides.map((slide) => slide.querySelector('.badge').textContent), ['Available to get', 'Ready to watch', 'Requested', "Can't request", 'Available to get']);
+      assert.deepEqual(slides.map((slide) => slide.querySelector('.badge').textContent), ['Available to request', 'Ready to watch', 'Requested', "Can't request", 'Available to request']);
       assert.deepEqual(slides.map((slide) => slide.querySelectorAll('img').length), [1, 1, 0, 1, 1], 'no backdrop, no image');
       assert.equal(slides[2].querySelectorAll('.hero-card .hero-media img').length, 0, 'the plain card is navy with its panel');
       assert.deepEqual(slides.map((slide) => slide.querySelectorAll('.hero-card > .hero-panel .hero-link, .hero-card > .hero-panel .badge').length), Array(5).fill(2), 'title and status chip sit in the text panel');
@@ -1881,7 +1881,7 @@ describe('household app page: rendering', () => {
       assert.deepEqual(primaries(movie('in_library')), ['A Play']);
       assert.equal(movie('in_library').querySelector('a.button-primary').getAttribute('href'), play.url);
       assert.equal(movie('in_library').querySelector('a.button-primary').getAttribute('aria-label'), 'Play Synthetic Movie Three');
-      assert.deepEqual(primaries(movie('get_this')), ['BUTTON Get this']);
+      assert.deepEqual(primaries(movie('get_this')), ['BUTTON Request']);
       for (const state of ['requested', 'unavailable']) {
         const detail = movie(state);
         assert.deepEqual(primaries(detail), [], state);
@@ -1895,7 +1895,7 @@ describe('household app page: rendering', () => {
       const failed = movie('get_this', { onGet, failed: new Set([0]) });
       assert.deepEqual(primaries(failed), []);
       assert.equal(failed.querySelectorAll('button').length, 0);
-      assert.equal(failed.querySelector('.badge').textContent, "We couldn't get this");
+      assert.equal(failed.querySelector('.badge').textContent, "Request failed");
       assert.equal(failed.querySelector('.detail-text .muted').textContent, 'Ask your JellyPass admin to try again.');
       // Without a way to ask, a requestable title has no action either; Play needs the household's own Jellyfin link.
       assert.deepEqual(primaries(movie('get_this', {})), []);
@@ -1905,14 +1905,14 @@ describe('household app page: rendering', () => {
       const order = [...detail.querySelectorAll('h1, .chips, .genres, .badge, .detail-action, .overview')].map((node) => node.className.split(' ')[0] || node.tagName);
       assert.deepEqual(order, ['screen-title', 'chips', 'genres', 'badge', 'detail-action', 'overview']);
       // A series: Get this when seasons can be asked for; a series partly held has Play as its one primary and Get this steps back.
-      assert.deepEqual(primaries(titleDetail(document, tv(), origin, { onGet })), ['BUTTON Get this']);
+      assert.deepEqual(primaries(titleDetail(document, tv(), origin, { onGet })), ['BUTTON Request']);
       const held = titleDetail(document, tv({ state: 'in_library', play }), origin, { onGet });
       assert.deepEqual(primaries(held), ['A Play']);
-      assert.equal(held.querySelector('.detail-action button').textContent, 'Get this');
+      assert.equal(held.querySelector('.detail-action button').textContent, 'Request');
       assert.ok(held.querySelector('.detail-action button').classList.contains('button-secondary'));
       // A season page: Get this only for a season that can be asked for.
       const season = (state, extras = { onGet }) => seasonView(document, { tmdbId: 900002, seasonNumber: 2, name: 'Season 2', overview: '', episodes: [], state }, 'Synthetic Series Two', extras);
-      assert.deepEqual(primaries(season('get_this')), ['BUTTON Get this']);
+      assert.deepEqual(primaries(season('get_this')), ['BUTTON Request']);
       for (const state of ['in_library', 'requested', 'unavailable']) assert.deepEqual(primaries(season(state)), [], state);
     });
 
@@ -1942,7 +1942,7 @@ describe('household app page: rendering', () => {
       const cards = [...detail.querySelectorAll('.season')];
       assert.deepEqual(cards.map((item) => item.querySelector('.season-name').textContent), ['Specials', 'Season 1', 'Season 2', 'Season 3', 'Season 4']);
       assert.deepEqual(cards.map((item) => item.querySelector('.card-meta').textContent), ['2 episodes', '8 episodes', '6 episodes', '1 episode', '4 episodes']);
-      assert.deepEqual(cards.map((item) => item.querySelector('.badge').textContent), ['Available to get', 'Ready to watch', 'Available to get', 'Available to get', 'Requested']);
+      assert.deepEqual(cards.map((item) => item.querySelector('.badge').textContent), ['Available to request', 'Ready to watch', 'Available to request', 'Available to request', 'Requested']);
       // Real checkboxes, in the fieldset with its legend, in the cards of the seasons that can be asked for (never a special).
       const fieldset = detail.querySelector('fieldset.get-seasons');
       assert.equal(fieldset.querySelector('legend').textContent, GET_THIS_TEXT.chooseSeasons);
@@ -1973,7 +1973,7 @@ describe('household app page: rendering', () => {
       click(all, Event);
       assert.equal(checked(), '11', 'from some to all');
       assert.deepEqual(asked, [], 'toggling asked for nothing');
-      assert.equal(get.textContent, 'Get this');
+      assert.equal(get.textContent, 'Request');
       // Get this is the one thing that asks, with exactly the chosen seasons.
       click(get, Event);
       assert.deepEqual(asked, [[2, 3]]);
@@ -1996,15 +1996,15 @@ describe('household app page: rendering', () => {
       matches(css, /\.choice \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/);
     });
 
-    it('offers Get all missing seasons beside the seasons: one press asks once for every season still to get, and only those', async () => {
+    it('offers Request all missing seasons beside the seasons: one press asks once for every season still to get, and only those', async () => {
       const { document, Event, titleDetail, GET_THIS_TEXT } = await renderer();
       const asked = [];
       let answer;
       const detail = titleDetail(document, tv(), origin, { onGet: (seasons, onAccepted) => { asked.push(seasons); return new Promise((resolve) => { answer = () => { onAccepted(); resolve('accepted'); }; }); } });
       const all = detail.querySelector('fieldset.get-seasons .season-tools button.get-all-seasons');
-      assert.equal(all.textContent, 'Get all missing seasons');
+      assert.equal(all.textContent, 'Request all missing seasons');
       assert.equal(all.textContent, GET_THIS_TEXT.allMissingSeasons);
-      assert.equal(all.getAttribute('aria-label'), 'Get all missing seasons: Synthetic Series Two');
+      assert.equal(all.getAttribute('aria-label'), 'Request all missing seasons: Synthetic Series Two');
       // Nothing ticked: it still asks for both seasons the household has neither got nor asked for, never a special,
       // the one in the library or the requested one, in one call, as Select all then Get this would.
       click(all, Event);
@@ -2360,7 +2360,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.deepEqual(cards.map((item) => item.querySelector('.card-title').textContent),
       ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three'], 'the person in the results is dropped');
     assert.deepEqual(cards.map((item) => item.querySelector('.badge').textContent),
-      ['Available to get', 'Available to get', 'Ready to watch']);
+      ['Available to request', 'Available to request', 'Ready to watch']);
     // The title in the library has its Play button on its own page (below), not on the card.
     assert.equal(page.document.querySelectorAll('.row-list a.button, .row-list button:not(.card-more):not(.card-menu-item)').length, 0, 'no Play on any card');
     assert.equal([...page.document.querySelectorAll('.row-list a')].filter((anchor) => anchor.textContent === 'Play').length, 0);
@@ -3405,7 +3405,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(logo.getAttribute('alt'), '', 'the heading already names the network');
     assert.equal(logo.getAttribute('src'), 'https://image.tmdb.org/t/p/w300/wwemzKWzjKYJFfCeiB57q3r4Bcm.png');
     // All: the service's films and series mixed, as on Home.
-    assert.deepEqual([...page.main().querySelectorAll('ul.grid .card .badge')].map((badge) => badge.textContent), ['Available to get', 'Available to get', 'Ready to watch']);
+    assert.deepEqual([...page.main().querySelectorAll('ul.grid .card .badge')].map((badge) => badge.textContent), ['Available to request', 'Available to request', 'Ready to watch']);
     assert.deepEqual(page.requests.map((request) => request.url).filter((url) => url.includes('/network/')), ['/jellypass/app/v1/discover/network/213/all']);
     assert.equal(page.main().querySelector('button.load-more'), null, 'no next page after a short one');
     assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'home');
@@ -3533,7 +3533,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.ok(page.main().querySelector('a.button') === null);
     const seasons = [...page.main().querySelectorAll('.season')];
     assert.ok(seasons.length >= 1);
-    for (const season of seasons) assert.equal(season.querySelector('.badge').textContent, 'Available to get');
+    for (const season of seasons) assert.equal(season.querySelector('.badge').textContent, 'Available to request');
     assertNoCanaries(page.serialize(), 'series page');
 
     page.go(`#/tv/${T_TV}/season/1`);
@@ -3767,7 +3767,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(page.main().querySelector('.detail-hero img').getAttribute('src'), `https://image.tmdb.org/t/p/w780/synthetic-backdrop-${T_MOVIE}.jpg`);
       assert.equal(page.main().querySelector('.detail-hero img').getAttribute('srcset'), `https://image.tmdb.org/t/p/w780/synthetic-backdrop-${T_MOVIE}.jpg 780w, https://image.tmdb.org/t/p/w1280/synthetic-backdrop-${T_MOVIE}.jpg 1280w`);
       assert.equal(page.main().querySelectorAll('.button-primary').length, 1);
-      assert.equal(page.main().querySelector('.button-primary').textContent, 'Get this');
+      assert.equal(page.main().querySelector('.button-primary').textContent, 'Request');
       assert.equal(page.main().querySelector('h1').textContent, 'Synthetic Movie One');
       const own = await openApp(t, app, { hash: `#/movie/${OWN_MOVIE}` });
       await own.until(() => own.main().querySelector('a.button-primary'), 'Play');
@@ -3814,7 +3814,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const posts = page.requests.filter((request) => request.init.method === 'POST');
       assert.equal(posts.length, 1);
       assert.equal(posts[0].init.body, JSON.stringify({ seasons: values.map(Number) }));
-      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — your request has been sent to your household.");
       await app.background.settled();
     });
   });
@@ -3967,7 +3967,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const page = await openApp(t, app);
       await homeReady(page);
       page.go(`#/movie/${T_MOVIE}`);
-      const button = await page.until(() => page.main().querySelector('button'), 'Get this');
+      const button = await page.until(() => page.main().querySelector('button'), 'Request');
       const entries = page.entries.length;
       button.dispatchEvent(new page.Event('click'));
       await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
@@ -4897,7 +4897,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.ok(missing.main().querySelector('button') === null);
   });
 
-  describe('"Get this" and "My requests" against the API', () => {
+  describe('"Request" and "My requests" against the API', () => {
     const POST_HEADERS = { Authorization: 'MediaBrowser Token="token-alice"', 'Content-Type': 'application/json' };
     const posts = (page) => page.requests.filter((request) => request.init.method === 'POST');
     const hold = () => {
@@ -4947,7 +4947,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(titleCalls(page, before).length, 0);
         assert.equal(listCalls(page, before), 1);
         assert.deepEqual([...page.main().querySelectorAll('.request .card-title')].map((title) => title.textContent), ['Film 910000', 'Film 910001', 'Film 910002']);
-        assert.deepEqual([...page.main().querySelectorAll('.request > .badge')].map((badge) => badge.textContent), ['Ready to watch', "We couldn't get this", 'Requested']);
+        assert.deepEqual([...page.main().querySelectorAll('.request > .badge')].map((badge) => badge.textContent), ['Ready to watch', "Request failed", 'Requested']);
         assert.equal(page.main().querySelector('.request .card-meta').textContent, '2024 · Movie');
       });
 
@@ -4986,8 +4986,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const { gate, release } = hold();
       const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: async (url, init) => { if (init.method === 'POST') await gate; return undefined; } });
       const button = await page.until(() => page.main().querySelector('button'), 'the Get this button');
-      assert.equal(button.textContent, 'Get this');
-      assert.equal(page.main().querySelector('.badge').textContent, 'Available to get');
+      assert.equal(button.textContent, 'Request');
+      assert.equal(page.main().querySelector('.badge').textContent, 'Available to request');
       assert.equal(page.main().textContent.includes('soon'), false);
       button.dispatchEvent(new page.Event('click'));
       assert.equal(button.disabled, true);
@@ -4996,7 +4996,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await page.until(() => posts(page).length === 1, 'the call');
       release();
       await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
-      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — your request has been sent to your household.");
       assert.equal(posts(page).length, 1, 'a second press while in flight sent nothing');
       const [post] = posts(page);
       assert.equal(post.url, `/jellypass/app/v1/movie/${T_MOVIE}/get`);
@@ -5038,7 +5038,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       };
       const ask = async (page) => {
         const button = await page.until(() => page.main().querySelector('button'), 'the Get this button');
-        assert.equal(page.main().querySelector('.badge').textContent, 'Available to get');
+        assert.equal(page.main().querySelector('.badge').textContent, 'Available to request');
         button.dispatchEvent(new page.Event('click'));
         await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
         // The confirmation is up before the title is read again; wait for the redraw (it focuses the confirmation).
@@ -5050,7 +5050,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         const page = await openApp(t, app);
         await homeReady(page);
         const before = await searchFor(page, 'Synthetic Movie One');
-        assert.equal(statusOf(before), 'Available to get');
+        assert.equal(statusOf(before), 'Available to request');
         page.go(`#/movie/${T_MOVIE}`);
         await ask(page);
         // The refetch after the accepted call still said get_this; the page shows Requested all the same.
@@ -5062,9 +5062,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         const name = nameOf(card);
         assert.ok(name.startsWith('Synthetic Movie One'), name);
         assert.equal(name.split('Requested').length - 1, 1, name);
-        assert.equal(name.includes('Available to get'), false, name);
+        assert.equal(name.includes('Available to request'), false, name);
         // A card for another title is untouched.
-        assert.equal(statusOf(cardFor(page, 'Synthetic Series Two')), 'Available to get');
+        assert.equal(statusOf(cardFor(page, 'Synthetic Series Two')), 'Available to request');
         // The page keeps nothing about it.
         assert.deepEqual(page.sessionWrites, []);
         assert.equal([...page.store.keys()].some((key) => key !== 'jellyfin_credentials' && /ask|request/i.test(key)), false);
@@ -5091,8 +5091,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         tick(2_000);
         page.go('#/');
         page.go(`#/movie/${T_MOVIE}`);
-        await page.until(() => page.main().querySelector('.badge')?.textContent === 'Available to get', 'server truth');
-        assert.equal(page.main().querySelector('button').textContent, 'Get this');
+        await page.until(() => page.main().querySelector('.badge')?.textContent === 'Available to request', 'server truth');
+        assert.equal(page.main().querySelector('button').textContent, 'Request');
       });
 
       it('marks the seasons asked for, and the series as the server will', async (t) => {
@@ -5108,7 +5108,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         const numberOf = (item) => item.querySelector('a').getAttribute('href').split('/').pop();
         assert.ok(seasons.length >= 1);
         for (const item of seasons) {
-          assert.equal(item.querySelector('.badge').textContent, numberOf(item) === '1' ? 'Requested' : 'Available to get', numberOf(item));
+          assert.equal(item.querySelector('.badge').textContent, numberOf(item) === '1' ? 'Requested' : 'Available to request', numberOf(item));
         }
       });
 
@@ -5138,10 +5138,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           'Ann’s Account fully loaded',
         );
         const card = await searchFor(page, 'Synthetic Movie One');
-        assert.equal(statusOf(card), 'Available to get', 'nothing carried over from the previous member');
+        assert.equal(statusOf(card), 'Available to request', 'nothing carried over from the previous member');
         page.go(`#/movie/${T_MOVIE}`);
         await page.until(() => page.main().querySelector('.detail .badge') && page.pending() === 0, 'the title fully loaded');
-        assert.equal(page.main().querySelector('.badge').textContent, 'Available to get');
+        assert.equal(page.main().querySelector('.badge').textContent, 'Available to request');
         assert.ok(page.main().querySelector('button') !== null, 'Get this is offered again');
         // The server itself still says get_this for Ann (Alice's record is held back), so only the overlay could have said otherwise.
         const answer = await get(app.port, `/jellypass/app/v1/movie/${T_MOVIE}`, { Host: HOST_A, Authorization: `MediaBrowser Token="${TOKENS[ANN]}"` });
@@ -5155,7 +5155,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
         page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
         for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
-        await page.until(() => page.main().querySelector('.badge')?.textContent === 'Available to get', 'the title redrawn for the new member');
+        await page.until(() => page.main().querySelector('.badge')?.textContent === 'Available to request', 'the title redrawn for the new member');
         assert.equal(page.location.hash, `#/movie/${T_MOVIE}`, 'no navigation');
       });
 
@@ -5180,7 +5180,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         await ask(page);
         page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
         const card = await searchFor(page, 'Synthetic Movie One');
-        assert.equal(statusOf(card), 'Available to get');
+        assert.equal(statusOf(card), 'Available to request');
       });
 
       it('is not added by a call the API refused', async (t) => {
@@ -5193,7 +5193,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         button.dispatchEvent(new page.Event('click'));
         await page.until(() => page.main().querySelector('.get-error'), 'the error');
         const card = await searchFor(page, 'Synthetic Movie One');
-        assert.equal(statusOf(card), 'Available to get');
+        assert.equal(statusOf(card), 'Available to request');
       });
 
       it('makes no extra call', async (t) => {
@@ -5224,7 +5224,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         await app.background.settled();
       }
       assert.ok(Object.keys(seen).length >= 5, Object.keys(seen).join());
-      for (const [name, text] of Object.entries(seen)) assert.equal(text, "Thanks — we'll get this for your household.", name);
+      for (const [name, text] of Object.entries(seen)) assert.equal(text, "Thanks — your request has been sent to your household.", name);
       for (const [name, shape] of Object.entries(shapes)) assert.deepEqual(shape, { role: 'status', error: false, posts: 1 }, name);
     });
 
@@ -5301,7 +5301,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const button = await page.until(() => page.main().querySelector('button'), 'the button');
       button.dispatchEvent(new page.Event('click'));
       const retry = await page.until(() => page.main().querySelector('.get-refresh') && page.main().querySelector('button'), 'the refresh error and the retry');
-      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — your request has been sent to your household.");
       assert.equal(page.main().querySelector('.get-refresh').textContent, 'Something went wrong. Try again in a moment.');
       assert.equal(page.main().querySelector('.get-error'), null);
       assert.equal(page.main().querySelectorAll('button:not(.hide-button):not(.hide-undo)').length, 1, 'only the retry');
@@ -5329,7 +5329,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       boxes[1].dispatchEvent(new page.Event('change'));
       button.dispatchEvent(new page.Event('click'));
       await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
-      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — your request has been sent to your household.");
       assert.equal(posts(page).length, 1);
       assert.equal(posts(page)[0].url, `/jellypass/app/v1/tv/${T_TV}/get`);
       assert.equal(posts(page)[0].init.body, '{"seasons":[2]}');
@@ -5407,13 +5407,13 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(await press(), "We couldn't send that just now. Try again in a moment.", failing);
       }
       assert.ok(page.main().querySelector('button') === button, 'the same button, ready again');
-      assert.equal(button.textContent, 'Get this');
+      assert.equal(button.textContent, 'Request');
       assert.doesNotMatch(page.serialize(), /canary|upstream/i);
       // Then it works, with the same confirmation.
       mode = 'ok';
       button.dispatchEvent(new page.Event('click'));
       await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
-      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — your request has been sent to your household.");
       await app.background.settled();
 
       // A 401 sends the person back to sign-in.
@@ -5469,7 +5469,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const app = await startApp(t);
       const empty = await openApp(t, app, { hash: '#/requests' });
       await empty.until(() => empty.main().querySelector('p.muted'), 'the empty state');
-      assert.equal(empty.main().querySelector('p.muted').textContent, 'Nothing requested yet. Press Get this on a title to ask for it.');
+      assert.equal(empty.main().querySelector('p.muted').textContent, 'Nothing requested yet. Press Request on a title to ask for it.');
       assert.equal(empty.main().querySelector('h1').textContent, 'My requests');
 
       let failing = true;
@@ -5489,7 +5489,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await long.until(() => [...long.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'their titles');
       const titleCalls = () => long.requests.filter((request) => /\/movie\/\d+$/.test(request.url)).length;
       assert.equal(titleCalls(), 10, 'titles are read ten at a time');
-      assert.deepEqual([...long.main().querySelectorAll(':scope .request > .badge')].slice(0, 3).map((badge) => badge.textContent), ['Requested', 'Ready to watch', "We couldn't get this"]);
+      assert.deepEqual([...long.main().querySelectorAll(':scope .request > .badge')].slice(0, 3).map((badge) => badge.textContent), ['Requested', 'Ready to watch', "Request failed"]);
       const more = long.main().querySelector('button.load-more');
       assert.equal(more.hidden, false);
       more.dispatchEvent(new long.Event('click'));
@@ -5507,17 +5507,17 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const body = (value) => ({ status: 200, body: Buffer.from(JSON.stringify(value)), headers: { 'content-type': 'application/json' } });
       const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => (url === '/jellypass/app/v1/requests' ? body(failed) : undefined) });
       await page.until(() => page.main().querySelector('.failed-note'), 'the note');
-      assert.equal(page.main().querySelector('.badge').textContent, "We couldn't get this");
+      assert.equal(page.main().querySelector('.badge').textContent, "Request failed");
       assert.ok(page.main().querySelector('button:not(.hide-button):not(.hide-undo)') === null, 'no Get this for a failed title');
       // A failing list never breaks the title.
       const broken = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 502, body: Buffer.from('{}'), headers: {} } : undefined) });
       await broken.until(() => broken.main().querySelector('button'), 'the button');
-      assert.equal(broken.main().querySelector('.badge').textContent, 'Available to get');
+      assert.equal(broken.main().querySelector('.badge').textContent, 'Available to request');
       assert.ok(broken.main().querySelector('[role="alert"]') === null);
       const seasonsFailed = { results: [{ id: 'y', mediaType: 'tv', tmdbId: T_TV, status: 'failed', seasons: [{ seasonNumber: 2, status: 'failed' }], byYou: false }] };
       const series = await openApp(t, app, { hash: `#/tv/${T_TV}`, override: (url) => (url === '/jellypass/app/v1/requests' ? body(seasonsFailed) : undefined) });
       await series.until(() => series.main().querySelector('.season-list'), 'the series');
-      assert.deepEqual([...series.main().querySelectorAll('.season .badge')].map((badge) => badge.textContent), ['Available to get', "We couldn't get this"]);
+      assert.deepEqual([...series.main().querySelectorAll('.season .badge')].map((badge) => badge.textContent), ['Available to request', "Request failed"]);
       assert.deepEqual([...series.main().querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['1']);
       assert.equal(series.main().querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
       await settle();
@@ -5559,7 +5559,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
             },
           });
           if (reread) {
-            const button = await page.until(() => page.main().querySelector('button:not(.hide-button):not(.hide-undo)'), 'Get this');
+            const button = await page.until(() => page.main().querySelector('button:not(.hide-button):not(.hide-undo)'), 'Request');
             button.dispatchEvent(new page.Event('click'));
           }
           const error = await page.until(() => page.main().querySelector(reread ? '.get-refresh' : '.notice'), 'the retry state');
@@ -5596,7 +5596,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
               },
             });
             if (reread) {
-              const button = await page.until(() => page.main().querySelector('button:not(.hide-button):not(.hide-undo)'), 'Get this');
+              const button = await page.until(() => page.main().querySelector('button:not(.hide-button):not(.hide-undo)'), 'Request');
               button.dispatchEvent(new page.Event('click'));
             }
             await page.until(() => detailStarted && requestsStarted, 'both parallel reads');
@@ -5634,14 +5634,14 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       box: item.querySelector('input[type="checkbox"]')?.checked ?? null,
     }));
 
-    it('asks once for every missing season of a series with Get all missing seasons', async (t) => {
+    it('asks once for every missing season of a series with Request all missing seasons', async (t) => {
       const app = await startApp(t);
       const page = await openApp(t, app, { hash: `#/tv/${T_TV}` });
       const all = await page.until(() => page.main().querySelector('.get-all-seasons'), 'the button');
       click(page, all);
       await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
       assert.deepEqual(posts(page).map((request) => [request.url, request.init.body]), [[`/jellypass/app/v1/tv/${T_TV}/get`, '{"seasons":[1,2]}']]);
-      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — your request has been sent to your household.");
       await page.until(() => page.main().querySelectorAll('.season .badge').length === 2
         && [...page.main().querySelectorAll('.season .badge')].every((badge) => badge.textContent === 'Requested'), 'both requested');
       assert.equal(page.main().querySelector('.get-all-seasons'), null);
@@ -5677,8 +5677,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => url.endsWith('/requests') ? jsonAnswer(failed) : undefined });
       const preview = await page.until(() => page.main().querySelector('.collection-preview'), 'preview');
       const card = preview.querySelector('a[href="#/movie/900005"]').closest('.card');
-      assert.equal(card.querySelector('.badge').textContent, "We couldn't get this");
-      assert.equal(card.querySelector('a').getAttribute('aria-label'), "Synthetic Movie Five, We couldn't get this");
+      assert.equal(card.querySelector('.badge').textContent, "Request failed");
+      assert.equal(card.querySelector('a').getAttribute('aria-label'), "Synthetic Movie Five, Request failed");
       assert.equal(page.requests.filter((request) => request.url.endsWith('/requests')).length, 1);
     });
 
@@ -5779,34 +5779,34 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(page.main().querySelector('h1').textContent, 'Synthetic Collection');
       assert.equal(page.main().querySelector('.overview').textContent, 'A synthetic film series used only in tests.');
       assert.deepEqual(films(page), [
-        { name: 'Synthetic Movie One', meta: '2020', badge: 'Available to get', box: true },
+        { name: 'Synthetic Movie One', meta: '2020', badge: 'Available to request', box: true },
         { name: 'Synthetic Movie Three', meta: '2024', badge: 'Ready to watch', box: null },
-        { name: 'Synthetic Movie Five', meta: '2999 · Not released yet', badge: 'Available to get', box: false },
-        { name: 'Synthetic Movie Six', meta: 'Not released yet', badge: 'Available to get', box: false },
+        { name: 'Synthetic Movie Five', meta: '2999 · Not released yet', badge: 'Available to request', box: false },
+        { name: 'Synthetic Movie Six', meta: 'Not released yet', badge: 'Available to request', box: false },
       ]);
       assert.equal(page.main().querySelector('.collection-film a.button').textContent, 'Play');
       assert.deepEqual([...page.main().querySelectorAll('.collection-film .season-link')].map((link) => link.getAttribute('href')),
         [`#/movie/${T_MOVIE}`, `#/movie/${OWN_MOVIE}`, '#/movie/900005', '#/movie/900006']);
       const button = page.main().querySelector('button.get-films');
-      assert.equal(button.textContent, 'Get all missing films');
+      assert.equal(button.textContent, 'Request all missing films');
       // Ticking a film not out yet makes it a selection; back to the first ticks, it is Get all again; none, nothing to send.
       const boxes = [...page.main().querySelectorAll('.collection-film input[type="checkbox"]')];
       change(page, boxes[1], true);
-      assert.equal(button.textContent, 'Get selected (2)');
+      assert.equal(button.textContent, 'Request selected (2)');
       change(page, boxes[1], false);
-      assert.equal(button.textContent, 'Get all missing films');
+      assert.equal(button.textContent, 'Request all missing films');
       change(page, boxes[0], false);
-      assert.equal(button.textContent, 'Get selected (0)');
+      assert.equal(button.textContent, 'Request selected (0)');
       assert.equal(button.disabled, true);
       change(page, boxes[0], true);
       assert.equal(posts(page).length, 0, 'ticking asked for nothing');
       click(page, button);
       const summary = await page.until(() => page.main().querySelector('.collection-outcome'), 'the summary');
-      assert.equal(summary.textContent, "Thanks — we'll get this film for your household.");
+      assert.equal(summary.textContent, "Thanks — your request for this film has been sent to your household.");
       assert.deepEqual(posts(page).map((request) => [request.url, request.init.body]), [[`/jellypass/app/v1/movie/${T_MOVIE}/get`, '{}']]);
       // Read again: the film is requested now, and the rest stay as they were.
-      assert.deepEqual(films(page).map((film) => [film.badge, film.box]), [['Requested', null], ['Ready to watch', null], ['Available to get', false], ['Available to get', false]]);
-      assert.equal(page.main().querySelector('button.get-films').textContent, 'Get selected (0)');
+      assert.deepEqual(films(page).map((film) => [film.badge, film.box]), [['Requested', null], ['Ready to watch', null], ['Available to request', false], ['Available to request', false]]);
+      assert.equal(page.main().querySelector('button.get-films').textContent, 'Request selected (0)');
       await app.background.settled();
       // My requests lists it as its own entry.
       const list = (await app.get('/jellypass/app/v1/requests')).json().results;
@@ -5824,7 +5824,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
       for (const box of page.main().querySelectorAll('.collection-film input[type="checkbox"]')) change(page, box, true);
       const button = page.main().querySelector('button.get-films');
-      assert.equal(button.textContent, 'Get selected (3)');
+      assert.equal(button.textContent, 'Request selected (3)');
       click(page, button);
       const summary = await page.until(() => page.main().querySelector('.collection-outcome'), 'the summary');
       // One call per film, in the page's order, until the refusal: the film after it is never sent.
@@ -5837,7 +5837,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       ]);
       assert.equal(summary.getAttribute('role'), 'status');
       // The two not asked for can be asked for again; the one asked for is requested.
-      assert.deepEqual(films(page).map((film) => [film.badge, film.box]), [['Requested', null], ['Ready to watch', null], ['Available to get', false], ['Available to get', false]]);
+      assert.deepEqual(films(page).map((film) => [film.badge, film.box]), [['Requested', null], ['Ready to watch', null], ['Available to request', false], ['Available to request', false]]);
       assert.doesNotMatch(page.serialize(), /download/i);
       await app.background.settled();
     });
@@ -5863,8 +5863,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(films(page).map((film) => [film.name, film.badge, film.box]), [
         ['Synthetic Movie One', 'Requested', null],
         ['Synthetic Movie Three', 'Ready to watch', null],
-        ['Synthetic Movie Five', 'Available to get', false],
-        ['Synthetic Movie Six', 'Available to get', false],
+        ['Synthetic Movie Five', 'Available to request', false],
+        ['Synthetic Movie Six', 'Available to request', false],
       ]);
       await app.background.settled();
     });
@@ -5939,10 +5939,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         override: (url) => (url === '/jellypass/app/v1/requests' ? jsonAnswer(failedList) : undefined),
       });
       await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
-      assert.deepEqual(films(page)[0], { name: 'Synthetic Movie One', meta: '2020', badge: "We couldn't get this", box: null });
+      assert.deepEqual(films(page)[0], { name: 'Synthetic Movie One', meta: '2020', badge: "Request failed", box: null });
       // Nothing released is left to get: no film is ticked, so nothing is sent as if newly asked for.
       const button = page.main().querySelector('button.get-films');
-      assert.equal(button.textContent, 'Get selected (0)');
+      assert.equal(button.textContent, 'Request selected (0)');
       assert.equal(button.disabled, true);
       assert.equal(posts(page).length, 0);
     });
@@ -5952,11 +5952,11 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal((await app.post(`/jellypass/app/v1/hidden/movie/${T_MOVIE}`, undefined)).status, 200);
       const page = await openApp(t, app, { hash: `#/collection/${COLLECTION}` });
       await page.until(() => page.main().querySelector('.collection-view'), 'the collection');
-      assert.deepEqual(films(page)[0], { name: 'Synthetic Movie One', meta: '2020 · Not interested', badge: 'Available to get', box: false });
+      assert.deepEqual(films(page)[0], { name: 'Synthetic Movie One', meta: '2020 · Not interested', badge: 'Available to request', box: false });
       const button = page.main().querySelector('button.get-films');
-      assert.equal(button.textContent, 'Get selected (0)');
+      assert.equal(button.textContent, 'Request selected (0)');
       change(page, page.main().querySelector('.collection-film input[type="checkbox"]'), true);
-      assert.equal(button.textContent, 'Get selected (1)');
+      assert.equal(button.textContent, 'Request selected (1)');
     });
 
     it('says when the household has every film it can get, and offers no button', async (t) => {

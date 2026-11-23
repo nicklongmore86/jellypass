@@ -169,10 +169,10 @@ describe("a request's text", () => {
     expect(requestName(film, named)).toBe('Dune, 2021 · Movie, Ready to watch, Asked for by someone in your household');
     // Seasons that differ: each with its status, none for the entry, the note after the one that failed.
     expect(requestName(series, { status: 'missing' })).toBe(
-      "Title unavailable, Series, Asked for by you, Season 1: Ready to watch, Season 2: We couldn't get this, Ask your JellyPass admin to try again.",
+      "Title unavailable, Series, Asked for by you, Season 1: Ready to watch, Season 2: Request failed, Ask your JellyPass admin to try again.",
     );
     expect(requestName({ ...series, seasons: [{ seasonNumber: 2, status: 'failed' }, { seasonNumber: 3, status: 'requested' }] }, named)).toBe(
-      "Dune, 2021 · Series, Asked for by you, Season 2: We couldn't get this, Ask your JellyPass admin to try again., Season 3: Requested",
+      "Dune, 2021 · Series, Asked for by you, Season 2: Request failed, Ask your JellyPass admin to try again., Season 3: Requested",
     );
     // One season, or seasons sharing one status: on the meta line, one status.
     const show = { status: 'loaded', title: { title: 'Show', year: 2027, posterUrl: null } } as const;
@@ -181,7 +181,7 @@ describe("a request's text", () => {
       'Show, 2027 · Series · Seasons 1–3, Ready to watch, Asked for by you',
     );
     expect(requestName({ ...series, status: 'failed', seasons: [1, 3].map((seasonNumber) => ({ seasonNumber, status: 'failed' as const })) }, { status: 'loading' })).toBe(
-      "Loading title…, Series · Seasons 1, 3, We couldn't get this, Asked for by you, Ask your JellyPass admin to try again.",
+      "Loading title…, Series · Seasons 1, 3, Request failed, Asked for by you, Ask your JellyPass admin to try again.",
     );
     // The day it was asked, after who asked: a locale date, never a time; none from a server before apiVersion 2.
     expect(requestName({ ...series, seasons: [{ seasonNumber: 1, status: 'requested' }], requestedOn: '2026-10-27' }, show)).toBe('Show, 2027 · Series · Season 1, Requested, Asked for by you, Requested on Oct 27, 2026');

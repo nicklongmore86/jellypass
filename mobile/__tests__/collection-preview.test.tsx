@@ -134,7 +134,7 @@ describe("a film page's collection section", () => {
     const { made } = await open();
     expect(made().filter((route) => route !== 'GET /me').sort()).toEqual([`GET /collection/${COLLECTION_ID}`, 'GET /movie/7', 'GET /requests']);
     expect(inSection('skeleton-row')).toBe(0);
-    expect(posterNames()).toEqual(['Film 1, 2020, Movie, TMDB rating 7.4 out of 10, Ready to watch', 'Film 2, 2020, Movie, TMDB rating 7.4 out of 10, Requested', `Film 3, 2020, Movie, TMDB rating 7.4 out of 10, Available to get, ${HIDE_TEXT.state}`]);
+    expect(posterNames()).toEqual(['Film 1, 2020, Movie, TMDB rating 7.4 out of 10, Ready to watch', 'Film 2, 2020, Movie, TMDB rating 7.4 out of 10, Requested', `Film 3, 2020, Movie, TMDB rating 7.4 out of 10, Available to request, ${HIDE_TEXT.state}`]);
     // The film's own page is the one open: it is not a card.
     expect(screen.queryAllByRole('link', { name: /^Film 7,/ })).toHaveLength(0);
     // The hidden film says so in words under its card.
@@ -252,7 +252,7 @@ describe("a film page's collection section", () => {
       // library is not in this one's, so it comes as a film to get, with no play link. Nothing more is drawn for it.
       useHousehold(() => answer(200, collectionAnswer([film(7, 'get_this'), film(1, 'in_library'), film(8, 'get_this', { play: null })])));
       const { app } = await open();
-      expect(posterNames()).toEqual([`Film 1, 2020, Movie, ${RATING}, Ready to watch`, `Film 8, 2020, Movie, ${RATING}, Available to get`]);
+      expect(posterNames()).toEqual([`Film 1, 2020, Movie, ${RATING}, Ready to watch`, `Film 8, 2020, Movie, ${RATING}, Available to request`]);
       expect(inSection('status-chip')).toBe(2);
       await pressNode(linkNamed(/^Film 8, /));
       expect(app.getPathname()).toBe('/home/movie/8');
@@ -299,7 +299,7 @@ describe("a film page's collection section", () => {
     await open();
     expect(ids('skeleton-row')).toBeGreaterThan(0);
     // Get this reads the film's page again, and this time it is in the other collection.
-    await pressNode(buttonNamed('Get this: Film 7'));
+    await pressNode(buttonNamed('Request: Film 7'));
     expect(reads).toBe(2);
     expect(screen.queryAllByRole('header', { name: 'Part of Other Collection' })).toHaveLength(1);
     expect(posterNames()).toEqual([`Film 21, 2020, Movie, ${RATING}, Ready to watch`]);

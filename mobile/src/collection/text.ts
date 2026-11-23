@@ -10,7 +10,7 @@ export const COLLECTION_TEXT = {
   films: 'Films',
   none: 'No films listed.',
   chooseFilms: 'Choose the films you want',
-  getAll: 'Get all missing films',
+  getAll: 'Request all missing films',
   notReleased: 'Not released yet',
   /** A film the member hid from Discover: still listed and tickable, never ticked at first. */
   hidden: 'Not interested',
@@ -18,7 +18,7 @@ export const COLLECTION_TEXT = {
 } as const;
 
 /** "Get all missing seasons": the same one request as Select all, then Get this. */
-export const ALL_SEASONS_TEXT = 'Get all missing seasons';
+export const ALL_SEASONS_TEXT = 'Request all missing seasons';
 
 /** A film's link to its collection: "Part of The Synthetic Collection". */
 export function partOfText(name: string): string {
@@ -32,7 +32,7 @@ export function seeAllFilmsText(name: string): string {
 
 /** The send button: "Get all missing films" while the films chosen are the ones chosen at first, else "Get selected (N)". */
 export function getFilmsLabel(chosen: number, allMissing: boolean): string {
-  return allMissing ? COLLECTION_TEXT.getAll : `Get selected (${chosen})`;
+  return allMissing ? COLLECTION_TEXT.getAll : `Request selected (${chosen})`;
 }
 
 function titles(films: readonly Pick<CollectionFilm, 'title'>[]): string {

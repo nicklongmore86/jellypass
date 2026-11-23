@@ -99,7 +99,7 @@ const tabSelected = () =>
     .map((node) => String(node.props.accessibilityLabel));
 
 const SERIES_NAME =
-  "Series 900002, 2023 · Series, Asked for by you, Requested on Oct 27, 2026, Season 1: Ready to watch, Season 2: We couldn't get this, Ask your JellyPass admin to try again.";
+  "Series 900002, 2023 · Series, Asked for by you, Requested on Oct 27, 2026, Season 1: Ready to watch, Season 2: Request failed, Ask your JellyPass admin to try again.";
 const FILM_NAME = 'Film 900001, 2024 · Movie, Ready to watch, Asked for by someone in your household, Requested on Sep 30, 2026';
 
 describe('the list', () => {
@@ -140,8 +140,8 @@ describe('the list', () => {
     await openRequests();
     expect(entries()).toEqual([
       'Series 900002, 2023 · Series · Seasons 1–3, Ready to watch, Asked for by you',
-      `Series 900003, 2023 · Series · Seasons 1, 3, We couldn't get this, Asked for by you, ${GET_THIS_TEXT.failedNote}`,
-      `Series 900004, 2023 · Series, Asked for by you, Season 1: Ready to watch, Season 2: Requested, Season 3: We couldn't get this, ${GET_THIS_TEXT.failedNote}`,
+      `Series 900003, 2023 · Series · Seasons 1, 3, Request failed, Asked for by you, ${GET_THIS_TEXT.failedNote}`,
+      `Series 900004, 2023 · Series, Asked for by you, Season 1: Ready to watch, Season 2: Requested, Season 3: Request failed, ${GET_THIS_TEXT.failedNote}`,
     ]);
     expect(chipCounts()).toEqual([1, 1, 3]);
     expect(seasonRows()).toEqual([0, 0, 3]);
@@ -184,7 +184,7 @@ describe('the list', () => {
   it('shows "We couldn\'t get this" with the admin note and no button', async () => {
     useHousehold({ requests: { results: [requestEntry('f', 'movie', 7, 'failed')] } });
     await openRequests();
-    expect(entries()).toEqual([`Film 7, 2024 · Movie, We couldn't get this, Asked for by you, ${GET_THIS_TEXT.failedNote}`]);
+    expect(entries()).toEqual([`Film 7, 2024 · Movie, Request failed, Asked for by you, ${GET_THIS_TEXT.failedNote}`]);
     expect(shows(GET_THIS_TEXT.failedNote, { hidden: true })).toBe(true);
     expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
@@ -325,7 +325,7 @@ describe('reading it again', () => {
     const card = (state: string) => screen.queryAllByRole('link', { name: `trending 2, 2021, Series, TMDB rating 6.5 out of 10, ${state}`, includeHiddenElements: true });
     await openRequests();
     expect(card('Requested')).toHaveLength(1);
-    expect(card('Available to get')).toHaveLength(0);
+    expect(card('Available to request')).toHaveLength(0);
   });
 });
 
@@ -356,7 +356,7 @@ describe('reusing the titles it named', () => {
     // A kept title is not handed to the overlay again.
     expect(mockSeen.filter((key) => key !== 'page').join(' ')).toBe('movie:100 movie:101 movie:102');
     expect(entries()[0]).toBe('Film 100, 2024 · Movie, Ready to watch, Asked for by you');
-    expect(entries()[1]!.startsWith("Film 101, 2024 · Movie, We couldn't get this, Asked for by you")).toBe(true);
+    expect(entries()[1]!.startsWith("Film 101, 2024 · Movie, Request failed, Asked for by you")).toBe(true);
     expect(entries()[2]).toBe('Film 102, 2024 · Movie, Requested, Asked for by you');
   });
 

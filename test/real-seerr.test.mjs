@@ -220,7 +220,7 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     }
   });
 
-  it('makes "Get this" a real HD request as the member, attributed to their household', async (t) => {
+  it('makes "Request" a real HD request as the member, attributed to their household', async (t) => {
     const people = [[REQUESTER_JELLYFIN_ID, 'requester', 'Requester'], [SHARED_JELLYFIN_ID, 'shared', 'Shared']];
     const app = await startApp(t, world({
       tokens: Object.fromEntries(people.map(([id, token]) => [id, `token-${token}`])),
@@ -381,7 +381,7 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     assert.deepEqual((await app.get('/jellypass/app/v1/requests', asAsker)).json(), { results: [] });
   });
 
-  it('offers "Get this" to no caller Seerr gives a quota: every title they cannot play is unavailable, and it runs nothing', async (t) => {
+  it('offers "Request" to no caller Seerr gives a quota: every title they cannot play is unavailable, and it runs nothing', async (t) => {
     const people = [[LIFETIME_JELLYFIN_ID, 'lifetime', 'Lifetime'], [SERIES_QUOTA_JELLYFIN_ID, 'series', 'Series'], [REQUESTER_JELLYFIN_ID, 'requester', 'Requester']];
     const app = await startApp(t, world({
       tokens: Object.fromEntries(people.map(([id, token]) => [id, `token-${token}`])),

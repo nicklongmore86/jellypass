@@ -132,7 +132,7 @@ export function plannedCalls(filter: DiscoverFilter, networks: ReadonlyArray<Dis
 export const STATE_LABELS: Readonly<Record<HouseholdState, string>> = {
   in_library: 'In your library',
   requested: 'Requested',
-  get_this: 'Available to get',
+  get_this: 'Available to request',
   unavailable: "Can't request",
 };
 
@@ -158,8 +158,8 @@ export function badgeOf(state: HouseholdState): { label: string; word: string; t
 export const BADGE_WORDS: Readonly<Record<HouseholdState, string>> = {
   in_library: 'In library',
   requested: 'Requested',
-  get_this: 'Get this',
-  unavailable: "Can't get",
+  get_this: 'Request',
+  unavailable: "Can't ask",
 };
 
 /**

@@ -84,7 +84,7 @@ const listed = async (app, options) => (await app.get(`${APP}/requests`, options
   return entry;
 });
 
-describe('"Get this": Jellyfin is read again right before a request', { timeout: 60_000 }, () => {
+describe('"Request": Jellyfin is read again right before a request', { timeout: 60_000 }, () => {
   it('joins a movie, or a season, that arrives after the branch\'s first read, and never requests it', async (t) => {
     // The branch's first read of a movie is two lookups (by TMDB ID and by name), of a series one per item.
     for (const [name, state, path, body, firstRead, firstReads, arrive] of [
@@ -151,7 +151,7 @@ describe('"Get this": Jellyfin is read again right before a request', { timeout:
   });
 });
 
-describe('"Get this": items without TMDB metadata', { timeout: 60_000 }, () => {
+describe('"Request": items without TMDB metadata', { timeout: 60_000 }, () => {
   it('finds a title Jellyfin holds without a TMDB ID through the item Seerr links to it, and joins it instead of requesting it', async (t) => {
     const media = (tmdbId, mediaType, itemId) => ({ id: 7360000 + (tmdbId % 10000), mediaType, tmdbId, status: 5, jellyfinMediaId: itemId, requests: [] });
     const app = await start(t, world({
@@ -169,7 +169,7 @@ describe('"Get this": items without TMDB metadata', { timeout: 60_000 }, () => {
   });
 });
 
-describe('"Get this": completed records and their media', { timeout: 60_000 }, () => {
+describe('"Request": completed records and their media', { timeout: 60_000 }, () => {
   it('drops a completed record once the title\'s media record is deleted, in every branch, and stops listing it', async (t) => {
     const results = {};
     for (const branch of ['request', 'interest', 'join']) {
@@ -195,7 +195,7 @@ describe('"Get this": completed records and their media', { timeout: 60_000 }, (
   });
 });
 
-describe('"Get this": households deleted while a call runs', { timeout: 60_000 }, () => {
+describe('"Request": households deleted while a call runs', { timeout: 60_000 }, () => {
   for (const [branch, make] of [
     ['request', () => world({ tmdbMovies })],
     ['interest', () => world({ tmdbMovies, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB], status: 2 })] } })],
@@ -225,7 +225,7 @@ describe('"Get this": households deleted while a call runs', { timeout: 60_000 }
   }
 });
 
-describe('"Get this": new seasons of a series Jellyfin has', { timeout: 60_000 }, () => {
+describe('"Request": new seasons of a series Jellyfin has', { timeout: 60_000 }, () => {
   it('requests the missing season, and keeps a public series public when it arrives', async (t) => {
     const app = await start(t, world({ items: [seriesItem()], episodes: [episode(1)] }));
     await getThis(app, GET_TV, { seasons: [1, 2] });
@@ -266,7 +266,7 @@ describe('"Get this": new seasons of a series Jellyfin has', { timeout: 60_000 }
   });
 });
 
-describe('"Get this": series ready season by season', { timeout: 60_000 }, () => {
+describe('"Request": series ready season by season', { timeout: 60_000 }, () => {
   it('is ready only once every season asked for has episodes, partly ready until then, and refreshed until it is', async (t) => {
     let now = Date.now();
     const app = await start(t, world({ requests: { [SEERR_IDS[BOB]]: [request({ id: 7300602, seerrUser: SEERR_IDS[BOB], type: 'tv', status: 2, seasons: [1, 2] })] } }), { now: () => now });
@@ -294,7 +294,7 @@ describe('"Get this": series ready season by season', { timeout: 60_000 }, () =>
   });
 });
 
-describe('"Get this" records in the store: pruning never changes a count', () => {
+describe('"Request" records in the store: pruning never changes a count', () => {
   const record = (overrides = {}) => ({
     householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'interest', status: 'pending',
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...overrides,
@@ -320,7 +320,7 @@ describe('"Get this" records in the store: pruning never changes a count', () =>
     assert.deepEqual(store.listAppRequests().map(([, entry]) => [entry.householdId, entry.status]).sort(), [['grove', 'pending'], ['mill', 'completed']]);
   });
 
-  it('loads a state file an earlier build of "Get this" wrote with a quota ledger, and drops the ledger', async (t) => {
+  it('loads a state file an earlier build of "Request" wrote with a quota ledger, and drops the ledger', async (t) => {
     const file = path.join(await makeTempDir(t, 'jfa-get-this-'), 'grants.json');
     await writeFile(file, JSON.stringify({
       version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [],
