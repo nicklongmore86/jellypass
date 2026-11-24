@@ -53,6 +53,34 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
   assertDefinitionsMatchReferences(notes);
 }
 
+describe('CHANGELOG.md comparison links', () => {
+  const COMPARE = 'https://github.com/nicklongmore86/jellypass/compare/';
+  const versions = [...CHANGELOG.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((match) => match[1]);
+  const links = new Map([...CHANGELOG.matchAll(/^\[([^\]]+)\]: (\S+)$/gm)].map((match) => [match[1], match[2]]));
+
+  it('has the release in package.json as its newest version section', () => {
+    const { version } = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
+    assert.equal(versions[0], version);
+  });
+
+  it('compares [Unreleased] from the newest release to HEAD', () => {
+    assert.equal(links.get('Unreleased'), `${COMPARE}v${versions[0]}...HEAD`);
+  });
+
+  it('compares every release with the one before it, in heading order', () => {
+    for (const [index, version] of versions.slice(0, -1).entries()) {
+      assert.equal(links.get(version), `${COMPARE}v${versions[index + 1]}...v${version}`, `[${version}] link`);
+    }
+    const oldest = versions.at(-1);
+    assert.equal(links.get(oldest), `https://github.com/nicklongmore86/jellypass/releases/tag/v${oldest}`);
+  });
+
+  it('lists the link definitions newest first, right after [Unreleased]', () => {
+    const order = [...CHANGELOG.matchAll(/^\[(Unreleased|\d+\.\d+\.\d+)\]: /gm)].map((match) => match[1]);
+    assert.deepEqual(order, ['Unreleased', ...versions]);
+  });
+});
+
 describe('changelogSection with the real CHANGELOG.md', () => {
   it('extracts 4.6.0 without its heading, up to the 4.5.0 section', () => {
     const notes = changelogSection(CHANGELOG, '4.6.0');
