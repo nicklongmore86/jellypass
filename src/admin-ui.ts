@@ -1717,6 +1717,16 @@ export const ADMIN_APP_JS = `
   // never with the rest: it reads Seerr. Nothing is shown that Seerr did not say: a failure lists nobody.
   const PARTIAL_TEXT = { partial_movie: 'Partial (movies only)', partial_tv: 'Partial (TV only)' };
   const IMPLICIT_TEXT = { admin: 'Auto-approves (admin)', manage_requests: 'Auto-approves (admin)' };
+  // Reads and saves are coordinated, so a read never undoes a save on screen. Each read takes a generation and only
+  // the latest one is shown. A save takes a new generation too, so any read started before it is dropped. While a save
+  // runs, Refresh and every switch are disabled, and a read asked for meanwhile waits and runs once the save ends.
+  // The create-user dialog's defaults hint has its own generation.
+  const seerrSync = { read: 0, loading: false, saving: false, refreshQueued: false, hint: 0 };
+
+  function seerrPermissionsBusy(busy) {
+    byId('refresh-seerr-permissions').disabled = busy;
+    byId('users-panel').querySelectorAll('input[role="switch"]').forEach((control) => { control.disabled = busy || control.dataset.readOnly === 'true'; });
+  }
 
   function permissionsSummary(permissions) {
     const auto = { on: 'on', off: 'off', partial_movie: 'for movies only', partial_tv: 'for TV only' }[permissions.autoApprove] || permissions.autoApprove;
@@ -1729,27 +1739,35 @@ export const ADMIN_APP_JS = `
     hint.textContent = state.seerrImportAvailable ? 'Seerr gives imported users its defaults for new users.' : '';
     if (!state.seerrImportAvailable) return;
     const epoch = sessionEpoch;
+    const generation = ++seerrSync.hint;
     try {
       const body = await api('/v1/seerr/permissions/defaults');
       assertSession(epoch);
+      if (generation !== seerrSync.hint) return;
       hint.textContent = 'Seerr gives imported users its defaults for new users: ' + permissionsSummary(body.defaults) + '.';
     } catch (error) {
-      if (error.stale) return;
+      if (error.stale || generation !== seerrSync.hint) return;
       hint.textContent = 'Seerr gives imported users its defaults for new users (they could not be read just now).';
     }
   }
 
   async function loadSeerrPermissions() {
+    if (seerrSync.saving) { seerrSync.refreshQueued = true; return; }
     const epoch = sessionEpoch;
+    const generation = ++seerrSync.read;
+    seerrSync.loading = true;
     byId('seerr-permissions-status').textContent = 'Loading…';
     try {
       const body = await api('/v1/seerr/permissions');
       assertSession(epoch);
+      if (generation !== seerrSync.read) return;
+      seerrSync.loading = false;
       state.seerrPermissions = body;
       state.seerrPermissionsError = '';
       state.seerrPermissionsOff = false;
     } catch (error) {
-      if (error.stale) return;
+      if (error.stale || generation !== seerrSync.read) return;
+      seerrSync.loading = false;
       state.seerrPermissions = null;
       state.seerrPermissionsOff = error.code === 'seerr_not_configured';
       state.seerrPermissionsError = error.message;
@@ -1765,6 +1783,7 @@ export const ADMIN_APP_JS = `
     input.dataset.key = options.key;
     input.checked = options.checked;
     input.disabled = Boolean(options.readOnly);
+    input.dataset.readOnly = String(Boolean(options.readOnly));
     if (options.partial) {
       input.indeterminate = true;
       input.setAttribute('aria-checked', 'mixed');
@@ -1794,22 +1813,35 @@ export const ADMIN_APP_JS = `
       if (epoch !== sessionEpoch) return;
       if (!confirmed) { renderSeerrPermissions(key); return; }
     }
-    byId('users-panel').querySelectorAll('input[role="switch"]').forEach((control) => { control.disabled = true; });
+    if (seerrSync.saving) { renderSeerrPermissions(key); return; }
+    seerrSync.saving = true;
+    // A read still in flight may have been answered before this save: drop it, and read again once the save ends.
+    if (seerrSync.loading) seerrSync.refreshQueued = true;
+    seerrSync.read += 1;
+    seerrSync.loading = false;
+    seerrPermissionsBusy(true);
+    let reload = false;
     try {
       const result = await api(path, { method: 'PUT', body: JSON.stringify({ [field]: value }) });
       assertSession(epoch);
-      if (path === '/v1/seerr/permissions/defaults') state.seerrPermissions.defaults = result.permissions;
-      else {
-        const user = state.seerrPermissions.users.find((entry) => entry.seerr && entry.seerr.id === result.seerrUserId);
-        if (user) user.seerr = Object.assign({ id: result.seerrUserId }, result.permissions);
+      if (state.seerrPermissions) {
+        if (path === '/v1/seerr/permissions/defaults') state.seerrPermissions.defaults = result.permissions;
+        else {
+          const user = state.seerrPermissions.users.find((entry) => entry.seerr && entry.seerr.id === result.seerrUserId);
+          if (user) user.seerr = Object.assign({ id: result.seerrUserId }, result.permissions);
+        }
       }
       toast(result.changed ? 'Saved in Seerr for ' + who + '.' : 'Seerr already had that for ' + who + '.');
     } catch (error) {
-      if (error.stale) return;
+      if (error.stale) { seerrSync.saving = false; seerrSync.refreshQueued = false; return; }
       toast(error.message, true, error.detail);
       // Seerr may have changed meanwhile: show what it has now rather than what was asked.
-      await loadSeerrPermissions();
+      reload = true;
     }
+    seerrSync.saving = false;
+    const queued = seerrSync.refreshQueued;
+    seerrSync.refreshQueued = false;
+    if (reload || queued) await loadSeerrPermissions();
     renderSeerrPermissions(key);
   }
 
@@ -1824,6 +1856,7 @@ export const ADMIN_APP_JS = `
         node('strong', { text: state.seerrPermissionsOff ? 'Seerr is not configured' : 'Seerr permissions are unavailable' }),
         node('span', { text: state.seerrPermissionsOff ? 'Set up Seerr in JellyPass to manage who may request and whose requests are approved at once.' : (state.seerrPermissionsError || 'Seerr could not be read.') + ' Nothing is shown until Seerr answers.' }),
       ]));
+      seerrPermissionsBusy(seerrSync.saving);
       return;
     }
     const linked = data.users.filter((user) => user.seerr).length;
@@ -1839,6 +1872,7 @@ export const ADMIN_APP_JS = `
         controls,
       ]);
     }));
+    seerrPermissionsBusy(seerrSync.saving);
     if (focusKey) {
       const target = Array.from(byId('users-panel').querySelectorAll('input[role="switch"]')).find((input) => input.dataset.key === focusKey);
       if (target && !target.disabled) target.focus();

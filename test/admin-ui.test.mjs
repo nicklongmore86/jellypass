@@ -1584,6 +1584,119 @@ describe('admin UI Users tab (Seerr request permissions)', () => {
     }
   });
 
+  // A page whose Seerr answers can be held back: each GET answers what Seerr had when it was sent, as the real one does.
+  async function heldUsersPage() {
+    const data = listing();
+    const held = { gets: [], puts: [], holdGets: false, holdPuts: false };
+    const page = adminPage((path, init) => {
+      if (init?.method === 'PUT') {
+        const body = JSON.parse(init.body);
+        const reply = () => {
+          const target = path.includes('/users/') ? data.users[0].seerr : data.defaults;
+          if (body.canRequest !== undefined) target.canRequest = body.canRequest;
+          if (body.autoApprove !== undefined) target.autoApprove = body.autoApprove ? 'on' : 'off';
+          const { id, ...permissions } = target;
+          return { status: 200, body: { status: 'saved', changed: true, ...(id ? { seerrUserId: id } : {}), permissions } };
+        };
+        return held.holdPuts ? new Promise((resolve) => held.puts.push(() => resolve(reply()))) : reply();
+      }
+      if (path === '/v1/seerr/permissions') {
+        const snapshot = structuredClone(data);
+        return held.holdGets ? new Promise((resolve) => held.gets.push((body = snapshot) => resolve({ status: 200, body }))) : { status: 200, body: snapshot };
+      }
+      return DATA[path];
+    });
+    await page.settle();
+    page.document.querySelector('.tabs button[data-tab="users"]').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    return Object.assign(page, { data, held, gets: () => page.requests.filter((request) => request === 'GET /v1/seerr/permissions').length });
+  }
+
+  it('disables Refresh and every switch while a save runs, and reads again once it ends if Refresh was asked for', async () => {
+    const page = await heldUsersPage();
+    page.held.holdPuts = true;
+    await flip(page, 'Can request for Grove', false);
+    assert.equal(page.held.puts.length, 1);
+    assert.equal(page.document.getElementById('refresh-seerr-permissions').disabled, true);
+    for (const input of page.document.querySelectorAll('#users-panel input[role="switch"]')) assert.equal(input.disabled, true, input.getAttribute('aria-label'));
+    // Refresh asked for anyway (or the tab reopened) sends nothing until the save ends.
+    page.click('refresh-seerr-permissions');
+    await page.settle();
+    assert.equal(page.gets(), 1);
+    page.held.puts.shift()();
+    await page.settle();
+    assert.equal(page.gets(), 2);
+    assert.equal(switchFor(page, 'Can request for Grove').checked, false);
+    assert.equal(switchFor(page, 'Can request for Grove').disabled, false);
+    assert.equal(switchFor(page, 'Can request for Owner').disabled, true);
+    assert.equal(page.document.getElementById('refresh-seerr-permissions').disabled, false);
+  });
+
+  for (const [who, label, model] of [['a user', 'Can request for Grove', (data) => data.users[0].seerr], ['the defaults', 'Can request for new Seerr users', (data) => data.defaults]]) {
+    it(`never lets a read sent before a save, answered after it, undo the save (${who})`, async () => {
+      const page = await heldUsersPage();
+      page.held.holdGets = true;
+      page.click('refresh-seerr-permissions');
+      await page.settle();
+      assert.equal(page.held.gets.length, 1);
+      page.held.holdGets = false;
+      await flip(page, label, false);
+      assert.equal(model(page.data).canRequest, false);
+      assert.equal(page.toast(), `Saved in Seerr for ${who === 'a user' ? 'Grove' : 'new Seerr users'}.`);
+      // The old read (canRequest true, as Seerr had it before the save) arrives last.
+      page.held.gets.shift()();
+      await page.settle();
+      assert.equal(switchFor(page, label).checked, false);
+      // The refresh that was in flight is read again after the save, so it is not lost.
+      assert.equal(page.gets(), 3);
+      assert.equal(switchFor(page, label).disabled, false);
+    });
+  }
+
+  it('shows the latest read when two reads are answered in reverse order', async () => {
+    const page = await heldUsersPage();
+    page.held.holdGets = true;
+    page.click('refresh-seerr-permissions');
+    await page.settle();
+    page.click('refresh-seerr-permissions');
+    await page.settle();
+    assert.equal(page.held.gets.length, 2);
+    const older = structuredClone(page.data);
+    const newer = structuredClone(page.data);
+    newer.users[0].seerr.canRequest = false;
+    newer.defaults.autoApprove = 'on';
+    page.held.gets[1](newer);
+    await page.settle();
+    page.held.gets[0](older);
+    await page.settle();
+    assert.equal(switchFor(page, 'Can request for Grove').checked, false);
+    assert.equal(switchFor(page, 'Auto-approve for new Seerr users').checked, true);
+    assert.match(page.document.getElementById('seerr-permissions-status').textContent, /in Seerr/);
+  });
+
+  it('shows the latest defaults in the create-user dialog when two reads are answered in reverse order', async () => {
+    const pending = [];
+    const page = adminPage((path) => {
+      if (path === '/v1/users') return { status: 200, body: { users: [], jellyseerrImportAvailable: true } };
+      if (path === '/v1/groups') return { status: 200, body: { groups: [{ id: 'grove', name: 'Grove', userIds: [] }] } };
+      if (path === '/v1/seerr/permissions/defaults') return new Promise((resolve) => pending.push(resolve));
+      return DATA[path];
+    });
+    await page.settle();
+    page.document.getElementById('user-form').reset = () => undefined;
+    page.click('new-user');
+    await page.settle();
+    page.document.getElementById('user-dialog').close();
+    page.click('new-user');
+    await page.settle();
+    assert.equal(pending.length, 2);
+    pending[1]({ status: 200, body: { defaults: view(true, 'on') } });
+    await page.settle();
+    pending[0]({ status: 200, body: { defaults: view(false, 'off') } });
+    await page.settle();
+    assert.equal(page.document.getElementById('seerr-defaults-hint').textContent, 'Seerr gives imported users its defaults for new users: Can request on, Auto-approve on.');
+  });
+
   it('shows Seerr\'s current defaults in the create-user dialog, with a way to change them', async () => {
     const page = adminPage((path) => {
       if (path === '/v1/groups') return { status: 200, body: { groups: [{ id: 'grove', name: 'Grove', userIds: [] }] } };
