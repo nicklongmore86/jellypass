@@ -85,6 +85,11 @@ const ADMIN_CALLS = {
   listRequestsSince: (client) => client.listRequestsSince(new Date('2026-01-01T00:00:00.000Z')),
   getRecentRequests: (client) => client.getRecentRequests(1),
   getPoster: (client) => client.getPoster('/synthetic-poster.jpg'),
+  linkedUserPermissions: (client) => client.linkedUserPermissions(MEMBER_JELLYFIN_ID),
+  userPermissions: (client) => client.userPermissions(seerrUserId(9)),
+  setUserPermissions: (client) => client.setUserPermissions(seerrUserId(9), 32),
+  defaultPermissions: (client) => client.defaultPermissions(),
+  setDefaultPermissions: (client) => client.setDefaultPermissions(32),
   // Last: it stops the title worker, and calls nothing.
   close: (client) => client.close(),
 };
@@ -449,7 +454,9 @@ describe('admin-key Seerr client', () => {
   it('never sends X-API-User, so it is never mistaken for a member', async () => {
     respond = ({ url }) => {
       if (url.pathname === '/api/v1/user/import-from-jellyfin') return Response.json([{ id: 9, jellyfinUserId: MEMBER_JELLYFIN_ID }]);
-      if (url.pathname.startsWith('/api/v1/user/jellyfin/')) return Response.json({ id: 9, jellyfinUserId: MEMBER_JELLYFIN_ID.replaceAll('-', '') });
+      if (url.pathname.startsWith('/api/v1/user/jellyfin/')) return Response.json({ id: 9, jellyfinUserId: MEMBER_JELLYFIN_ID.replaceAll('-', ''), permissions: 32 });
+      if (url.pathname === '/api/v1/user/9/settings/permissions') return Response.json({ permissions: 32 });
+      if (url.pathname === '/api/v1/settings/main') return Response.json({ defaultPermissions: 32 });
       if (url.pathname === '/api/v1/request') {
         return Response.json({ pageInfo: { results: 1 }, results: [{ id: 1, type: 'movie', createdAt: '2026-06-01T00:00:00.000Z', media: { tmdbId: 900001, jellyfinMediaId: 'item-1' } }] });
       }
