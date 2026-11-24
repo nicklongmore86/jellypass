@@ -240,6 +240,11 @@ export const ADMIN_APP_JS = `
   const sessionRetry = { delay: 0, dueAt: 0, remaining: null, timer: null };
   // Changes when a session ends (sign-out, 401) or starts (sign-in): an answer to a request made before then has no effect.
   let sessionEpoch = 0;
+  // The Users tab's Seerr reads and saves are coordinated, so a read never undoes a save on screen. Each read takes a
+  // generation and only the latest is shown. A save takes a new one for the listing and for the create-user dialog's
+  // defaults hint, so a read sent before the save is dropped. While a save runs, Refresh and every switch are disabled,
+  // and a listing or hint read asked for meanwhile waits until it ends. A session change resets all of it.
+  const seerrSync = { read: 0, loading: false, saving: false, refreshQueued: false, hint: 0 };
   const heroCopy = {
     dashboard: ['Jellyfin access', 'JellyPass dashboard', 'Monitor library access, audiences, and synchronization health.'],
     library: ['Jellyfin library', 'Your media library', 'Browse synchronized movies and series, then assign access in bulk.'],
@@ -1354,7 +1359,19 @@ export const ADMIN_APP_JS = `
   // A session that ends invalidates the answers still on their way, so none of them can show a view, notice or retry.
   function endSession() {
     sessionEpoch += 1;
+    resetSeerrSync();
     sessionAvailable();
+  }
+
+  // On a session change: a save or read still on its way belongs to the old session, which can no longer finish it, so
+  // nothing stays pending or locked.
+  function resetSeerrSync() {
+    seerrSync.read += 1;
+    seerrSync.hint += 1;
+    seerrSync.loading = false;
+    seerrSync.saving = false;
+    seerrSync.refreshQueued = false;
+    seerrPermissionsBusy(false);
   }
 
   function setConnected(connected) {
@@ -1438,10 +1455,13 @@ export const ADMIN_APP_JS = `
       accepted = true;
       // A new session: answers to requests made before it have no effect.
       sessionEpoch += 1;
+      resetSeerrSync();
       const epoch = sessionEpoch;
       clearSessionRetry();
       await load();
       assertSession(epoch);
+      // The Users tab is read again for the new session (it is not part of load(): it reads Seerr).
+      if (state.activeTab === 'users') loadSeerrPermissions();
       byId('password').value = '';
       setConnected(true);
     } catch (error) {
@@ -1717,11 +1737,6 @@ export const ADMIN_APP_JS = `
   // never with the rest: it reads Seerr. Nothing is shown that Seerr did not say: a failure lists nobody.
   const PARTIAL_TEXT = { partial_movie: 'Partial (movies only)', partial_tv: 'Partial (TV only)' };
   const IMPLICIT_TEXT = { admin: 'Auto-approves (admin)', manage_requests: 'Auto-approves (admin)' };
-  // Reads and saves are coordinated, so a read never undoes a save on screen. Each read takes a generation and only
-  // the latest one is shown. A save takes a new generation too, so any read started before it is dropped. While a save
-  // runs, Refresh and every switch are disabled, and a read asked for meanwhile waits and runs once the save ends.
-  // The create-user dialog's defaults hint has its own generation.
-  const seerrSync = { read: 0, loading: false, saving: false, refreshQueued: false, hint: 0 };
 
   function seerrPermissionsBusy(busy) {
     byId('refresh-seerr-permissions').disabled = busy;
@@ -1738,6 +1753,8 @@ export const ADMIN_APP_JS = `
     byId('seerr-defaults-link').hidden = !state.seerrImportAvailable;
     hint.textContent = state.seerrImportAvailable ? 'Seerr gives imported users its defaults for new users.' : '';
     if (!state.seerrImportAvailable) return;
+    // During a save the defaults may be changing: read them once it ends (it reads them again if the dialog is open).
+    if (seerrSync.saving) return;
     const epoch = sessionEpoch;
     const generation = ++seerrSync.hint;
     try {
@@ -1818,6 +1835,7 @@ export const ADMIN_APP_JS = `
     // A read still in flight may have been answered before this save: drop it, and read again once the save ends.
     if (seerrSync.loading) seerrSync.refreshQueued = true;
     seerrSync.read += 1;
+    seerrSync.hint += 1;
     seerrSync.loading = false;
     seerrPermissionsBusy(true);
     let reload = false;
@@ -1833,14 +1851,19 @@ export const ADMIN_APP_JS = `
       }
       toast(result.changed ? 'Saved in Seerr for ' + who + '.' : 'Seerr already had that for ' + who + '.');
     } catch (error) {
-      if (error.stale) { seerrSync.saving = false; seerrSync.refreshQueued = false; return; }
+      // An ended or new session has already reset the coordination and unlocked the controls (resetSeerrSync), and
+      // may have a save of its own running: nothing of this one is touched.
+      if (error.stale || epoch !== sessionEpoch) return;
       toast(error.message, true, error.detail);
       // Seerr may have changed meanwhile: show what it has now rather than what was asked.
       reload = true;
     }
     seerrSync.saving = false;
+    seerrPermissionsBusy(false);
     const queued = seerrSync.refreshQueued;
     seerrSync.refreshQueued = false;
+    // An open create-user dialog shows the defaults: a hint read during the save waited, or was dropped. Read again.
+    if (byId('user-dialog').open) showSeerrDefaultsHint();
     if (reload || queued) await loadSeerrPermissions();
     renderSeerrPermissions(key);
   }

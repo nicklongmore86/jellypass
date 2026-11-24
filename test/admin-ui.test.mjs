@@ -1587,8 +1587,19 @@ describe('admin UI Users tab (Seerr request permissions)', () => {
   // A page whose Seerr answers can be held back: each GET answers what Seerr had when it was sent, as the real one does.
   async function heldUsersPage() {
     const data = listing();
-    const held = { gets: [], puts: [], holdGets: false, holdPuts: false };
+    const held = { gets: [], puts: [], hints: [], holdGets: false, holdPuts: false, holdHints: false, failPut: null };
     const page = adminPage((path, init) => {
+      if (path === '/auth/logout' || path === '/auth/login') return { status: 200, body: {} };
+      if (path === '/v1/users') return { status: 200, body: { users: [], jellyseerrImportAvailable: true } };
+      if (path === '/v1/groups') return { status: 200, body: { groups: [{ id: 'grove', name: 'Grove', userIds: [] }] } };
+      if (path === '/v1/seerr/permissions/defaults' && !init?.method) {
+        const snapshot = { defaults: structuredClone(data.defaults) };
+        return held.holdHints ? new Promise((resolve) => held.hints.push(() => resolve({ status: 200, body: snapshot }))) : { status: 200, body: snapshot };
+      }
+      if (init?.method === 'PUT' && held.failPut) {
+        const failure = held.failPut;
+        return held.holdPuts ? new Promise((resolve, reject) => held.puts.push(() => (failure instanceof Error ? reject(failure) : resolve(failure)))) : failure instanceof Error ? Promise.reject(failure) : failure;
+      }
       if (init?.method === 'PUT') {
         const body = JSON.parse(init.body);
         const reply = () => {
@@ -1650,6 +1661,82 @@ describe('admin UI Users tab (Seerr request permissions)', () => {
       // The refresh that was in flight is read again after the save, so it is not lost.
       assert.equal(page.gets(), 3);
       assert.equal(switchFor(page, label).disabled, false);
+    });
+  }
+
+  const hintText = (page) => page.document.getElementById('seerr-defaults-hint').textContent;
+  const openCreateUser = async (page) => {
+    page.document.getElementById('user-form').reset = () => undefined;
+    page.document.querySelector('.tabs button[data-tab="groups"]').dispatchEvent(new page.window.Event('click'));
+    page.click('new-user');
+    await page.settle();
+  };
+
+  it('never shows the create-user hint\'s defaults from before a defaults save: a hint asked for during the save waits for it', async () => {
+    const page = await heldUsersPage();
+    page.held.holdPuts = true;
+    await flip(page, 'Can request for new Seerr users', false);
+    assert.equal(page.held.puts.length, 1);
+    // Groups, then Create Jellyfin user, while the save is on its way: no read of the defaults Seerr is changing.
+    await openCreateUser(page);
+    assert.equal(page.requests.filter((request) => request === 'GET /v1/seerr/permissions/defaults').length, 0);
+    page.held.puts.shift()();
+    await page.settle();
+    assert.equal(hintText(page), 'Seerr gives imported users its defaults for new users: Can request off, Auto-approve off.');
+  });
+
+  it('drops a create-user hint read sent before a defaults save and answered after it, and reads again', async () => {
+    const page = await heldUsersPage();
+    page.held.holdHints = true;
+    await openCreateUser(page);
+    assert.equal(page.held.hints.length, 1);
+    page.held.holdHints = false;
+    page.document.querySelector('.tabs button[data-tab="users"]').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    await flip(page, 'Can request for new Seerr users', false);
+    // The old read (Can request on) arrives last; the dialog is still open.
+    page.held.hints.shift()();
+    await page.settle();
+    assert.equal(page.open('user-dialog'), true);
+    assert.equal(hintText(page), 'Seerr gives imported users its defaults for new users: Can request off, Auto-approve off.');
+  });
+
+  it('unlocks Refresh and the switches when the session changes during a save, and reads the Users tab again after sign-in', async () => {
+    const page = await heldUsersPage();
+    page.held.holdPuts = true;
+    await flip(page, 'Can request for Grove', false);
+    assert.equal(page.document.getElementById('refresh-seerr-permissions').disabled, true);
+    page.click('logout');
+    await page.settle();
+    page.document.getElementById('username').value = 'admin';
+    page.document.getElementById('password').value = 'secret';
+    page.document.getElementById('login-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    const readsAfterSignIn = page.gets();
+    assert.equal(readsAfterSignIn, 2);
+    // The old session's save is answered now: it changes nothing on screen and leaves nothing locked.
+    page.held.puts.shift()();
+    await page.settle();
+    assert.equal(page.gets(), readsAfterSignIn);
+    assert.equal(page.document.getElementById('refresh-seerr-permissions').disabled, false);
+    assert.equal(switchFor(page, 'Can request for Grove').disabled, false);
+    assert.equal(switchFor(page, 'Can request for Owner').disabled, true);
+    // And a save in the new session works.
+    page.held.holdPuts = false;
+    await flip(page, 'Auto-approve for Grove', false);
+    assert.equal(page.toast(), 'Saved in Seerr for Grove.');
+    assert.equal(switchFor(page, 'Auto-approve for Grove').disabled, false);
+  });
+
+  for (const [what, failure] of [['a Seerr error', { status: 502, body: { error: 'seerr_failed', message: 'Seerr could not do that (it answered 500)', seerrStatus: 500 } }], ['a network failure', new TypeError('Failed to fetch')]]) {
+    it(`unlocks Refresh and the switches after a save that ends in ${what}`, async () => {
+      const page = await heldUsersPage();
+      page.held.failPut = failure;
+      await flip(page, 'Can request for Grove', false);
+      assert.notEqual(page.toast(), '');
+      assert.equal(page.document.getElementById('refresh-seerr-permissions').disabled, false);
+      assert.equal(switchFor(page, 'Can request for Grove').disabled, false);
+      assert.equal(switchFor(page, 'Can request for Grove').checked, true);
     });
   }
 
