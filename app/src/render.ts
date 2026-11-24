@@ -1385,7 +1385,7 @@ export const REQUEST_FILTER_TEXT = {
   statusLabel: 'Status',
   kindLabel: 'Type',
   whoLabel: 'Who',
-  status: { all: 'All', requested: 'Requested', ready: 'Ready to watch', failed: "Couldn't get this" },
+  status: { all: 'All', requested: 'Requested', ready: 'Ready to watch', failed: "Failed" },
   kind: { all: 'All', movie: 'Films', tv: 'Series' },
   byYou: 'Asked by me',
   showAll: 'Show all requests',
@@ -1420,7 +1420,7 @@ export function matchesRequestFilter(entry: Pick<RequestEntry, 'status' | 'seaso
 /** What My requests says when a filter leaves nothing, for that combination; `more` when unnamed requests are still to load. */
 export function requestFilterEmptyText(filter: RequestFilter, more = false): string {
   const noun = filter.kind === 'movie' ? 'films' : filter.kind === 'tv' ? 'series' : 'requests';
-  const status = filter.status === 'requested' ? ' still requested' : filter.status === 'ready' ? ' ready to watch' : filter.status === 'failed' ? " we couldn't get" : '';
+  const status = filter.status === 'requested' ? ' still requested' : filter.status === 'ready' ? ' ready to watch' : filter.status === 'failed' ? " that failed" : '';
   const who = filter.byYou ? `${status ? ',' : ''} asked for by you` : '';
   return [`No ${noun}${status}${who}.`, more ? REQUEST_FILTER_TEXT.more : ''].filter(Boolean).join(' ');
 }

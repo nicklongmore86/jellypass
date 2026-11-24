@@ -21,6 +21,13 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- My requests' status filter "Couldn't get this" is now **"Failed"** in the
+  web app and the TV add-on (its empty list reads "No requests that
+  failed."), and the administrator UI's decline prompt says the household
+  sees "Request failed". Only the words change.
+
 ## [4.6.0] - 2026-11-24
 
 This is a minor release. The administrator site gains a **Users** tab that

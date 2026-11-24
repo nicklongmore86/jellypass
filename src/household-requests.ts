@@ -103,7 +103,7 @@ export interface OwnView {
   seasons: ReadonlySet<number>;
 }
 
-/** Coarse request statuses, as the app shows them: `Requested`, `Ready to watch`, `We couldn't get this`. */
+/** Coarse request statuses, as the app shows them: `Requested`, `Ready to watch`, `Request failed`. */
 export type CoarseStatus = 'requested' | 'ready' | 'failed';
 
 export interface RequestsDto {

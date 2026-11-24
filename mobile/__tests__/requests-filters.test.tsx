@@ -98,13 +98,13 @@ describe('the rule', () => {
 
   it('says what a filter left nothing of, for each combination, as the PWA does', () => {
     const text = (filter: Partial<RequestFilter>, more = false) => requestFilterEmptyText({ ...NO_REQUEST_FILTER, ...filter }, more);
-    expect(text({ status: 'failed' })).toBe("No requests we couldn't get.");
+    expect(text({ status: 'failed' })).toBe("No requests that failed.");
     expect(text({ status: 'ready', kind: 'movie' })).toBe('No films ready to watch.');
     expect(text({ status: 'requested', kind: 'tv' })).toBe('No series still requested.');
     expect(text({ byYou: true })).toBe('No requests asked for by you.');
     expect(text({ kind: 'tv', byYou: true })).toBe('No series asked for by you.');
     expect(text({ status: 'ready', kind: 'tv', byYou: true })).toBe('No series ready to watch, asked for by you.');
-    expect(text({ status: 'failed', kind: 'movie', byYou: true })).toBe("No films we couldn't get, asked for by you.");
+    expect(text({ status: 'failed', kind: 'movie', byYou: true })).toBe("No films that failed, asked for by you.");
     expect(text({ status: 'ready' }, true)).toBe(`No requests ready to watch. ${REQUEST_FILTER_TEXT.more}`);
     expect(requestFilterActive(NO_REQUEST_FILTER)).toBe(false);
     expect(requestFilterActive({ ...NO_REQUEST_FILTER, byYou: true })).toBe(true);
@@ -126,7 +126,7 @@ describe('the PWA\'s words', () => {
     ];
     for (const text of texts) expect({ text, inPwa: render.includes(text) }).toEqual({ text, inPwa: true });
     // The empty-state sentences are built the same way.
-    for (const part of ["'films'", "'series'", "'requests'", "' still requested'", "' ready to watch'", `" we couldn't get"`, " asked for by you`"]) {
+    for (const part of ["'films'", "'series'", "'requests'", "' still requested'", "' ready to watch'", `" that failed"`, " asked for by you`"]) {
       expect({ part, inPwa: render.includes(part) }).toEqual({ part, inPwa: true });
     }
   });
@@ -191,7 +191,7 @@ describe('the screen', () => {
     const groups = screen.queryAllByTestId(/^request-filter-group-/);
     expect(groups.map((node) => `${String(node.props.accessibilityRole)} ${String(node.props.accessibilityLabel)}`)).toEqual(['radiogroup Status', 'radiogroup Type']);
     expect(screen.queryAllByRole('radio').map((node) => String(node.props.accessibilityLabel))).toEqual([
-      'All', 'Requested', 'Ready to watch', "Couldn't get this", 'All', 'Films', 'Series',
+      'All', 'Requested', 'Ready to watch', "Failed", 'All', 'Films', 'Series',
     ]);
     expect(screen.queryAllByRole('checkbox').map((node) => String(node.props.accessibilityLabel))).toEqual(['Asked by me']);
     expect(checked()).toEqual(['All', 'All']);
@@ -291,7 +291,7 @@ describe('the screen', () => {
     await act(async () => router.navigate('/requests'));
     await settle();
     expect(app.getPathname()).toBe('/requests');
-    expect(checked()).toEqual(["Couldn't get this", 'All', 'Asked by me']);
+    expect(checked()).toEqual(["Failed", 'All', 'Asked by me']);
     expect(ids()).toEqual(['r5']);
   });
 

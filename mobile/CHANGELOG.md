@@ -15,6 +15,20 @@ build.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-24
+
+A patch release that finishes 1.6.0's wording. It works with **JellyPass server
+3.2.0 or later** (app API `v1`), as 1.0.0 to 1.6.0 do; the words are the app's
+own, so no server upgrade is needed. The server requirements of each feature are
+unchanged from 1.6.0. Members update by installing the new TestFlight build, or
+the new APK over the old one.
+
+### Changed
+
+- My requests' status filter "Couldn't get this" is now **Failed**, matching
+  the "Request failed" label, and its empty list reads "No requests that
+  failed."
+
 ## [1.6.0] - 2026-11-23
 
 A minor release: the button that asks for a title is now called **Request**,
@@ -401,7 +415,8 @@ is not supported.
 - **iPhone, iPad and Android.** Portrait on phones; iPad and Android tablets
   turn. iOS is distributed through TestFlight and Android as an APK.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.6.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.6.1...HEAD
+[1.6.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.6.1
 [1.6.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.6.0
 [1.5.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.5.1
 [1.5.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.5.0

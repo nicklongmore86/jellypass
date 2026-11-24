@@ -3089,7 +3089,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
     assert.equal(shown(page).length, 0);
     const none = page.document.querySelector('.jellypass-tv-requests-none');
     assert.equal(none.hidden, false);
-    assert.equal(none.querySelector('p').textContent, "No series we couldn't get, asked for by you.");
+    assert.equal(none.querySelector('p').textContent, "No series that failed, asked for by you.");
     // The choice stays across a title and Back.
     page.click(chip(page, 'status', 'requested'));
     assert.equal(shown(page).length, 1);
