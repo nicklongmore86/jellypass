@@ -401,7 +401,7 @@ again." with no button. Since 1.1.0 the list can be filtered, and a member can c
   screen-reader name. It needs JellyPass server 3.5.0 or later (`requestedOn`, `apiVersion` 2); an older server sends no
   day, and the entry shows none.
 - **Filters** (`filters.ts`, `text.ts`, the PWA's). Chips above the list choose a **Status** (All, Requested, Ready to
-  watch, Couldn't get this), a **Type** (All, Films, Series) and **Asked by me**, and they combine, as in the household
+  watch, Failed), a **Type** (All, Films, Series) and **Asked by me**, and they combine, as in the household
   web app. A series matches a status if any status it shows has it, so a series with one season ready and another
   requested appears under both. When nothing matches, the screen says what is missing ("No series still requested, asked
   for by you.") and offers **Show all requests**. The chips are labelled for screen readers, ticked when chosen, at least

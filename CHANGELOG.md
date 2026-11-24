@@ -86,8 +86,10 @@ before upgrading:
   confirmation is "Thanks — your request has been sent to your household." The
   TV add-on's poster badges read *Request* and *Can't ask*. The administrator
   UI's cancel prompt says the household goes back to "Available to request".
-  Only the words change: the app API paths (`…/get`), settings, metrics and
-  state file keep their names.
+  My requests' status filter "Couldn't get this" is now "Failed" (its empty
+  list reads "No requests that failed."), and the administrator UI's decline
+  prompt says the household sees "Request failed". Only the words change: the
+  app API paths (`…/get`), settings, metrics and state file keep their names.
 
 ## [4.5.0] - 2026-11-12
 

@@ -35,7 +35,7 @@ import {
 
 const hidden = { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' } as const;
 
-/** A coarse status as a chip: Requested, Ready to watch, or We couldn't get this (the PWA's request badges). */
+/** A coarse status as a chip: Requested, Ready to watch, or Request failed (the PWA's request badges). */
 export function RequestChip({ status }: { status: CoarseStatus }) {
   const state: HouseholdState = status === 'ready' ? 'in_library' : 'requested';
   return <StatusChip state={state} failed={status === 'failed'} />;

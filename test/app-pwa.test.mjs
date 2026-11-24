@@ -2931,7 +2931,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         const { page } = await open(t);
         const groups = [...page.main().querySelectorAll('.request-filters [role="group"]')];
         assert.deepEqual(groups.map((group) => group.getAttribute('aria-label')), ['Status', 'Type', 'Who']);
-        assert.deepEqual([...groups[0].querySelectorAll('button')].map((button) => button.textContent), ['All', 'Requested', 'Ready to watch', "Couldn't get this"]);
+        assert.deepEqual([...groups[0].querySelectorAll('button')].map((button) => button.textContent), ['All', 'Requested', 'Ready to watch', "Failed"]);
         assert.deepEqual([...groups[1].querySelectorAll('button')].map((button) => button.textContent), ['All', 'Films', 'Series']);
         assert.deepEqual([...groups[2].querySelectorAll('button')].map((button) => button.textContent), ['Asked by me']);
         for (const button of page.main().querySelectorAll('.request-filters button')) {
@@ -3019,13 +3019,13 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           if (byYou !== (pressed(page).includes('Asked by me'))) press(page, 'byYou', 'byYou');
           return emptyText(page);
         };
-        assert.equal(text('failed', 'all', false), "No requests we couldn't get.");
+        assert.equal(text('failed', 'all', false), "No requests that failed.");
         assert.equal(text('ready', 'movie', false), 'No films ready to watch.');
         assert.equal(text('requested', 'tv', false), 'No series still requested.');
         assert.equal(text('all', 'all', true), 'No requests asked for by you.');
         assert.equal(text('all', 'tv', true), 'No series asked for by you.');
         assert.equal(text('ready', 'tv', true), 'No series ready to watch, asked for by you.');
-        assert.equal(text('failed', 'movie', true), "No films we couldn't get, asked for by you.");
+        assert.equal(text('failed', 'movie', true), "No films that failed, asked for by you.");
         assert.deepEqual(ids(page), []);
         assert.ok(!page.main().querySelector('.request-none button').hidden);
         page.main().querySelector('.request-none button').dispatchEvent(new page.Event('click', { bubbles: true }));
