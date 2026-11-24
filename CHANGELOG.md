@@ -21,6 +21,13 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- My requests' status filter "Couldn't get this" is now **"Failed"** in the
+  web app and the TV add-on (its empty list reads "No requests that
+  failed."), and the administrator UI's decline prompt says the household
+  sees "Request failed". Only the words change.
+
 ## [4.6.0] - 2026-11-24
 
 This is a minor release. The administrator site gains a **Users** tab that
@@ -86,10 +93,8 @@ before upgrading:
   confirmation is "Thanks — your request has been sent to your household." The
   TV add-on's poster badges read *Request* and *Can't ask*. The administrator
   UI's cancel prompt says the household goes back to "Available to request".
-  My requests' status filter "Couldn't get this" is now "Failed" (its empty
-  list reads "No requests that failed."), and the administrator UI's decline
-  prompt says the household sees "Request failed". Only the words change: the
-  app API paths (`…/get`), settings, metrics and state file keep their names.
+  Only the words change: the app API paths (`…/get`), settings, metrics and
+  state file keep their names.
 
 ## [4.5.0] - 2026-11-12
 
