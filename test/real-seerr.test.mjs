@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { SeerrClient, SeerrError, SeerrMemberClient, SeerrUnmappedUserError, seerrUserId } from '../dist/seerr.js';
 import { SeerrUserMap } from '../dist/seerr-users.js';
+import { PermissionsReadOnlyError, SeerrPermissions } from '../dist/seerr-permissions.js';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 import { startApp, world } from './support/household-app.mjs';
 import path from 'node:path';
@@ -27,6 +28,9 @@ const CANCELLER_JELLYFIN_ID = '00000000000000000000000000000011';
 // A member who may request, with pending requests 6 (12 Angry Men, 389), 7 (The Good, the Bad and the Ugly, 429) and 8
 // (The Green Mile, 497), for the administrators' Requests tab.
 const ASKER_JELLYFIN_ID = '00000000000000000000000000000012';
+// A throwaway member who may request (user 11), for the admin Users tab's permission switches.
+const THROWAWAY_JELLYFIN_ID = '00000000000000000000000000000013';
+const OWNER_JELLYFIN_ID = '0000000000000000000000000000000a';
 
 describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
   let calls = [];
@@ -418,6 +422,75 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     }
     // A member of the same household with no quota is offered it.
     assert.equal((await app.get('/jellypass/app/v1/movie/155', as('requester'))).json().state, 'get_this');
+  });
+
+  it('turns a member\'s auto-approve on and off with the admin key, and Seerr approves its next request (or not) to match', async (t) => {
+    t.mock.method(console, 'log', () => undefined);
+    const admin = new SeerrClient(baseUrl, apiKey);
+    const permissions = new SeerrPermissions({
+      seerr: admin,
+      users: async () => [
+        { id: THROWAWAY_JELLYFIN_ID, name: 'heath', isAdministrator: false },
+        { id: OWNER_JELLYFIN_ID, name: 'owner', isAdministrator: true },
+        { id: 'ffffffffffffffffffffffffffffffff', name: 'grove', isAdministrator: false },
+      ],
+    });
+    calls = [];
+    const listed = await permissions.list();
+    assert.deepEqual(listed.users.map((user) => [user.name, user.seerr?.id ?? null, user.seerr?.autoApprove ?? null, user.seerr?.implicit ?? null]),
+      [['heath', 11, 'off', null], ['owner', 1, 'on', 'admin'], ['grove', null, null, null]]);
+    // Seerr's own permissions endpoint agrees with the mask its user record carries.
+    assert.equal(await admin.userPermissions(seerrUserId(11)), 32);
+
+    // Seerr 3.5.1's write replaces the whole mask; JellyPass sends REQUEST | AUTO_APPROVE (32 | 128).
+    const on = await permissions.setUser(THROWAWAY_JELLYFIN_ID, { autoApprove: true });
+    assert.equal(on.changed, true);
+    assert.equal(await admin.userPermissions(seerrUserId(11)), 160);
+    const member = new SeerrUserMap(admin).member(THROWAWAY_JELLYFIN_ID);
+    const approved = await member.createRequest({ mediaType: 'movie', tmdbId: 238 });
+    assert.equal(approved.status, 2, 'approved at once');
+
+    // Off is off: AUTO_APPROVE and both kind bits cleared, so the next request waits.
+    await admin.setUserPermissions(seerrUserId(11), 32 | 256 | 512);
+    assert.equal((await permissions.list()).users[0].seerr.autoApprove, 'on');
+    await permissions.setUser(THROWAWAY_JELLYFIN_ID, { autoApprove: false });
+    assert.equal(await admin.userPermissions(seerrUserId(11)), 32);
+    const pending = await member.createRequest({ mediaType: 'movie', tmdbId: 240 });
+    assert.equal(pending.status, 1, 'pending');
+
+    // One kind bit alone (set in Seerr) is shown as partial and kept until the switch is changed.
+    await admin.setUserPermissions(seerrUserId(11), 32 | 256);
+    assert.equal((await permissions.list()).users[0].seerr.autoApprove, 'partial_movie');
+    await permissions.setUser(THROWAWAY_JELLYFIN_ID, { canRequest: true });
+    assert.equal(await admin.userPermissions(seerrUserId(11)), 32 | 256);
+
+    // The owner is never written: JellyPass refuses first, and Seerr itself refuses a write to user 1.
+    await assert.rejects(permissions.setUser(OWNER_JELLYFIN_ID, { autoApprove: false }), PermissionsReadOnlyError);
+    const refused = await admin.setUserPermissions(seerrUserId(1), 2).catch((error) => error);
+    assert.ok(refused instanceof SeerrError);
+    assert.equal(refused.status, 403);
+    for (const call of calls.filter((call) => call.url.pathname !== '/api/v1/request')) assert.equal(call.headers.has('x-api-user'), false, `${call.method} ${call.url.pathname}`);
+  });
+
+  it('changes only defaultPermissions in Seerr\'s main settings: POST /settings/main merges the body', async (t) => {
+    t.mock.method(console, 'log', () => undefined);
+    const admin = new SeerrClient(baseUrl, apiKey);
+    const main = async () => (await originalFetch(`${baseUrl}/api/v1/settings/main`, { headers: { Accept: 'application/json', 'X-Api-Key': apiKey } })).json();
+    const before = await main();
+    const permissions = new SeerrPermissions({ seerr: admin, users: async () => [] });
+    assert.equal((await permissions.defaults()).defaults.canRequest, (before.defaultPermissions & 32) !== 0);
+    calls = [];
+    await permissions.setDefaults({ autoApprove: true, canRequest: true });
+    const wanted = before.defaultPermissions | 32 | 128;
+    assert.deepEqual(calls.filter((call) => call.method === 'POST').map((call) => JSON.parse(call.body)), [{ defaultPermissions: wanted }]);
+    // Every other main setting (the API key, title, quotas, locale...) is exactly as it was.
+    assert.deepEqual(await main(), { ...before, defaultPermissions: wanted });
+    assert.equal((await permissions.list()).defaults.autoApprove, 'on');
+    await permissions.setDefaults({ autoApprove: false });
+    assert.equal(await admin.defaultPermissions(), before.defaultPermissions | 32);
+    // Put Seerr's default back as it was.
+    await admin.setDefaultPermissions(before.defaultPermissions);
+    assert.deepEqual(await main(), before);
   });
 
   it('acts as a Seerr user that does not exist as nobody, never the owner', async () => {
