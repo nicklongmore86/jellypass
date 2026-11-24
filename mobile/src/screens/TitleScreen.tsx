@@ -289,7 +289,7 @@ function CollectionSection({
           cardWidth={posterWidth}
           viewport={width}
           onOpen={(card) => router.push(titlePath(tab, card))}
-          // As the collection page says it: a film still to get whose request failed is "We couldn't get this".
+          // As the collection page says it: a film still to get whose request failed is "Request failed".
           failed={(card) => card.state === 'get_this' && failedFilms.has(card.tmdbId)}
         />
       ) : null}

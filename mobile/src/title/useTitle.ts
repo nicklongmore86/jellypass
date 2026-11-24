@@ -30,7 +30,7 @@ export interface TitleAnswer {
   failed: ReadonlySet<number>;
   /**
    * Every film (TMDB ID) the household asked for that failed, from the same GET /requests: a film page's collection
-   * section says "We couldn't get this" for them, as the collection page does, with no read of its own.
+   * section says "Request failed" for them, as the collection page does, with no read of its own.
    */
   failedFilms: ReadonlySet<number>;
 }

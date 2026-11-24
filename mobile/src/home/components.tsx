@@ -294,8 +294,8 @@ function useBadgePlacement(cardWidth: number): 'overlay' | 'below' {
  * A status chip: a dot and its word, solid, so it reads over any picture. `overlay` puts the short word in a compact pill on
  * an image's top-left, on one line; `below` is the same short word and colours as ordinary text in the card's flow, which
  * wraps if the text size is large. Neither caps the text size. Hidden from screen readers where its card's name already
- * says it; a title page's own status is `spoken`. `failed` is a title the household asked for that did not work out: "We
- * couldn't get this".
+ * says it; a title page's own status is `spoken`. `failed` is a title the household asked for that did not work out:
+ * "Request failed".
  */
 export function StatusChip({
   state,
@@ -369,7 +369,7 @@ function HiddenMark() {
 
 /**
  * A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". `failed` (a film
- * the household asked for that did not work out, on a film page's collection section) says "We couldn't get this" in
+ * the household asked for that did not work out, on a film page's collection section) says "Request failed" in
  * full, below the poster, as it is too long for the corner pill.
  */
 export function PosterCard({ card, width, onOpen, failed = false }: { card: Card; width: number; onOpen: (card: Card) => void; failed?: boolean }) {

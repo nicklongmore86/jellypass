@@ -1269,7 +1269,7 @@ Everything in this table is served by the admin listener only (`ADMIN_PORT`).
 | `GET` | `/v1/app/held` | Titles a household app cancel left held for no household (private to everyone but Jellyfin administrators) until an administrator gives them to someone. Read-only. |
 | `GET` | `/v1/app/requests` | Every household's app requests by Seerr request, with Seerr's status, followers and the actions offered, and the held titles (the admin UI's Requests tab). |
 | `POST` | `/v1/app/requests/{requestId}/approve` | Approve a pending request in Seerr. |
-| `POST` | `/v1/app/requests/{requestId}/decline` | Decline a pending request in Seerr; every household following it sees "We couldn't get this". |
+| `POST` | `/v1/app/requests/{requestId}/decline` | Decline a pending request in Seerr; every household following it sees "Request failed". |
 | `POST` | `/v1/app/requests/{requestId}/cancel` | Send every household following it back to "Get this", hold the title should it arrive, then delete the request in Seerr; `{"removeFromRadarr": true}` also removes a movie Jellyfin does not have from Radarr. |
 | `POST` | `/v1/app/held/{requestId}/release` | Give a held title to `{"householdIds": [...]}`. |
 | `GET` | `/v1/jellyfin/version` | The Jellyfin version last read, whether it is supported, any confirmation (`confirmation`: `not_needed`, `confirmed`, `unconfirmed`, or `null` while the version is not known), what an unconfirmed version does (`enforcement`: `warn` in 3.x, `refuse` from 4.0.0), and whether household hostnames serve (`householdHosts`: `serving`, `refused` or `waiting`; always `serving` in 3.x). |

@@ -120,7 +120,7 @@ export class AdminSeerrError extends Error {
  *
  * - approve: a pending request is approved in Seerr. The households keep following it.
  * - decline: a pending request is declined in Seerr, and in the same turn of the write queue every record following it
- *   is `declined` (each household sees "We couldn't get this") and a declined withdrawal names every household: should
+ *   is `declined` (each household sees "Request failed") and a declined withdrawal names every household: should
  *   the title arrive through the request after all, none of them is given it, and it is held for no household; for a
  *   genuine request this holds after Seerr forgets it too (the withdrawal records `requesterId`, so it becomes a
  *   title hold).
@@ -276,7 +276,7 @@ export class AdminRequests {
   /**
    * Declines a pending request in Seerr and, in the same turn of the write queue (so no webhook, replay, backfill or
    * title hold decides its grant in between), marks every record following it `declined` at once (each household sees
-   * "We couldn't get this") and writes a declined withdrawal (AppWithdrawal `declinedAt`, with `requester` and every
+   * "Request failed") and writes a declined withdrawal (AppWithdrawal `declinedAt`, with `requester` and every
    * household that named it, and for a genuine request `titleHold`, with its requester, `requesterId`, when their
    * Jellyfin ID is known): should the title still arrive through the request, its grant gives none of them (nor the
    * requester) access, so it is held for no household, never public; should Seerr then forget the request, the

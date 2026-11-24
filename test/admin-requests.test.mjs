@@ -200,7 +200,7 @@ describe('admin requests: approve and decline', { timeout: 60_000 }, () => {
     for (const options of [{}, AS_BOB]) assert.deepEqual((await entries(app, options)).map((entry) => entry.status), ['requested']);
   });
 
-  it('declines a pending request in Seerr, and every household following it sees "We couldn\'t get this" at once', async (t) => {
+  it('declines a pending request in Seerr, and every household following it sees "Request failed" at once', async (t) => {
     const app = await followed(t);
     const answer = await act(app, FIRST, 'decline');
     assert.deepEqual([answer.status, answer.json()], [200, { status: 'declined', changed: true }]);

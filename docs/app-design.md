@@ -1783,8 +1783,8 @@ household or credential.
 ## Coarse statuses
 
 The app shows only three request statuses: `Requested`, `Ready to watch`, `Request failed`. Seerr's pending,
-approved, processing and partially available states all show as `Requested`; declined and failed requests as `We
-couldn't get this`. No notifications yet. In `GET /requests` they are `requested`, `ready` and `failed`.
+approved, processing and partially available states all show as `Requested`; declined and failed requests as `Request failed`
+(the status filter calls these `Failed`). No notifications yet. In `GET /requests` they are `requested`, `ready` and `failed`.
 
 ## Privacy model
 
