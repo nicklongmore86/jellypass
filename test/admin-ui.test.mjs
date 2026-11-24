@@ -1467,3 +1467,140 @@ describe('household one-tap warning', () => {
     assert.equal(hint.textContent, "Leave both password fields blank to create a passwordless Jellyfin account. Anyone who can reach Jellyfin and knows the username can sign in to it. It is also automatically marked, so anyone who can reach this group's household address can pick its profile, with no username.");
   });
 });
+
+describe('admin UI Users tab (Seerr request permissions)', () => {
+  const GROVE = 'a0000000000000000000000000000001';
+  const HEATH = 'a0000000000000000000000000000002';
+  const OWNER = 'a0000000000000000000000000000003';
+  const MANAGER = 'a0000000000000000000000000000004';
+  const UNLINKED = 'a0000000000000000000000000000005';
+  const view = (canRequest, autoApprove, extra = {}) => ({ canRequest, autoApprove, requestMovie: false, requestTv: false, editable: { canRequest: true, autoApprove: true }, ...extra });
+  const listing = () => ({
+    defaults: view(true, 'off'),
+    users: [
+      { jellyfinUserId: GROVE, name: 'Grove', isJellyfinAdministrator: false, seerr: { id: 11, ...view(true, 'off') } },
+      { jellyfinUserId: HEATH, name: 'Heath', isJellyfinAdministrator: false, seerr: { id: 12, ...view(true, 'partial_movie') } },
+      { jellyfinUserId: OWNER, name: 'Owner', isJellyfinAdministrator: true, seerr: { id: 1, ...view(true, 'on', { implicit: 'admin', editable: { canRequest: false, autoApprove: false } }) } },
+      { jellyfinUserId: MANAGER, name: 'Manager', isJellyfinAdministrator: false, seerr: { id: 14, ...view(false, 'on', { implicit: 'manage_requests', editable: { canRequest: false, autoApprove: false } }) } },
+      { jellyfinUserId: UNLINKED, name: 'Unlinked', isJellyfinAdministrator: false, seerr: null },
+    ],
+  });
+
+  async function usersPage(answers = {}) {
+    const writes = [];
+    const page = adminPage((path, init) => {
+      if (init?.method === 'PUT') {
+        writes.push([path, JSON.parse(init.body)]);
+        if (answers[path]) return answers[path];
+        const body = JSON.parse(init.body);
+        return { status: 200, body: { status: 'saved', changed: true, ...(path.includes('/users/') ? { seerrUserId: 11 } : {}), permissions: view(body.canRequest ?? true, body.autoApprove === false ? 'off' : 'on') } };
+      }
+      if (answers[path]) return answers[path];
+      if (path === '/v1/seerr/permissions') return { status: 200, body: listing() };
+      return DATA[path];
+    });
+    await page.settle();
+    page.document.querySelector('.tabs button[data-tab="users"]').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    return Object.assign(page, { writes });
+  }
+  const switchFor = (page, label) => page.document.querySelector(`#users-panel input[aria-label="${label}"]`);
+  const flip = async (page, label, value) => {
+    const input = switchFor(page, label);
+    input.checked = value;
+    input.dispatchEvent(new page.window.Event('change'));
+    await page.settle();
+  };
+
+  it('loads only when the tab is opened and shows each user\'s two switches, partial and read-only states', async () => {
+    const page = await usersPage();
+    assert.equal(page.requests.filter((request) => request === 'GET /v1/seerr/permissions').length, 1);
+    assert.equal(page.document.getElementById('users-panel').hidden, false);
+    assert.equal(page.document.getElementById('seerr-defaults').hidden, false);
+    assert.deepEqual([...page.document.querySelectorAll('#seerr-users-list h3')].map((heading) => heading.textContent), ['Grove', 'Heath', 'Owner', 'Manager', 'Unlinked']);
+    const grove = switchFor(page, 'Auto-approve for Grove');
+    assert.equal(grove.getAttribute('role'), 'switch');
+    assert.equal(grove.checked, false);
+    assert.equal(grove.disabled, false);
+    const heath = switchFor(page, 'Auto-approve for Heath');
+    assert.equal(heath.getAttribute('aria-checked'), 'mixed');
+    assert.equal(heath.indeterminate, true);
+    assert.match(heath.closest('label').textContent, /Partial \(movies only\)/);
+    for (const label of ['Can request for Owner', 'Auto-approve for Owner', 'Can request for Manager', 'Auto-approve for Manager']) assert.equal(switchFor(page, label).disabled, true, label);
+    assert.match(switchFor(page, 'Auto-approve for Owner').closest('label').textContent, /Auto-approves \(admin\)/);
+    assert.match(switchFor(page, 'Auto-approve for Manager').closest('label').textContent, /Auto-approves \(admin\)/);
+    assert.equal(switchFor(page, 'Can request for Unlinked'), null);
+    assert.match(page.document.getElementById('seerr-users-list').textContent, /Not in Seerr/);
+    assert.ok(switchFor(page, 'Can request for new Seerr users'));
+  });
+
+  it('asks in the page before turning auto-approve on, sends nothing when cancelled, and saves when accepted', async () => {
+    const page = await usersPage();
+    await flip(page, 'Auto-approve for Grove', true);
+    assert.equal(page.open('confirm-dialog'), true);
+    page.document.querySelector('#confirm-dialog button.dialog-close').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    assert.deepEqual(page.writes, []);
+    assert.equal(switchFor(page, 'Auto-approve for Grove').checked, false);
+    await flip(page, 'Auto-approve for Grove', true);
+    await page.accept('confirm-dialog');
+    assert.deepEqual(page.writes, [[`/v1/seerr/permissions/users/${GROVE}`, { autoApprove: true }]]);
+    assert.equal(switchFor(page, 'Auto-approve for Grove').checked, true);
+    assert.equal(page.toast(), 'Saved in Seerr for Grove.');
+  });
+
+  it('turns Can request and auto-approve off without asking, and edits the defaults for new users', async () => {
+    const page = await usersPage();
+    await flip(page, 'Can request for Grove', false);
+    await flip(page, 'Auto-approve for new Seerr users', true);
+    await page.accept('confirm-dialog');
+    await flip(page, 'Auto-approve for new Seerr users', false);
+    assert.deepEqual(page.writes, [
+      [`/v1/seerr/permissions/users/${GROVE}`, { canRequest: false }],
+      ['/v1/seerr/permissions/defaults', { autoApprove: true }],
+      ['/v1/seerr/permissions/defaults', { autoApprove: false }],
+    ]);
+    assert.equal(switchFor(page, 'Auto-approve for new Seerr users').checked, false);
+  });
+
+  it('shows a refusal as a sentence and reloads what Seerr has', async () => {
+    const page = await usersPage({ [`/v1/seerr/permissions/users/${GROVE}`]: { status: 502, body: { error: 'seerr_refused', message: 'Seerr refused the change (403)', seerrStatus: 403 } } });
+    await flip(page, 'Can request for Grove', false);
+    assert.equal(page.toast(), 'Seerr refused this. Check that JellyPass has the current Seerr API key.');
+    assert.equal(page.toastDetail(), 'seerr_refused');
+    assert.equal(switchFor(page, 'Can request for Grove').checked, true);
+    assert.equal(page.requests.filter((request) => request === 'GET /v1/seerr/permissions').length, 2);
+  });
+
+  it('fails closed: no switches when Seerr cannot be read or is not configured', async () => {
+    for (const [answer, heading] of [
+      [{ status: 502, body: { error: 'seerr_unavailable', message: 'Seerr could not be reached' } }, 'Seerr permissions are unavailable'],
+      [{ status: 404, body: { error: 'seerr_not_configured' } }, 'Seerr is not configured'],
+    ]) {
+      const page = await usersPage({ '/v1/seerr/permissions': answer });
+      assert.equal(page.document.querySelectorAll('#users-panel input[role="switch"]').length, 0);
+      assert.equal(page.document.getElementById('seerr-defaults').hidden, true);
+      assert.equal(page.document.querySelector('#seerr-users-list .empty strong').textContent, heading);
+    }
+  });
+
+  it('shows Seerr\'s current defaults in the create-user dialog, with a way to change them', async () => {
+    const page = adminPage((path) => {
+      if (path === '/v1/groups') return { status: 200, body: { groups: [{ id: 'grove', name: 'Grove', userIds: [] }] } };
+      if (path === '/v1/users') return { status: 200, body: { users: [], jellyseerrImportAvailable: true } };
+      if (path === '/v1/seerr/permissions/defaults') return { status: 200, body: { defaults: view(true, 'partial_tv') } };
+      if (path === '/v1/seerr/permissions') return { status: 200, body: listing() };
+      return DATA[path];
+    });
+    await page.settle();
+    // linkedom's <form> has no reset().
+    page.document.getElementById('user-form').reset = () => undefined;
+    page.click('new-user');
+    await page.settle();
+    assert.equal(page.document.getElementById('seerr-defaults-hint').textContent, 'Seerr gives imported users its defaults for new users: Can request on, Auto-approve for TV only.');
+    page.click('seerr-defaults-link');
+    await page.settle();
+    assert.equal(page.open('user-dialog'), false);
+    assert.equal(page.document.getElementById('users-panel').hidden, false);
+  });
+});
