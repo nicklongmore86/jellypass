@@ -797,7 +797,9 @@ Each Jellyfin user that Seerr links to a Seerr user has two switches:
 - Turning Auto-approve on asks first, in the page.
 
 Each change reads the mask from Seerr (`GET /api/v1/user/{id}/settings/permissions`),
-changes only those bits and writes the whole mask back (`POST` to the same path:
+changes only those bits (any non-negative safe integer is accepted, and bits above
+2^31 are kept exactly; a mask Seerr answers outside that range fails closed with
+`502`) and writes the whole mask back (`POST` to the same path:
 Seerr replaces it). Changes through JellyPass are made one at a time; a change
 made in Seerr's own UI between the read and the write can still be lost, as
 Seerr has no conditional write. A change that changes nothing is not sent. Each

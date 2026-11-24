@@ -919,11 +919,12 @@ function positiveSafeInteger(value: unknown): number | undefined {
 }
 
 /**
- * A Seerr permission mask: an integer from 0 to 2^31 - 1 (Seerr's highest bit is 2^30, and JavaScript's bitwise operators
- * work on 32-bit signed integers, so a larger value could not be changed bit by bit safely). Anything else is `502`.
+ * A Seerr permission mask: any non-negative safe integer (0 to 2^53 - 1). Seerr 3.5.1's highest bit is 2^30, but a later
+ * Seerr (or a hand-edited database) may set higher ones, and they are kept as they are: seerr-permissions.ts changes bits
+ * with BigInt, never with 32-bit operators. Anything else is `502`.
  */
 function permissionMask(value: unknown, route: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 0x7fffffff) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new SeerrError(`Seerr ${route} returned an unexpected permission mask`, 502);
   }
   return value;

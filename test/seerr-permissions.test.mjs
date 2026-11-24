@@ -30,6 +30,9 @@ const AA_BITS = AUTO_APPROVE | AUTO_APPROVE_MOVIE | AUTO_APPROVE_TV;
 // Every bit the Users tab never writes: AUTO_REQUEST, MANAGE_*, 4K, REQUEST_MOVIE/TV, VOTE and bits Seerr does not
 // define yet (up to 2^30), all set, so a change that touched any of them would show.
 const OTHER_BITS = 0x7fffffff & ~(ADMIN | MANAGE_REQUESTS | REQUEST | AA_BITS);
+// Bits above 2^32 (and the highest safe one, 2^52), which a later Seerr or a hand-edited database may set: 32-bit
+// operators would drop them.
+const HIGH_BITS = 2 ** 33 + 2 ** 40 + 2 ** 52;
 const ADMIN_HOST = 'jellypass.example.test';
 const SEERR_ADMIN_ID = 61;
 const SEERR_MANAGER_ID = 62;
@@ -112,10 +115,23 @@ describe('Seerr request permissions: bit handling', () => {
     }
   });
 
-  it('keeps the highest bit Seerr may use', () => {
+  it('keeps every bit up to 2^53 - 1, above 2^31 and 2^32 included', () => {
     const high = 2 ** 30;
     assert.equal(applyRequestPermissions(high | REQUEST, { autoApprove: true }), high | REQUEST | AUTO_APPROVE);
     assert.equal(applyRequestPermissions(0x7fffffff & ~(ADMIN | MANAGE_REQUESTS), { canRequest: false, autoApprove: false }), 0x7fffffff & ~(ADMIN | MANAGE_REQUESTS | REQUEST | AA_BITS));
+    for (const bit of [2 ** 31, 2 ** 32, 2 ** 33, 2 ** 52]) {
+      assert.equal(applyRequestPermissions(bit + REQUEST, { autoApprove: true }), bit + REQUEST + AUTO_APPROVE, String(bit));
+      assert.equal(applyRequestPermissions(bit + REQUEST + AUTO_APPROVE_TV, { autoApprove: false, canRequest: false }), bit, String(bit));
+      assert.deepEqual(requestPermissions(bit + AUTO_APPROVE_MOVIE), view(false, 'partial_movie'), String(bit));
+    }
+    // Every safe bit set but ADMIN and MANAGE_REQUESTS: only the bits asked for change.
+    const all = Number.MAX_SAFE_INTEGER - ADMIN - MANAGE_REQUESTS;
+    const off = applyRequestPermissions(all, { canRequest: false, autoApprove: false });
+    assert.equal(off, all - REQUEST - AUTO_APPROVE - AUTO_APPROVE_MOVIE - AUTO_APPROVE_TV);
+    assert.equal(applyRequestPermissions(off, { canRequest: true, autoApprove: true }), off + REQUEST + AUTO_APPROVE);
+    // ADMIN or MANAGE_REQUESTS next to high bits is still read-only.
+    assert.equal(requestPermissions(HIGH_BITS + ADMIN).implicit, 'admin');
+    assert.throws(() => applyRequestPermissions(HIGH_BITS + MANAGE_REQUESTS, { canRequest: true }), PermissionsReadOnlyError);
   });
 
   it('accepts only the two booleans as a change', () => {
@@ -367,6 +383,56 @@ describe('Seerr request permissions: the admin API', { timeout: 60_000 }, () => 
     assert.equal(app.seerr.state.mainSettings.defaultPermissions, (1 << 23) | 64);
     assert.equal((await setDefaults(app, { canRequest: false })).json().changed, false);
     assert.equal(app.seerr.adminBodies.length, 2);
+  });
+
+  it('lists and changes a member whose mask has bits above 2^32, and the round trip keeps them', async (t) => {
+    const app = await start(t);
+    const lines = infoLines(t);
+    const id = SEERR_IDS[ALICE];
+    app.seerr.state.seerrUsers[id].permissions = HIGH_BITS + REQUEST + AUTO_APPROVE_MOVIE;
+    // One such user does not fail the listing, and the partial state is read past the high bits.
+    const listed = await admin(app, '/v1/seerr/permissions');
+    assert.equal(listed.status, 200);
+    assert.equal(listed.json().users.find((user) => user.jellyfinUserId === ALICE).seerr.autoApprove, 'partial_movie');
+    assert.equal((await setUser(app, ALICE, { autoApprove: true })).status, 200);
+    assert.equal(app.seerr.state.seerrUsers[id].permissions, HIGH_BITS + REQUEST + AUTO_APPROVE_MOVIE + AUTO_APPROVE);
+    assert.equal((await setUser(app, ALICE, { autoApprove: false, canRequest: false })).status, 200);
+    assert.equal(app.seerr.state.seerrUsers[id].permissions, HIGH_BITS);
+    assert.equal((await setUser(app, ALICE, { canRequest: true })).status, 200);
+    assert.equal(app.seerr.state.seerrUsers[id].permissions, HIGH_BITS + REQUEST);
+    assert.deepEqual(app.seerr.adminBodies.map((write) => write.body.permissions), [HIGH_BITS + REQUEST + AUTO_APPROVE_MOVIE + AUTO_APPROVE, HIGH_BITS, HIGH_BITS + REQUEST]);
+    assert.deepEqual(lines.map((line) => [line.oldMask, line.newMask]), [
+      [HIGH_BITS + REQUEST + AUTO_APPROVE_MOVIE, HIGH_BITS + REQUEST + AUTO_APPROVE_MOVIE + AUTO_APPROVE],
+      [HIGH_BITS + REQUEST + AUTO_APPROVE_MOVIE + AUTO_APPROVE, HIGH_BITS],
+      [HIGH_BITS, HIGH_BITS + REQUEST],
+    ]);
+  });
+
+  it('reads and changes defaultPermissions with bits above 2^32, and the round trip keeps them', async (t) => {
+    const app = await start(t, world({ defaultPermissions: HIGH_BITS + REQUEST + AUTO_APPROVE_TV }));
+    const before = structuredClone(app.seerr.state.mainSettings);
+    assert.equal((await admin(app, '/v1/seerr/permissions/defaults')).json().defaults.autoApprove, 'partial_tv');
+    assert.equal((await listing(app)).defaults.canRequest, true);
+    assert.equal((await setDefaults(app, { autoApprove: false })).status, 200);
+    assert.equal(app.seerr.state.mainSettings.defaultPermissions, HIGH_BITS + REQUEST);
+    assert.equal((await setDefaults(app, { autoApprove: true, canRequest: false })).status, 200);
+    assert.equal(app.seerr.state.mainSettings.defaultPermissions, HIGH_BITS + AUTO_APPROVE);
+    assert.equal((await setDefaults(app, { autoApprove: false, canRequest: true })).status, 200);
+    // Back where it started but for the TV bit Auto-approve off cleared; every other main setting untouched.
+    assert.deepEqual(app.seerr.state.mainSettings, { ...before, defaultPermissions: HIGH_BITS + REQUEST });
+    assert.deepEqual(app.seerr.adminBodies.map((write) => write.body.defaultPermissions), [HIGH_BITS + REQUEST, HIGH_BITS + AUTO_APPROVE, HIGH_BITS + REQUEST]);
+  });
+
+  it('still fails closed on a mask that is not a non-negative safe integer', async (t) => {
+    for (const bad of [-1, 2 ** 53, 1.5, '32']) {
+      const app = await start(t);
+      app.seerr.state.seerrUsers[SEERR_IDS[ALICE]].permissions = bad;
+      t.mock.method(console, 'error', () => undefined);
+      const answer = await admin(app, '/v1/seerr/permissions');
+      assert.equal(answer.status, 502, String(bad));
+      assert.equal((await setUser(app, ALICE, { canRequest: true })).status, 502, String(bad));
+      assert.deepEqual(permissionWrites(app), [], String(bad));
+    }
   });
 
   it('serialises writes, so two changes made at once both stick', async (t) => {

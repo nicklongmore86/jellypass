@@ -18,6 +18,19 @@ export const SEERR_PERMISSION = {
 
 const { ADMIN, MANAGE_REQUESTS, REQUEST, AUTO_APPROVE, AUTO_APPROVE_MOVIE, AUTO_APPROVE_TV, REQUEST_MOVIE, REQUEST_TV } = SEERR_PERMISSION;
 const AUTO_APPROVE_BITS = AUTO_APPROVE | AUTO_APPROVE_MOVIE | AUTO_APPROVE_TV;
+
+/*
+ * Masks are any non-negative safe integer (up to 2^53 - 1: see seerr.ts permissionMask). JavaScript's `&`, `|` and `~`
+ * work on 32-bit integers and would drop bits from 2^31 up, so all bit maths here goes through BigInt.
+ */
+function has(mask: number, bit: number): boolean {
+  return (BigInt(mask) & BigInt(bit)) !== 0n;
+}
+
+function withBits(mask: number, bits: number, on: boolean): number {
+  const result = on ? BigInt(mask) | BigInt(bits) : BigInt(mask) & ~BigInt(bits);
+  return Number(result);
+}
 /** Seerr's owner account: Seerr refuses to change its permissions, and it is always an administrator. */
 const SEERR_OWNER = 1;
 const LOOKUPS_AT_ONCE = 4;
@@ -54,22 +67,22 @@ export interface RequestPermissionsChange {
 }
 
 function autoApproveState(mask: number): AutoApproveState {
-  const movie = (mask & AUTO_APPROVE_MOVIE) !== 0;
-  const tv = (mask & AUTO_APPROVE_TV) !== 0;
-  if ((mask & AUTO_APPROVE) !== 0 || (movie && tv)) return 'on';
+  const movie = has(mask, AUTO_APPROVE_MOVIE);
+  const tv = has(mask, AUTO_APPROVE_TV);
+  if (has(mask, AUTO_APPROVE) || (movie && tv)) return 'on';
   return movie ? 'partial_movie' : tv ? 'partial_tv' : 'off';
 }
 
 /** What a mask means for requests. `owner`: the mask is Seerr's owner's (user 1), read-only like an administrator's. */
 export function requestPermissions(mask: number, { owner = false } = {}): RequestPermissions {
-  const admin = owner || (mask & ADMIN) !== 0;
-  const managesRequests = (mask & MANAGE_REQUESTS) !== 0;
+  const admin = owner || has(mask, ADMIN);
+  const managesRequests = has(mask, MANAGE_REQUESTS);
   const implicit = admin ? 'admin' : managesRequests ? 'manage_requests' : undefined;
   return {
-    canRequest: admin || (mask & REQUEST) !== 0,
+    canRequest: admin || has(mask, REQUEST),
     autoApprove: implicit !== undefined ? 'on' : autoApproveState(mask),
-    requestMovie: (mask & REQUEST_MOVIE) !== 0,
-    requestTv: (mask & REQUEST_TV) !== 0,
+    requestMovie: has(mask, REQUEST_MOVIE),
+    requestTv: has(mask, REQUEST_TV),
     ...(implicit ? { implicit } : {}),
     editable: { canRequest: implicit === undefined, autoApprove: implicit === undefined },
   };
@@ -96,11 +109,10 @@ export function applyRequestPermissions(mask: number, change: RequestPermissions
     throw new PermissionsReadOnlyError('Seerr administrators and users who manage requests are read-only here; change them in Seerr', 'seerr_admin_read_only');
   }
   let next = mask;
-  if (change.canRequest !== undefined) next = change.canRequest ? next | REQUEST : next & ~REQUEST;
-  if (change.autoApprove === true) next |= AUTO_APPROVE;
-  if (change.autoApprove === false) next &= ~AUTO_APPROVE_BITS;
-  // `&` and `|` answer signed 32-bit integers; masks are below 2^31 (see seerr.ts permissionMask), so this is a no-op.
-  return next >>> 0;
+  if (change.canRequest !== undefined) next = withBits(next, REQUEST, change.canRequest);
+  if (change.autoApprove === true) next = withBits(next, AUTO_APPROVE, true);
+  if (change.autoApprove === false) next = withBits(next, AUTO_APPROVE_BITS, false);
+  return next;
 }
 
 /** A Seerr failure or refusal the admin API answers with `status` and a fixed `code`; `seerrStatus` is Seerr's own. */
