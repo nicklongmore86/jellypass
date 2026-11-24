@@ -1,6 +1,6 @@
 // The My requests tab through the real router, signed in, with a fake gateway: the household's requests with their
 // titles and thumbnails (TMDB's only) named from each title's own answer, ten at a time, the coarse status (per season
-// for a series), who asked, and "We couldn't get this" with the admin note and no button. The PWA's fixed wording
+// for a series), who asked, and "Request failed" with the admin note and no button. The PWA's fixed wording
 // when there is nothing and on each failure, Try again, never retried by itself, a 401 signing out; read again each
 // time it is shown and on pull to refresh; Load more. Title answers are seen by the overlay, so Home shows the state
 // read here. Titles named in the last ten minutes of the sign-in are reused (never their status, never seen again by the

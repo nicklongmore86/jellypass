@@ -594,6 +594,14 @@ describe('admin UI Requests tab', () => {
     assert.equal(page.requests.filter((request) => request === 'GET /v1/app/requests').length, 3, 'the list is read again after each action');
   });
 
+  it('tells the admin that households see “Request failed” when declining a request', async () => {
+    const page = await requestsPage();
+    button(page, 'Decline: Synthetic Film (2020)').dispatchEvent(new page.window.Event('click'));
+    assert.ok(page.document.getElementById('request-action-dialog').hasAttribute('open'));
+    assert.equal(page.document.getElementById('request-action-text').textContent,
+      'Decline Synthetic Film (2020) in Seerr? All 2 households following it see “Request failed”.');
+  });
+
   it('approves and declines after confirming, and shows a refusal as a sentence', async () => {
     const posts = [];
     const page = await requestsPage(posts, { '/v1/app/requests/7380001/decline': { status: 409, body: { error: 'only a pending request can be declined', code: 'request_not_pending' } } });

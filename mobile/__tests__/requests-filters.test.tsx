@@ -1,5 +1,5 @@
-// My requests' filters, the PWA's (app/src/render.ts) natively: Status (All, Requested, Ready to watch, Couldn't get
-// this), Type (All, Films, Series) and Asked by me, all worked out from the fields GET /requests already lists. The rule
+// My requests' filters, the PWA's (app/src/render.ts) natively: Status (All, Requested, Ready to watch, Failed),
+// Type (All, Films, Series) and Asked by me, all worked out from the fields GET /requests already lists. The rule
 // (a series matches a status any of its seasons shows), the combinations, the words for an empty result, then the screen:
 // choosing a filter makes no call at all (the API's or a title's), the titles read stay read, the choice is kept while the
 // app is open and reset by a sign-out, a 401, another sign-in and the provider going; the chips are labelled, ticked,

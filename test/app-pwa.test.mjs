@@ -1553,7 +1553,7 @@ describe('household app page: rendering', () => {
       assert.equal(season.querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
       assert.deepEqual([...seasons.querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['2'], 'a failed season is not a choice');
       assert.equal(seasons.querySelectorAll('.failed-note').length, 1);
-      // A held title is not "couldn't get" even if the household once failed to ask.
+      // A held title is not "Request failed" even if the household once failed to ask.
       const held = titleDetail(document, { ...card({ state: 'in_library', play }), genres: [], runtime: 90 }, origin, { onGet, failed: new Set([0]) });
       assert.deepEqual([...held.querySelectorAll('.badge')].map((badge) => badge.textContent), ['Ready to watch']);
       assert.equal(held.querySelector('a.button').textContent, 'Play');
