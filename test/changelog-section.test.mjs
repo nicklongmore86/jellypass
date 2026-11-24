@@ -54,6 +54,37 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 4.6.0 without its heading, up to the 4.5.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '4.6.0');
+    assertSection(notes, {
+      version: '4.6.0',
+      nextVersion: '4.5.0',
+      subheadings: ['Added', 'Changed'],
+    });
+    assert.match(notes, /^This is a minor release\./);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*An existing install upgrades without any change to its configuration:\*\*/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:4\.5\.0`/);
+    assert.match(flat, /`apiVersion` 6/);
+    assert.match(flat, /schema 9/);
+    assert.match(flat, /`jellypass-tv\.3fc6defb24d3\.js`/);
+    assert.match(flat, /`jellypass-tv\.12e659e424d7\.css`, is unchanged/);
+    for (const path of ['GET /v1/seerr/permissions', 'GET /v1/seerr/permissions/defaults', 'PUT /v1/seerr/permissions/users/{jellyfinUserId}', 'PUT /v1/seerr/permissions/defaults']) {
+      assert.ok(flat.includes(`\`${path}\``), `${path} is listed`);
+    }
+    for (const heading of ['Added', 'Changed']) {
+      assert.equal(notes.split('\n').filter((line) => line === `### ${heading}`).length, 1, `one ### ${heading}`);
+    }
+    assert.doesNotMatch(notes, /### Fixed/);
+    const added = notes.indexOf('### Added');
+    for (const note of ['**The state file is unchanged**', '**Seerr permissions are kept in Seerr.**', '**No CDN purge is needed.**', '**To roll back,**', '**The iPhone, iPad and Android app ships separately.**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `${note} is summarised first`);
+    }
+    assert.doesNotMatch(notes, /download/i);
+    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|TU7000|sdb\b/i, 'no server-specific details');
+    if (privateTerms) assert.equal(privateMatchCount(notes, privateTerms), 0, 'no private deployment details');
+  });
+
   it('extracts 4.5.0 without its heading, up to the 4.4.0 section', () => {
     const notes = changelogSection(CHANGELOG, '4.5.0');
     assertSection(notes, {

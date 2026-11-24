@@ -21,6 +21,40 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [4.6.0] - 2026-11-24
+
+This is a minor release. The administrator site gains a **Users** tab that
+turns each user's Seerr **Can request** and **Auto-approve** permissions on and
+off, and "Get this" is now called **Request** in the web app and the TV add-on.
+**An existing install upgrades without any change to its configuration:** it
+adds, removes and renames no setting. The state file (schema 9), the household
+app API (`v1`, `apiVersion` 6), webhook payloads and the gateway are as in
+4.5.0; the administrator API gains four `/v1/seerr/permissions` endpoints. This
+is a minor release because the administrator site gains a feature. Read these
+before upgrading:
+
+- **The state file is unchanged** (schema 9, with the same fields as 4.5.0);
+  nothing is migrated, so 4.5.0 reads a state file written by 4.6.0.
+- **Seerr permissions are kept in Seerr.** The Users tab reads and writes them
+  with the Seerr API key already in the settings (Seerr's user permissions and
+  the `defaultPermissions` of its main settings); JellyPass stores nothing new.
+  Without Seerr configured the new endpoints answer 404
+  `seerr_not_configured`.
+- **No CDN purge is needed.** The TV add-on's script has a new name,
+  `jellypass-tv.3fc6defb24d3.js` (it was `jellypass-tv.ae12b4bb8c0c.js` in
+  4.5.0); its style sheet, `jellypass-tv.12e659e424d7.css`, is unchanged. The
+  `/web/` page and the Samsung app's manifest are sent `no-store`. Some
+  household app script files also get new names and its service worker a new
+  cache.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:4.5.0` and recreate the container. No
+  state-file or setting change is needed. The administrator site then has no
+  Users tab, and the web app and TV add-on say "Get this" again. Permission
+  changes already made through the Users tab stay in Seerr.
+- **The iPhone, iPad and Android app ships separately.** Its own "Request"
+  wording (app 1.6.0) needs no server change and is described in
+  `mobile/CHANGELOG.md`.
+
 ### Added
 
 - **Seerr request permissions in the admin site.** A new **Users** tab shows
@@ -34,9 +68,10 @@ listed at the top of the release notes.
   have every request approved and are shown read-only as **Auto-approves
   (admin)**; users Seerr does not have show **Not in Seerr**. A **New Seerr
   users** card changes the same two parts of Seerr's default permissions, and
-  the Create Jellyfin user dialog now shows them. Changes are made with the Seerr API key, logged at info
-  level with the Seerr user and the old and new mask, and nothing is shown
-  when Seerr cannot be read. Admin API: `GET /v1/seerr/permissions`,
+  the Create Jellyfin user dialog now shows them. Changes are made with the
+  Seerr API key, logged at info level with the Seerr user and the old and new
+  mask, and nothing is shown when Seerr cannot be read. Admin API:
+  `GET /v1/seerr/permissions`,
   `GET /v1/seerr/permissions/defaults`,
   `PUT /v1/seerr/permissions/users/{jellyfinUserId}` and
   `PUT /v1/seerr/permissions/defaults`.
