@@ -42,7 +42,7 @@ export const ADMIN_HTML = `<!doctype html>
 
       <div id="jellyfin-version" class="version-alert" role="alert" hidden><div><strong id="jellyfin-version-title"></strong><p id="jellyfin-version-text"></p></div><button id="jellyfin-version-confirm" class="button primary compact" type="button" hidden></button></div>
 
-      <nav class="tabs" aria-label="Admin sections"><button class="active" data-tab="dashboard">Dashboard</button><button data-tab="requests">Requests <span id="requests-count"></span></button><button data-tab="library">Library <span id="library-count"></span></button><button data-tab="grants">Grants <span id="grant-count"></span></button><button data-tab="groups">Groups <span id="group-count"></span></button></nav>
+      <nav class="tabs" aria-label="Admin sections"><button class="active" data-tab="dashboard">Dashboard</button><button data-tab="requests">Requests <span id="requests-count"></span></button><button data-tab="library">Library <span id="library-count"></span></button><button data-tab="grants">Grants <span id="grant-count"></span></button><button data-tab="groups">Groups <span id="group-count"></span></button><button data-tab="users">Users</button></nav>
       <section id="dashboard-panel" class="tab-panel">
         <div class="section-tools"><div><h2>Access overview</h2><p>A compact view of JellyPass activity and policy health.</p></div></div>
         <div class="stats" aria-label="Access summary">
@@ -75,6 +75,12 @@ export const ADMIN_HTML = `<!doctype html>
         <div class="section-tools"><div><h2>Households and access groups</h2><p>Group users for shared media access and household-specific Jellyfin login screens.</p></div><div class="actions"><button id="new-user" class="button quiet">Create Jellyfin user</button><button id="new-group" class="button primary">New group</button></div></div>
         <div id="groups-list" class="group-grid"></div>
       </section>
+      <section id="users-panel" class="tab-panel" hidden>
+        <div class="section-tools"><div><h2>Seerr request permissions</h2><p>Who may request in Seerr, and whose requests are approved at once without review. Changed in Seerr with JellyPass's Seerr API key.</p></div><button id="refresh-seerr-permissions" class="button quiet" type="button">Refresh</button></div>
+        <p id="seerr-permissions-status" class="requests-summary" role="status" aria-live="polite"></p>
+        <section id="seerr-defaults" class="panel seerr-defaults" aria-labelledby="seerr-defaults-title" hidden><div><h3 id="seerr-defaults-title">New Seerr users</h3><p>What Seerr gives the users it imports or creates from now on. Users already in Seerr keep their own.</p></div><div id="seerr-defaults-switches" class="seerr-switches"></div></section>
+        <div id="seerr-users-list" class="request-rows"></div>
+      </section>
       <section id="library-panel" class="tab-panel" hidden>
         <div class="section-tools"><div><h2>Synchronized library</h2><p id="library-sync-status">Not synchronized yet</p></div><button id="sync-library" class="button primary">Sync with Jellyfin</button></div>
         <div class="catalog-toolbar"><div class="catalog-search"><label class="search"><span>⌕</span><input id="library-filter" type="search" placeholder="Search title or year"></label><button id="clear-library-search" class="button quiet" type="button" disabled>Clear search</button></div><select id="library-name-filter" aria-label="Filter by Jellyfin library"><option value="">All Jellyfin libraries</option></select><select id="library-sort" aria-label="Sort library results"><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option><option value="date-desc">Date added · newest</option><option value="date-asc">Date added · oldest</option><option value="year-desc">Release year · newest</option><option value="year-asc">Release year · oldest</option><option value="access-desc">Request/access · recent</option><option value="managed-first">Protected first</option><option value="unmanaged-first">Unmanaged first</option></select></div>
@@ -88,7 +94,7 @@ export const ADMIN_HTML = `<!doctype html>
   <dialog id="plan-dialog"><div class="dialog-head"><div><div class="eyebrow">Dry-run</div><h2 id="plan-title">Change plan</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><div id="plan-content" class="plan-content"></div><form id="plan-form" class="plan-actions" hidden><p id="plan-question"></p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button id="plan-apply" class="button primary" type="submit">Apply</button></div></form></dialog>
   <dialog id="group-dialog"><form id="group-form"><div class="dialog-head"><div><div class="eyebrow">Shared access</div><h2 id="group-title">New group</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Group ID<input id="group-id" required pattern="[a-zA-Z0-9_-]{1,128}" placeholder="household"></label><label>Display name<input id="group-name" required placeholder="Household"></label><fieldset><legend>Jellyfin users</legend><div id="user-options" class="check-list"></div></fieldset><fieldset><legend>One-tap sign-in</legend><p class="hint">Mark users whose Jellyfin account has no password, so their profile signs in with one tap. The mark only changes the profile picker. With or without it, anyone who can reach this household's address can sign in as any member with no password by typing their name. Hiding a profile does not protect it; give the account a password. If a marked user has a password, tapping their profile fails. The household and mobile apps then ask for it; on Jellyfin's own login page they must use Manual Login.</p><div id="passwordless-options" class="check-list"></div></fieldset><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Save group</button></div></form></dialog>
   <dialog id="address-dialog" aria-labelledby="address-title"><form id="address-form" class="address-form"><div class="dialog-head"><div><div class="eyebrow">Household address</div><h2 id="address-title">Addresses</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="address-gateway-off" class="hint" hidden>Household addresses are off: they are saved, and served once household addresses are turned on.</p><label>Address<input id="address-origin" type="url" placeholder="https://media.example.com" autocomplete="off" spellcheck="false" aria-describedby="address-warning"></label><label>Other addresses for the same household · one per line<textarea id="address-aliases" aria-describedby="address-warning" placeholder="https://films.example.net:8443" spellcheck="false"></textarea></label><p id="address-legacy" class="legacy" hidden></p><p class="hint">Any HTTPS hostname works, with an optional port: no path, query or user name. Each address belongs to one household only. Your reverse proxy must send these addresses to JellyPass's member listener with their original Host.</p><p id="address-warning" class="address-warning" role="status"></p><p id="address-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="address-remove" type="button" class="button danger">Remove addresses</button><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Save addresses</button></div></form></dialog>
-  <dialog id="user-dialog"><form id="user-form"><div class="dialog-head"><div><div class="eyebrow">Household member</div><h2>Create Jellyfin user</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Username<input id="new-username" name="new-username" maxlength="128" autocomplete="off" required></label><label>Password · optional<input id="new-password" name="new-password" type="password" maxlength="256" autocomplete="new-password"></label><label>Confirm password<input id="confirm-password" name="confirm-password" type="password" maxlength="256" autocomplete="new-password"></label><p class="hint">Leave both password fields blank to create a passwordless Jellyfin account. Anyone who can reach Jellyfin and knows the username can sign in to it. It is also automatically marked, so anyone who can reach this group's household address can pick its profile, with no username.</p><label>Household or access group<select id="new-user-group" required></select></label><label class="check"><input id="import-to-seerr" type="checkbox"><span><strong>Import into Seerr</strong><small id="seerr-import-help">Link this Jellyfin identity so the user can own requests.</small></span></label><p class="hint">This creates a real non-administrator Jellyfin account and adds it to the selected group. Seerr applies its configured default permissions to imported users.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Create user</button></div></form></dialog>
+  <dialog id="user-dialog"><form id="user-form"><div class="dialog-head"><div><div class="eyebrow">Household member</div><h2>Create Jellyfin user</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Username<input id="new-username" name="new-username" maxlength="128" autocomplete="off" required></label><label>Password · optional<input id="new-password" name="new-password" type="password" maxlength="256" autocomplete="new-password"></label><label>Confirm password<input id="confirm-password" name="confirm-password" type="password" maxlength="256" autocomplete="new-password"></label><p class="hint">Leave both password fields blank to create a passwordless Jellyfin account. Anyone who can reach Jellyfin and knows the username can sign in to it. It is also automatically marked, so anyone who can reach this group's household address can pick its profile, with no username.</p><label>Household or access group<select id="new-user-group" required></select></label><label class="check"><input id="import-to-seerr" type="checkbox"><span><strong>Import into Seerr</strong><small id="seerr-import-help">Link this Jellyfin identity so the user can own requests.</small></span></label><p class="hint">This creates a real non-administrator Jellyfin account and adds it to the selected group. <span id="seerr-defaults-hint">Seerr gives imported users its defaults for new users.</span> <button id="seerr-defaults-link" type="button" class="link-button">Change Seerr defaults</button></p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Create user</button></div></form></dialog>
   <dialog id="access-dialog"><form id="access-form"><div class="dialog-head"><div><div class="eyebrow">Grant access</div><h2>Shared groups</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="access-item" class="dialog-item"></p><fieldset><legend>Groups with access</legend><div id="group-options" class="check-list"></div></fieldset><input id="access-item-id" type="hidden"><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview changes</button></div></form></dialog>
   <dialog id="requests-dialog" aria-labelledby="requests-dialog-title"><div class="dialog-head"><div><div class="eyebrow">Direct access</div><h2 id="requests-dialog-title">Request grants</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><p class="hint">Seerr requests that give their requester access to this title. Revoking one takes that access away; other requests, manual users and groups keep theirs.</p><p id="requests-item" class="dialog-item"></p><div id="requests-list" class="request-list"></div></dialog>
   <dialog id="bulk-dialog"><form id="bulk-form"><div class="dialog-head"><div><div class="eyebrow">Bulk access</div><h2>Assign selected media</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="bulk-summary" class="hint"></p><fieldset><legend>Individual Jellyfin users</legend><div id="bulk-user-options" class="check-list"></div></fieldset><fieldset><legend>Access groups</legend><div id="bulk-group-options" class="check-list"></div></fieldset><p class="hint">This replaces existing manual users and groups for every selected title. Seerr request owners are preserved.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview bulk changes</button></div></form></dialog>
@@ -152,12 +158,17 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 .card-more{position:relative}.card-more>summary{list-style:none;font-size:12px;padding:8px 10px}.card-more>summary::-webkit-details-marker{display:none}.card-more-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:5;min-width:200px;padding:6px;background:#101d38;border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}.card-more-menu .button{width:100%;text-align:left}
 .move-search input{width:100%}.move-results{display:grid;gap:7px;max-height:300px;overflow:auto}.move-results:empty{display:none}
 .requests-off{padding:40px 32px}.requests-off span{display:block;max-width:620px;margin:0 auto}
+.seerr-defaults{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;padding:20px 24px;margin:0 0 18px}.seerr-defaults h3{margin:0 0 4px;font-size:18px}.seerr-defaults p{margin:0;color:var(--muted);font-size:13px;max-width:560px}
+.seerr-switches{display:flex;flex-wrap:wrap;gap:10px 22px}.seerr-switches .check{min-width:0}.seerr-switches .check small{font:12px/1.4 Inter,ui-sans-serif,system-ui,sans-serif;white-space:normal;margin-top:2px}.seerr-switches .check.read-only{opacity:.8}
+.request-rows>.request-row.seerr-user{grid-template-columns:minmax(0,1fr) auto}.seerr-user .not-in-seerr{justify-self:end}
+.link-button{background:none;border:0;padding:0;color:#70dfff;font:inherit;text-decoration:underline;cursor:pointer}
+@media(max-width:620px){.request-rows>.request-row.seerr-user{grid-template-columns:minmax(0,1fr)}.seerr-user .not-in-seerr{justify-self:start}}
 `;
 
 export const ADMIN_APP_JS = `
 (() => {
   'use strict';
-  const state = { lastRemovedFormAt: null, jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', requestsOff: false, pendingAction: null, pendingRelease: null, addressGroup: null };
+  const state = { lastRemovedFormAt: null, jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', requestsOff: false, pendingAction: null, pendingRelease: null, addressGroup: null, seerrPermissions: null, seerrPermissionsError: '', seerrPermissionsOff: false };
   const byId = (id) => document.getElementById(id);
   const loginView = byId('login-view');
   const appView = byId('app-view');
@@ -193,6 +204,12 @@ export const ADMIN_APP_JS = `
     self_check_not_configured: 'The deployment self-check is not available on this JellyPass.',
     setup_required: 'Finish setting up JellyPass first.',
     jellyfin_refused: 'Jellyfin refused this.',
+    seerr_not_configured: 'Seerr is not configured in JellyPass.',
+    not_in_seerr: 'This user is not in Seerr.',
+    seerr_unavailable: 'Seerr could not be reached. Try again in a moment.',
+    seerr_refused: 'Seerr refused this. Check that JellyPass has the current Seerr API key.',
+    seerr_failed: 'Seerr could not do that right now. Try again in a moment.',
+    seerr_unexpected_answer: 'Seerr answered something unexpected. Refresh to see what it has.',
   };
   // An error that is a code (lower case words joined by underscores) rather than a sentence.
   const ERROR_CODE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
@@ -223,12 +240,18 @@ export const ADMIN_APP_JS = `
   const sessionRetry = { delay: 0, dueAt: 0, remaining: null, timer: null };
   // Changes when a session ends (sign-out, 401) or starts (sign-in): an answer to a request made before then has no effect.
   let sessionEpoch = 0;
+  // The Users tab's Seerr reads and saves are coordinated, so a read never undoes a save on screen. Each read takes a
+  // generation and only the latest is shown. A save takes a new one for the listing and for the create-user dialog's
+  // defaults hint, so a read sent before the save is dropped. While a save runs, Refresh and every switch are disabled,
+  // and a listing or hint read asked for meanwhile waits until it ends. A session change resets all of it.
+  const seerrSync = { read: 0, loading: false, saving: false, refreshQueued: false, hint: 0 };
   const heroCopy = {
     dashboard: ['Jellyfin access', 'JellyPass dashboard', 'Monitor library access, audiences, and synchronization health.'],
     library: ['Jellyfin library', 'Your media library', 'Browse synchronized movies and series, then assign access in bulk.'],
     grants: ['Access policies', 'Access grants', 'Review protected titles, request owners, and applied Jellyfin policies.'],
     groups: ['Shared audiences', 'Access groups', 'Organize Jellyfin users into reusable library-access audiences.'],
     requests: ['Household app', 'Requests', 'Approve, decline or cancel what households asked for, and release held titles.'],
+    users: ['Seerr permissions', 'Users', 'Choose who may request in Seerr and whose requests are approved at once.'],
   };
 
   function scrollToTop() {
@@ -844,6 +867,7 @@ export const ADMIN_APP_JS = `
     byId('seerr-import-help').textContent = state.seerrImportAvailable
       ? 'Link this Jellyfin identity so the user can own requests.'
       : 'Seerr is not configured in JellyPass.';
+    showSeerrDefaultsHint();
     byId('user-dialog').showModal();
     byId('new-username').focus();
   }
@@ -1335,7 +1359,19 @@ export const ADMIN_APP_JS = `
   // A session that ends invalidates the answers still on their way, so none of them can show a view, notice or retry.
   function endSession() {
     sessionEpoch += 1;
+    resetSeerrSync();
     sessionAvailable();
+  }
+
+  // On a session change: a save or read still on its way belongs to the old session, which can no longer finish it, so
+  // nothing stays pending or locked.
+  function resetSeerrSync() {
+    seerrSync.read += 1;
+    seerrSync.hint += 1;
+    seerrSync.loading = false;
+    seerrSync.saving = false;
+    seerrSync.refreshQueued = false;
+    seerrPermissionsBusy(false);
   }
 
   function setConnected(connected) {
@@ -1419,10 +1455,13 @@ export const ADMIN_APP_JS = `
       accepted = true;
       // A new session: answers to requests made before it have no effect.
       sessionEpoch += 1;
+      resetSeerrSync();
       const epoch = sessionEpoch;
       clearSessionRetry();
       await load();
       assertSession(epoch);
+      // The Users tab is read again for the new session (it is not part of load(): it reads Seerr).
+      if (state.activeTab === 'users') loadSeerrPermissions();
       byId('password').value = '';
       setConnected(true);
     } catch (error) {
@@ -1476,6 +1515,8 @@ export const ADMIN_APP_JS = `
   byId('request-action-form').addEventListener('submit', confirmRequestAction);
   byId('release-form').addEventListener('submit', confirmRelease);
   byId('refresh-requests').addEventListener('click', loadRequests);
+  byId('refresh-seerr-permissions').addEventListener('click', () => loadSeerrPermissions());
+  byId('seerr-defaults-link').addEventListener('click', () => { byId('user-dialog').close(); activateTab('users'); });
   ['requests-search', 'requests-household', 'requests-status', 'requests-type'].forEach((id) => byId(id).addEventListener(id === 'requests-search' ? 'input' : 'change', renderRequests));
   document.querySelectorAll('.dialog-close').forEach((button) => button.addEventListener('click', () => {
     const dialog = button.closest('dialog');
@@ -1692,6 +1733,175 @@ export const ADMIN_APP_JS = `
     if (state.activeTab === 'requests') await loadRequests();
   }
 
+  // The Users tab: Seerr's request permissions (GET /v1/seerr/permissions), loaded when it is opened (and refreshed),
+  // never with the rest: it reads Seerr. Nothing is shown that Seerr did not say: a failure lists nobody.
+  const PARTIAL_TEXT = { partial_movie: 'Partial (movies only)', partial_tv: 'Partial (TV only)' };
+  const IMPLICIT_TEXT = { admin: 'Auto-approves (admin)', manage_requests: 'Auto-approves (admin)' };
+
+  function seerrPermissionsBusy(busy) {
+    byId('refresh-seerr-permissions').disabled = busy;
+    byId('users-panel').querySelectorAll('input[role="switch"]').forEach((control) => { control.disabled = busy || control.dataset.readOnly === 'true'; });
+  }
+
+  function permissionsSummary(permissions) {
+    const auto = { on: 'on', off: 'off', partial_movie: 'for movies only', partial_tv: 'for TV only' }[permissions.autoApprove] || permissions.autoApprove;
+    return 'Can request ' + (permissions.canRequest ? 'on' : 'off') + ', Auto-approve ' + auto;
+  }
+
+  async function showSeerrDefaultsHint() {
+    const hint = byId('seerr-defaults-hint');
+    byId('seerr-defaults-link').hidden = !state.seerrImportAvailable;
+    hint.textContent = state.seerrImportAvailable ? 'Seerr gives imported users its defaults for new users.' : '';
+    if (!state.seerrImportAvailable) return;
+    // During a save the defaults may be changing: read them once it ends (it reads them again if the dialog is open).
+    if (seerrSync.saving) return;
+    const epoch = sessionEpoch;
+    const generation = ++seerrSync.hint;
+    try {
+      const body = await api('/v1/seerr/permissions/defaults');
+      assertSession(epoch);
+      if (generation !== seerrSync.hint) return;
+      hint.textContent = 'Seerr gives imported users its defaults for new users: ' + permissionsSummary(body.defaults) + '.';
+    } catch (error) {
+      if (error.stale || generation !== seerrSync.hint) return;
+      hint.textContent = 'Seerr gives imported users its defaults for new users (they could not be read just now).';
+    }
+  }
+
+  async function loadSeerrPermissions() {
+    if (seerrSync.saving) { seerrSync.refreshQueued = true; return; }
+    const epoch = sessionEpoch;
+    const generation = ++seerrSync.read;
+    seerrSync.loading = true;
+    byId('seerr-permissions-status').textContent = 'Loading…';
+    try {
+      const body = await api('/v1/seerr/permissions');
+      assertSession(epoch);
+      if (generation !== seerrSync.read) return;
+      seerrSync.loading = false;
+      state.seerrPermissions = body;
+      state.seerrPermissionsError = '';
+      state.seerrPermissionsOff = false;
+    } catch (error) {
+      if (error.stale || generation !== seerrSync.read) return;
+      seerrSync.loading = false;
+      state.seerrPermissions = null;
+      state.seerrPermissionsOff = error.code === 'seerr_not_configured';
+      state.seerrPermissionsError = error.message;
+      if (error.status === 401) return;
+    }
+    renderSeerrPermissions();
+  }
+
+  // One switch (a checkbox with role=switch). A partial state shows as mixed and reads as its text until it is flipped.
+  function permissionSwitch(options) {
+    const input = node('input', { type: 'checkbox' });
+    input.setAttribute('role', 'switch');
+    input.dataset.key = options.key;
+    input.checked = options.checked;
+    input.disabled = Boolean(options.readOnly);
+    input.dataset.readOnly = String(Boolean(options.readOnly));
+    if (options.partial) {
+      input.indeterminate = true;
+      input.setAttribute('aria-checked', 'mixed');
+    }
+    input.setAttribute('aria-label', options.label + ' for ' + options.who);
+    if (options.onChange) input.addEventListener('change', () => options.onChange(input));
+    return node('label', { class: 'check' + (options.readOnly ? ' read-only' : '') }, [input, node('span', {}, [node('strong', { text: options.label })].concat(options.note ? [node('small', { text: options.note })] : []))]);
+  }
+
+  function permissionSwitches(permissions, scope, who, path) {
+    const typed = [permissions.requestMovie ? 'films' : '', permissions.requestTv ? 'series' : ''].filter(Boolean).join(' and ');
+    const requestNote = permissions.implicit === 'admin' ? 'Seerr administrator' : permissions.implicit ? 'Manages requests in Seerr' : !permissions.canRequest && typed ? 'Seerr still allows ' + typed + ' (set in Seerr)' : '';
+    const autoNote = permissions.implicit ? IMPLICIT_TEXT[permissions.implicit] : PARTIAL_TEXT[permissions.autoApprove] || '';
+    const save = (field) => (input) => changePermission(input, path, field, who);
+    return node('div', { class: 'seerr-switches' }, [
+      permissionSwitch({ key: scope + ':canRequest', label: 'Can request', who, checked: permissions.canRequest, readOnly: !permissions.editable.canRequest, note: requestNote, onChange: save('canRequest') }),
+      permissionSwitch({ key: scope + ':autoApprove', label: 'Auto-approve', who, checked: permissions.autoApprove === 'on', partial: !permissions.implicit && Boolean(PARTIAL_TEXT[permissions.autoApprove]), readOnly: !permissions.editable.autoApprove, note: autoNote, onChange: save('autoApprove') }),
+    ]);
+  }
+
+  async function changePermission(input, path, field, who) {
+    const value = input.checked;
+    const key = input.dataset.key;
+    const epoch = sessionEpoch;
+    if (field === 'autoApprove' && value) {
+      const confirmed = await confirmAction({ eyebrow: 'Seerr permissions', title: 'Turn on auto-approve?', text: (who === 'new Seerr users' ? 'Requests from users Seerr imports or creates from now on' : 'Requests from ' + who) + ' will go straight to Radarr or Sonarr, without waiting for an administrator.', confirm: 'Turn on', danger: false });
+      if (epoch !== sessionEpoch) return;
+      if (!confirmed) { renderSeerrPermissions(key); return; }
+    }
+    if (seerrSync.saving) { renderSeerrPermissions(key); return; }
+    seerrSync.saving = true;
+    // A read still in flight may have been answered before this save: drop it, and read again once the save ends.
+    if (seerrSync.loading) seerrSync.refreshQueued = true;
+    seerrSync.read += 1;
+    seerrSync.hint += 1;
+    seerrSync.loading = false;
+    seerrPermissionsBusy(true);
+    let reload = false;
+    try {
+      const result = await api(path, { method: 'PUT', body: JSON.stringify({ [field]: value }) });
+      assertSession(epoch);
+      if (state.seerrPermissions) {
+        if (path === '/v1/seerr/permissions/defaults') state.seerrPermissions.defaults = result.permissions;
+        else {
+          const user = state.seerrPermissions.users.find((entry) => entry.seerr && entry.seerr.id === result.seerrUserId);
+          if (user) user.seerr = Object.assign({ id: result.seerrUserId }, result.permissions);
+        }
+      }
+      toast(result.changed ? 'Saved in Seerr for ' + who + '.' : 'Seerr already had that for ' + who + '.');
+    } catch (error) {
+      // An ended or new session has already reset the coordination and unlocked the controls (resetSeerrSync), and
+      // may have a save of its own running: nothing of this one is touched.
+      if (error.stale || epoch !== sessionEpoch) return;
+      toast(error.message, true, error.detail);
+      // Seerr may have changed meanwhile: show what it has now rather than what was asked.
+      reload = true;
+    }
+    seerrSync.saving = false;
+    seerrPermissionsBusy(false);
+    const queued = seerrSync.refreshQueued;
+    seerrSync.refreshQueued = false;
+    // An open create-user dialog shows the defaults: a hint read during the save waited, or was dropped. Read again.
+    if (byId('user-dialog').open) showSeerrDefaultsHint();
+    if (reload || queued) await loadSeerrPermissions();
+    renderSeerrPermissions(key);
+  }
+
+  function renderSeerrPermissions(focusKey) {
+    const list = byId('seerr-users-list');
+    const status = byId('seerr-permissions-status');
+    const data = state.seerrPermissions;
+    byId('seerr-defaults').hidden = !data;
+    if (!data) {
+      status.textContent = '';
+      list.replaceChildren(node('div', { class: 'empty' }, [
+        node('strong', { text: state.seerrPermissionsOff ? 'Seerr is not configured' : 'Seerr permissions are unavailable' }),
+        node('span', { text: state.seerrPermissionsOff ? 'Set up Seerr in JellyPass to manage who may request and whose requests are approved at once.' : (state.seerrPermissionsError || 'Seerr could not be read.') + ' Nothing is shown until Seerr answers.' }),
+      ]));
+      seerrPermissionsBusy(seerrSync.saving);
+      return;
+    }
+    const linked = data.users.filter((user) => user.seerr).length;
+    status.textContent = data.users.length + ' Jellyfin user' + (data.users.length === 1 ? '' : 's') + ', ' + linked + ' in Seerr.';
+    byId('seerr-defaults-switches').replaceChildren(permissionSwitches(data.defaults, 'defaults', 'new Seerr users', '/v1/seerr/permissions/defaults'));
+    list.replaceChildren(...data.users.map((user) => {
+      const meta = (user.seerr ? 'Seerr user ' + user.seerr.id : 'No Seerr user is linked to this Jellyfin user') + (user.isJellyfinAdministrator ? ' · Jellyfin administrator' : '');
+      const controls = user.seerr
+        ? permissionSwitches(user.seerr, 'user:' + user.jellyfinUserId, user.name, '/v1/seerr/permissions/users/' + encodeURIComponent(user.jellyfinUserId))
+        : node('span', { class: 'meta not-in-seerr', text: 'Not in Seerr' });
+      return node('article', { class: 'request-row seerr-user' }, [
+        node('div', { class: 'grant-main' }, [node('div', { class: 'grant-title' }, [node('h3', { text: user.name, title: user.name })]), node('span', { class: 'meta', text: meta })]),
+        controls,
+      ]);
+    }));
+    seerrPermissionsBusy(seerrSync.saving);
+    if (focusKey) {
+      const target = Array.from(byId('users-panel').querySelectorAll('input[role="switch"]')).find((input) => input.dataset.key === focusKey);
+      if (target && !target.disabled) target.focus();
+    }
+  }
+
   function activateTab(tab) {
     if (state.activeTab === 'library' && tab !== 'library') resetLibraryView();
     state.activeTab = tab;
@@ -1705,7 +1915,9 @@ export const ADMIN_APP_JS = `
     byId('library-panel').hidden = tab !== 'library';
     byId('groups-panel').hidden = tab !== 'groups';
     byId('requests-panel').hidden = tab !== 'requests';
+    byId('users-panel').hidden = tab !== 'users';
     if (tab === 'requests') loadRequests();
+    if (tab === 'users') loadSeerrPermissions();
     scrollToTop();
   }
 

@@ -176,8 +176,10 @@ describe('cancelling a request nobody else follows', { timeout: 60_000 }, () => 
   });
 
   it('never deletes as a member who manages requests in Seerr, who may delete any request', async (t) => {
-    const app = await start(t, world({ seerrUsers: { [SEERR_IDS[ALICE]]: { jellyfinUserId: ALICE, permissions: REQUEST | MANAGE_REQUESTS } } }));
+    const app = await start(t);
     await getThis(app);
+    // Seerr approves a manager's own request at once, so the member is made a manager after asking, as in Seerr.
+    app.seerr.state.seerrUsers[SEERR_IDS[ALICE]].permissions = REQUEST | MANAGE_REQUESTS;
     await cancel(app);
     assert.deepEqual(app.seerr.deletes, []);
     assert.equal(seerrRequestOf(app, FIRST).status, 1);

@@ -162,7 +162,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.match(adminMarkup, /id="import-to-seerr"/);
     assert.doesNotMatch(adminMarkup, /id="import-to-seerr"[^>]*checked/);
     assert.match(adminMarkup, /Import into Seerr/);
-    assert.match(adminMarkup, /Seerr applies its configured default permissions/);
+    assert.match(adminMarkup, /Seerr gives imported users its defaults for new users/);
     assert.match(adminMarkup, /<div class="eyebrow">Activity<\/div><h2>Recent Seerr activity<\/h2>/);
     assert.doesNotMatch(adminMarkup, /Jellyseerr/i);
 

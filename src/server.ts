@@ -16,6 +16,7 @@ import type { HouseholdRequests } from './household-requests.js';
 import { writeWhole } from './html-response.js';
 import { UNKNOWN_VERSION_MESSAGE, UNTESTED_VERSION_MESSAGE, VersionConfirmationError, type HouseholdDecision, type JellyfinVersionGate } from './jellyfin-version.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
+import { PermissionsReadOnlyError, SeerrPermissionsError, permissionsChange, type SeerrPermissions } from './seerr-permissions.js';
 import { SetupError, type SetupWizard } from './setup.js';
 import { SETUP_APP_JS, SETUP_HTML } from './setup-ui.js';
 import { BackgroundTasks } from './shutdown.js';
@@ -90,6 +91,11 @@ export interface ServerOptions {
    * those paths answer 404 `requests_not_configured`.
    */
   adminRequests?: Pick<AdminRequests, 'list' | 'approve' | 'decline' | 'cancel' | 'release'>;
+  /**
+   * The admin Users tab's Seerr request permissions (`GET /v1/seerr/permissions` and the `PUT`s under it), read and
+   * written with the admin key; without it (Seerr is not configured) those paths answer 404 `seerr_not_configured`.
+   */
+  seerrPermissions?: Pick<SeerrPermissions, 'list' | 'defaults' | 'setUser' | 'setDefaults'>;
   /**
    * LEGACY_WEBHOOK_ON_MEMBER_PORT: the member listener also answers POST /webhooks/seerr for a Host that is no
    * household's, exactly as the admin listener does, so a Seerr webhook URL from before 4.0.0 keeps working.
@@ -366,6 +372,27 @@ export function makeServers(
           const householdIds = stringArray(body.householdIds, 'householdIds').map((id) => validId(id, 'householdId'));
           if (!/^[1-9][0-9]{0,15}$/.test(segments[3] ?? '')) throw new Error('requestId is invalid');
           return json(response, 200, await adminRequests.release(segments[3] as string, householdIds));
+        }
+      }
+      if (url.pathname === '/v1/seerr/permissions' || url.pathname.startsWith('/v1/seerr/permissions/')) {
+        const permissions = options?.seerrPermissions;
+        if (request.method === 'GET' && url.pathname === '/v1/seerr/permissions') {
+          if (!permissions) return json(response, 404, { error: 'seerr_not_configured' });
+          return json(response, 200, await permissions.list());
+        }
+        if (request.method === 'GET' && url.pathname === '/v1/seerr/permissions/defaults') {
+          if (!permissions) return json(response, 404, { error: 'seerr_not_configured' });
+          return json(response, 200, await permissions.defaults());
+        }
+        if (request.method === 'PUT' && segments.length === 4 && segments[3] === 'defaults') {
+          const change = permissionsChange(recordBody(await readJson(request)));
+          if (!permissions) return json(response, 404, { error: 'seerr_not_configured' });
+          return json(response, 200, { status: 'saved', ...await permissions.setDefaults(change) });
+        }
+        if (request.method === 'PUT' && segments.length === 5 && segments[3] === 'users') {
+          const change = permissionsChange(recordBody(await readJson(request)));
+          if (!permissions) return json(response, 404, { error: 'seerr_not_configured' });
+          return json(response, 200, { status: 'saved', ...await permissions.setUser(segments[4] ?? '', change) });
         }
       }
       if (request.method === 'GET' && url.pathname === '/v1/grants') {
@@ -825,6 +852,8 @@ function answerError(response: ServerResponse, error: unknown): void {
   if (error instanceof UnsupportedMediaTypeError) return json(response, 415, { error: 'unsupported_media_type' });
   if (error instanceof AdminActionLimitError) return json(response, 429, { error: 'too_many_requests' });
   if (error instanceof AdminSeerrError) return json(response, 502, { error: error.message });
+  if (error instanceof SeerrPermissionsError) return json(response, error.status, { error: error.code, message: error.message, ...(error.seerrStatus !== undefined ? { seerrStatus: error.seerrStatus } : {}) });
+  if (error instanceof PermissionsReadOnlyError) return json(response, 409, { error: error.message, code: error.code });
   if (error instanceof ConflictError) return json(response, 409, { error: error.message, code: error.code });
   if (error instanceof VersionConfirmationError) return json(response, 409, { error: error.message });
   if (error instanceof HouseholdAddressError) return json(response, error.code === 'address_conflict' ? 409 : 400, { error: error.message, code: error.code });

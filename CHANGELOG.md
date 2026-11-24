@@ -21,6 +21,26 @@ listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- **Seerr request permissions in the admin site.** A new **Users** tab shows
+  every Jellyfin user with two switches for the Seerr user linked to it:
+  **Can request** (Seerr's `REQUEST`) and **Auto-approve** (`AUTO_APPROVE`).
+  Turning Auto-approve off also clears Seerr's films-only and series-only
+  auto-approve bits, so off means off; a user with only one of them shows
+  **Partial (movies only)** or **Partial (TV only)** until the switch is
+  changed. Every other Seerr permission (4K, auto-request, manage, any unknown
+  bit) is kept. Seerr administrators and users who manage requests already
+  have every request approved and are shown read-only as **Auto-approves
+  (admin)**; users Seerr does not have show **Not in Seerr**. A **New Seerr
+  users** card changes the same two parts of Seerr's default permissions, and
+  the Create Jellyfin user dialog now shows them. Changes are made with the Seerr API key, logged at info
+  level with the Seerr user and the old and new mask, and nothing is shown
+  when Seerr cannot be read. Admin API: `GET /v1/seerr/permissions`,
+  `GET /v1/seerr/permissions/defaults`,
+  `PUT /v1/seerr/permissions/users/{jellyfinUserId}` and
+  `PUT /v1/seerr/permissions/defaults`.
+
 ### Changed
 
 - **"Get this" is now "Request"** in the web app and the TV add-on, so the

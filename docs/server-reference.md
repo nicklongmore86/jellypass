@@ -736,7 +736,7 @@ should use `ADMIN_TOKEN` as a bearer token instead of a session cookie; bearer
 requests are not origin-checked. Over HTTPS the session cookie is
 `__Host-jellypass_session`; on plain HTTP it is `jellypass_session`.
 
-The UI contains five views:
+The UI contains six views:
 
 - **Dashboard** — grant counts, synchronization health, **Recent Seerr
   activity** (up to 12 recent Seerr requests, whatever their status, for
@@ -760,7 +760,68 @@ The UI contains five views:
   Every change is shown as a dry-run plan first and applied with the plan's
   own **Apply** button.
 - **Groups** — reusable audiences, each household's addresses, and optional
-  Jellyfin user creation/import.
+  Jellyfin user creation/import. The Create Jellyfin user dialog shows Seerr's
+  current defaults for imported users, with a link to change them.
+- **Users** — [Seerr request permissions](#seerr-request-permissions): who
+  may request in Seerr and whose requests are approved at once, per user and
+  for new Seerr users.
+
+### Seerr request permissions
+
+Household members' requests are made in Seerr as the member (`X-API-User`), so
+each member's own Seerr permissions decide whether a request waits for
+**Approve** (Requests tab) or is approved at once. The **Users** tab reads and
+changes them with the Seerr API key; it is loaded when opened, never as a member.
+
+Each Jellyfin user that Seerr links to a Seerr user has two switches:
+
+| Switch | Seerr bits | On | Off |
+| --- | --- | --- | --- |
+| **Can request** | `REQUEST` (32) | sets `REQUEST` | clears `REQUEST` |
+| **Auto-approve** | `AUTO_APPROVE` (128), `AUTO_APPROVE_MOVIE` (256), `AUTO_APPROVE_TV` (512) | sets `AUTO_APPROVE` | clears all three |
+
+- Auto-approve is shown **on** for `AUTO_APPROVE` (or both kind bits), and
+  **Partial (movies only)** or **Partial (TV only)** for one kind bit alone
+  (set in Seerr). A partial state is kept as it is until the switch is
+  changed: flipping it writes on or off for both kinds.
+- Every other bit is kept: `REQUEST_MOVIE`/`REQUEST_TV`, the 4K bits,
+  `AUTO_REQUEST*`, `MANAGE_*` and any bit a later Seerr adds. Clearing **Can
+  request** leaves `REQUEST_MOVIE`/`REQUEST_TV`, which still allow that kind
+  (the switch says so).
+- Seerr administrators (`ADMIN`, and Seerr's owner, user 1) and users with
+  `MANAGE_REQUESTS` are shown read-only, **Auto-approves (admin)**: Seerr
+  approves both kinds of request for them whatever the auto-approve bits say.
+  Change them in Seerr itself.
+- A Jellyfin user Seerr links to no Seerr user shows **Not in Seerr**
+  (import them with Create Jellyfin user, or in Seerr).
+- Turning Auto-approve on asks first, in the page.
+
+Each change reads the mask from Seerr (`GET /api/v1/user/{id}/settings/permissions`),
+changes only those bits (any non-negative safe integer is accepted, and bits above
+2^31 are kept exactly; a mask Seerr answers outside that range fails closed with
+`502`) and writes the whole mask back (`POST` to the same path:
+Seerr replaces it). Changes through JellyPass are made one at a time; a change
+made in Seerr's own UI between the read and the write can still be lost, as
+Seerr has no conditional write. A change that changes nothing is not sent. Each
+one is logged at info level: `{"message":"Seerr request permissions changed",
+"action":"set_user_request_permissions" | "set_default_request_permissions",
+"seerrUserId", "oldMask", "newMask", "mask":"old→new"}`.
+
+**New Seerr users** changes the same two parts of Seerr's `defaultPermissions`
+(what Seerr gives the users it imports or creates from then on) the same way,
+from `GET /api/v1/settings/main`. Seerr 3.5.1 deep-merges a
+`POST /api/v1/settings/main` body into its main settings (lodash `merge`,
+checked against the real Seerr in `test/real-seerr.test.mjs`), so JellyPass
+sends `{"defaultPermissions": <mask>}` alone and no other main setting can
+change. Only that field of Seerr's answer is read (it carries Seerr's API key).
+
+Failures: Seerr not configured is `404 seerr_not_configured`; a Jellyfin user
+Seerr has no user for is `404 not_in_seerr`; a change to a read-only user is
+`409` with `code` `seerr_admin_read_only`; Seerr
+unreachable is `502 seerr_unavailable`; Seerr answering `401`/`403` is `502
+seerr_refused`, any other failure `502 seerr_failed`, each with Seerr's status
+as `seerrStatus` (never its body or the API key). The listing fails whole: no
+switch is shown that Seerr did not answer for.
 
 Run a catalog sync after first installation. Assigning access from the Library
 tab creates a manual grant; catalog synchronization alone does not.
@@ -1226,6 +1287,10 @@ Everything in this table is served by the admin listener only (`ADMIN_PORT`).
 | `GET` | `/v1/users` | List Jellyfin users. |
 | `POST` | `/v1/users` | Create a non-administrator Jellyfin user and assign a group. |
 | `PUT` | `/v1/users/{userId}/sign-in` | Mark a non-administrator user passwordless (`{"passwordless": true}`) for one-tap household sign-in. |
+| `GET` | `/v1/seerr/permissions` | Seerr's request permissions for new users (`defaults`) and for every Jellyfin user (`users`: `jellyfinUserId`, `name`, `isJellyfinAdministrator`, `seerr`: `null` when not in Seerr, else `{id, canRequest, autoApprove: "on" \| "off" \| "partial_movie" \| "partial_tv", requestMovie, requestTv, implicit?, editable}`). See [Seerr request permissions](#seerr-request-permissions). |
+| `GET` | `/v1/seerr/permissions/defaults` | `{defaults}` alone. |
+| `PUT` | `/v1/seerr/permissions/users/{jellyfinUserId}` | `{"canRequest": bool, "autoApprove": bool}` (either or both) for the Seerr user linked to that Jellyfin user; answers `{status, seerrUserId, changed, permissions}`. |
+| `PUT` | `/v1/seerr/permissions/defaults` | The same body for Seerr's `defaultPermissions`; answers `{status, changed, permissions}`. |
 | `GET` | `/v1/requests/recent` | List recent Seerr requests linked to the catalog. |
 | `GET` | `/v1/requests/poster` | Authenticated Seerr poster proxy. |
 | `GET` | `/v1/library` | Read the synchronized catalog. |
