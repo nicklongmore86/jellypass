@@ -1715,7 +1715,9 @@ write queue, so it never races a follower being recorded, a webhook, the backfil
 repeated after it took effect, it answers the same outcome with `changed: false` and calls Seerr for no write.
 
 - **Approve** (Seerr `POST /request/:id/approve`, a pending request only): Seerr sends it to Radarr or Sonarr; the
-  households keep following it. Approved or further already: unchanged.
+  households keep following it. Approved or further already: unchanged. Whether a member's request waits here at all is the
+  member's own Seerr permissions (requests are made as the member): the admin **Users** tab turns a member's
+  **Auto-approve** on or off, and the same for new Seerr users (docs/server-reference.md, "Seerr request permissions").
 - **Decline** (Seerr `POST /request/:id/decline`, a pending request only), in one turn of the write queue with what
   it records, so no webhook, replay, backfill or title hold decides the request's grant in between: every record still
   following it (`pending` or `failed`) is `declined` at once, so each household sees **Request failed** without

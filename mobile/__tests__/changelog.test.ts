@@ -6,8 +6,9 @@ import { join } from 'path';
 
 import { COLLECTIONS_API_VERSION, partOfText } from '../src/collection/text';
 import { ERROR_TEXT } from '../src/home/text';
+import { REQUEST_FILTER_TEXT, requestFilterEmptyText } from '../src/requests/text';
 import { STALLED_TEXT } from '../src/signin/wording';
-import { rateLimitedText } from '../src/title/text';
+import { GET_THIS_TEXT, rateLimitedText } from '../src/title/text';
 
 const ROOT = join(__dirname, '../..');
 
@@ -19,6 +20,49 @@ function releaseNotes(version: string): string {
 }
 
 describe('mobile release notes', () => {
+  it('extracts 1.6.1 without its heading, up to the 1.6.0 section', () => {
+    const notes = releaseNotes('1.6.1');
+    expect(notes).toMatch(/^A patch release that finishes 1\.6\.0's wording/);
+    expect(notes).not.toMatch(/^## /m);
+    expect(notes).toMatch(/^### Changed$/m);
+    expect(notes).not.toMatch(/^### (?:Added|Fixed|Removed|Security)$/m);
+    expect(notes).not.toContain(releaseNotes('1.6.0').split('\n')[0]);
+    expect(notes).not.toMatch(/^\[[^\]]+\]: /m);
+    const flat = notes.replace(/\s+/g, ' ');
+    expect(flat.indexOf('**JellyPass server 3.2.0 or later**')).toBeGreaterThanOrEqual(0);
+    expect(flat.indexOf('**JellyPass server 3.2.0 or later**')).toBeLessThan(flat.indexOf('### Changed'));
+    expect(flat).toContain(`now **${REQUEST_FILTER_TEXT.status.failed}**`);
+    expect(flat).toContain(`"${requestFilterEmptyText({ status: 'failed', kind: 'all', byYou: false })}"`);
+    expect(notes).not.toMatch(/download|eas-cli|workflow|\btests?\b|maxWorkers/i);
+  });
+
+  it('extracts 1.6.0 without its heading, up to the 1.5.1 section', () => {
+    const notes = releaseNotes('1.6.0');
+    expect(notes).toMatch(/^A minor release: the button that asks for a title is now called \*\*Request\*\*/);
+    expect(notes).not.toMatch(/^## /m);
+    expect(notes).toMatch(/^### Changed$/m);
+    expect(notes).not.toMatch(/^### (?:Added|Fixed|Removed|Security)$/m);
+    expect(notes).not.toContain(releaseNotes('1.5.1').split('\n')[0]);
+    expect(notes).not.toMatch(/^\[[^\]]+\]: /m);
+    const flat = notes.replace(/\s+/g, ' ');
+    // The servers it needs come first, before the entries.
+    const changed = flat.indexOf('### Changed');
+    for (const note of [
+      '**JellyPass server 3.2.0 or later**',
+      `collections need **JellyPass server 4.4.0 or later** (\`apiVersion\` ${COLLECTIONS_API_VERSION})`,
+      'needs **JellyPass server 4.3.0 or later** (`apiVersion` 5)',
+      '**Not interested** needs JellyPass server 4.0.0 or later (`apiVersion` 3)',
+      'Cancel request and the day each title was requested need JellyPass server 3.5.0 or later (`apiVersion` 2)',
+    ]) {
+      expect(flat.indexOf(note)).toBeGreaterThanOrEqual(0);
+      expect(flat.indexOf(note)).toBeLessThan(changed);
+    }
+    // The app's own words, as it shows them now.
+    expect(flat).toContain(`"${GET_THIS_TEXT.confirmation}"`);
+    expect(flat).toContain('"Request failed"');
+    expect(notes).not.toMatch(/download|eas-cli|workflow|\btests?\b|maxWorkers/i);
+  });
+
   it('extracts 1.5.1 without its heading, up to the 1.5.0 section', () => {
     const notes = releaseNotes('1.5.1');
     expect(notes).toMatch(/^A patch release: a film's collection is easier to see, as a row of posters/);
@@ -242,7 +286,7 @@ describe('mobile release notes', () => {
     expect(notes).not.toMatch(/eas-cli|workflow|\btests?\b/i);
   });
 
-  it("passes the release job's tag check for mobile-v<version in package.json> (mobile-v1.5.1 when it was cut)", () => {
+  it("passes the release job's tag check for mobile-v<version in package.json> (mobile-v1.6.1 when it was cut)", () => {
     const { version } = require('../package.json') as { version: string };
     // `node ../scripts/mobile-release-tag.mjs "$GITHUB_REF_NAME" package.json CHANGELOG.md`, from mobile/ (eas-json.test.ts).
     const check = (tag: string) =>
@@ -256,7 +300,7 @@ describe('mobile release notes', () => {
     expect(accepted.status).toBe(0);
     expect(accepted.stdout).toBe(`${version}\n`);
     // An older release's tag is refused once the version has moved on.
-    const old = check('mobile-v1.5.0');
+    const old = check('mobile-v1.6.0');
     expect(old.status).toBe(1);
     expect(old.stderr).toContain(`package.json says ${version}`);
   });

@@ -7,6 +7,7 @@ import { JellyfinClient } from './jellyfin.js';
 import { JellyfinVersionGate } from './jellyfin-version.js';
 import { makeServers, makeSetupServer } from './server.js';
 import { SeerrClient } from './seerr.js';
+import { SeerrPermissions } from './seerr-permissions.js';
 import { SeerrUserMap } from './seerr-users.js';
 import { HouseholdAddresses } from './household-addresses.js';
 import { HouseholdRequests } from './household-requests.js';
@@ -192,6 +193,7 @@ async function run(config: Config, setupWizard: (apply: () => void) => SetupWiza
       titleHolds: requests,
       adminRequests: new AdminRequests({ store, seerr, jellyfin, service, requests }),
     } : {}),
+    ...(seerr ? { seerrPermissions: new SeerrPermissions({ seerr, users: () => service.listUsers() }) } : {}),
   });
   const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;
   const backfillRequests = async (signal: AbortSignal) => {

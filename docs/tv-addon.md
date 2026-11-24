@@ -448,7 +448,7 @@ screen, and Back is its history), and it adds no document listener.
   first of them). A title that can't be read leaves the request with its status and "Title unavailable". A title named in
   the last ten minutes of this sign-in is reused (#89: in memory, on both clocks, at most 300, forgotten with the sign-in),
   so showing the page again reads only the list, and the requests that were showing (at least ten) are drawn at once.
-- **Filters** (#104): **Status** (All, Requested, Ready to watch, Couldn't get this), **Type** (All, Films, Series) and
+- **Filters** (#104): **Status** (All, Requested, Ready to watch, Failed), **Type** (All, Films, Series) and
   **Asked by me**, as toggle buttons (`aria-pressed`), applied to the loaded requests with **no call**: a series matches a
   status if any status it shows is that one. When a filter leaves nothing the page says so for that combination and offers
   **Show all requests**; with some requests still unloaded it adds "More may match — Load more to look further." The

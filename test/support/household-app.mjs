@@ -12,6 +12,7 @@ import { AccessService } from '../../dist/access-service.js';
 import { AdminRequests } from '../../dist/admin-requests.js';
 import { JellyfinClient } from '../../dist/jellyfin.js';
 import { SeerrClient } from '../../dist/seerr.js';
+import { SeerrPermissions } from '../../dist/seerr-permissions.js';
 import { HouseholdRequests } from '../../dist/household-requests.js';
 import { SeerrUserMap } from '../../dist/seerr-users.js';
 import { makeServers } from '../../dist/server.js';
@@ -52,6 +53,9 @@ export const MANAGE_REQUESTS = 16;
 export const REQUEST = 32;
 export const REQUEST_MOVIE = 262_144;
 export const REQUEST_TV = 524_288;
+export const AUTO_APPROVE = 128;
+export const AUTO_APPROVE_MOVIE = 256;
+export const AUTO_APPROVE_TV = 512;
 // Titles. 900001 (a movie) and 900002 (a series) are T, the titles another household may hold; 900003 is in household
 // A's own library.
 export const T_MOVIE = 900001;
@@ -155,6 +159,13 @@ export function world(options = {}) {
     // A promise each admin request read (GET /api/v1/request/:id) waits for before Seerr answers, if set: the request is
     // read as it was when the call arrived.
     holdRequestStates: undefined,
+    // Seerr's main settings (GET/POST /api/v1/settings/main): its API key a canary; defaultPermissions REQUEST unless set.
+    mainSettings: {
+      apiKey: 'canary-main-api-key',
+      applicationTitle: 'canary title',
+      defaultPermissions: options.defaultPermissions ?? REQUEST,
+      defaultQuotas: { movie: { quotaLimit: 7, quotaDays: 3 }, tv: { quotaLimit: 5, quotaDays: 2 } },
+    },
     // Seerr's Radarr servers (GET /api/v1/settings/radarr): one HD server, its secrets canaries.
     radarrServers: options.radarrServers ?? [{ id: 0, name: 'canary radarr', hostname: 'radarr.canary.invalid', apiKey: 'canary-radarr-key', is4k: false, isDefault: true }],
   };
@@ -255,6 +266,8 @@ export async function createFakeSeerr(state) {
   // The admin key's writes (see adminWrite), and the Seerr media IDs removed from Radarr.
   const adminWrites = [];
   const radarrRemovals = [];
+  // The bodies of the admin key's permission and main-settings writes.
+  const adminBodies = [];
   let onRequest;
   let nextRequestId = 7350001;
   const server = createServer((request, response) => {
@@ -262,7 +275,7 @@ export async function createFakeSeerr(state) {
     const actingUser = request.headers['x-api-user'];
     calls.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname, actingUser });
     if (request.headers['x-api-key'] !== 'seerr-key') return send(response, 401, { message: 'canary unauthorized' });
-    if (actingUser === undefined) return request.method === 'GET' ? admin(url, response) : adminWrite(request.method, url, response);
+    if (actingUser === undefined) return request.method === 'GET' ? admin(url, response) : adminWrite(request.method, url, response, request);
     const acting = Number(actingUser);
     const user = state.seerrUsers[acting];
     if (!/^[1-9][0-9]*$/.test(actingUser) || !user) return send(response, 403, { message: 'canary forbidden' });
@@ -359,9 +372,11 @@ export async function createFakeSeerr(state) {
     const quota = quotaOf(acting, mediaType);
     if (quota.limit && quota.used + (mediaType === 'movie' ? 1 : seasons.length) > quota.limit) return send(response, 403, { message: 'canary quota' });
     const media = mediaRecord(mediaType, tmdbId);
+    // Seerr 3.5.1 approves at once for ADMIN, MANAGE_REQUESTS, AUTO_APPROVE or the kind's own auto-approve bit.
+    const autoApproves = (user.permissions & (ADMIN | MANAGE_REQUESTS | AUTO_APPROVE | (mediaType === 'movie' ? AUTO_APPROVE_MOVIE : AUTO_APPROVE_TV))) !== 0;
     const created = {
       id: nextRequestId++,
-      status: state.autoApprove ? 2 : 1,
+      status: state.autoApprove || autoApproves ? 2 : 1,
       type: mediaType,
       is4k: false,
       createdAt: new Date().toISOString(),
@@ -399,10 +414,29 @@ export async function createFakeSeerr(state) {
    * server). Each is recorded in `adminWrites` and shown to `state.onAdminWrite(method, pathname)` as it arrives;
    * `state.failAdminWrites` (a path prefix) makes those answer `500`.
    */
-  function adminWrite(method, url, response) {
+  async function adminWrite(method, url, response, request) {
     adminWrites.push(`${method} ${url.pathname}`);
     state.onAdminWrite?.(method, url.pathname);
-    if (state.failAdminWrites && url.pathname.startsWith(state.failAdminWrites)) return send(response, 500, { message: 'canary failure' });
+    if (state.failAdminWrites && url.pathname.startsWith(state.failAdminWrites)) return send(response, state.failAdminWritesStatus ?? 500, { message: 'canary failure' });
+    // Seerr 3.5.1's permission write replaces the whole mask; the owner's (user 1) is refused.
+    const permissions = /^\/api\/v1\/user\/([0-9]+)\/settings\/permissions$/.exec(url.pathname);
+    if (method === 'POST' && permissions) {
+      const body = await readJson(request);
+      adminBodies.push({ path: url.pathname, body });
+      const id = Number(permissions[1]);
+      const user = state.seerrUsers[id];
+      if (!user) return send(response, 404, { message: 'User not found.' });
+      if (id === 1) return send(response, 403, { message: 'You do not have permission to modify this user' });
+      user.permissions = body.permissions;
+      return send(response, 200, { permissions: user.permissions });
+    }
+    // Seerr 3.5.1 deep-merges the body into its main settings (lodash merge) and answers all of them.
+    if (method === 'POST' && url.pathname === '/api/v1/settings/main') {
+      const body = await readJson(request);
+      adminBodies.push({ path: url.pathname, body });
+      state.mainSettings = deepMerge(state.mainSettings, body);
+      return send(response, 200, state.mainSettings);
+    }
     const owner = (id) => Object.keys(state.requests).find((seerrId) => state.requests[seerrId].some((entry) => entry.id === id));
     const decide = /^\/api\/v1\/request\/([0-9]+)\/(approve|decline)$/.exec(url.pathname);
     if (method === 'POST' && decide) {
@@ -452,8 +486,9 @@ export async function createFakeSeerr(state) {
     }
     const byJellyfin = /^\/api\/v1\/user\/jellyfin\/([0-9a-f]{32})$/.exec(url.pathname);
     if (byJellyfin) {
+      if (state.failAdminReads) return send(response, state.failAdminReads, { message: 'canary failure' });
       const found = Object.entries(state.seerrUsers).find(([, user]) => user.jellyfinUserId === byJellyfin[1]);
-      return found ? send(response, 200, { id: Number(found[0]), jellyfinUserId: found[1].jellyfinUserId, email: 'canary@example.invalid' })
+      return found ? send(response, 200, { id: Number(found[0]), jellyfinUserId: found[1].jellyfinUserId, permissions: found[1].permissions, email: 'canary@example.invalid' })
         : send(response, 404, { message: 'canary' });
     }
     const byId = /^\/api\/v1\/user\/([0-9]+)$/.exec(url.pathname);
@@ -461,6 +496,16 @@ export async function createFakeSeerr(state) {
       const user = state.seerrUsers[Number(byId[1])];
       return user ? send(response, 200, { id: Number(byId[1]), permissions: user.permissions, jellyfinUserId: user.jellyfinUserId, email: 'canary@example.invalid' })
         : send(response, 404, { message: 'canary' });
+    }
+    const permissionsOf = /^\/api\/v1\/user\/([0-9]+)\/settings\/permissions$/.exec(url.pathname);
+    if (permissionsOf) {
+      if (state.failAdminReads) return send(response, state.failAdminReads, { message: 'canary failure' });
+      const user = state.seerrUsers[Number(permissionsOf[1])];
+      return user ? send(response, 200, { permissions: user.permissions }) : send(response, 404, { message: 'User not found.' });
+    }
+    if (url.pathname === '/api/v1/settings/main') {
+      if (state.failAdminReads) return send(response, state.failAdminReads, { message: 'canary failure' });
+      return send(response, 200, state.mainSettings);
     }
     if (url.pathname === '/api/v1/settings/radarr') return send(response, 200, state.radarrServers ?? []);
     if (url.pathname === '/api/v1/blocklist') {
@@ -489,6 +534,7 @@ export async function createFakeSeerr(state) {
     posts,
     deletes,
     adminWrites,
+    adminBodies,
     radarrRemovals,
     state,
     set onRequest(check) { onRequest = check; },
@@ -1019,6 +1065,7 @@ export async function startApp(t, state = world(), options = {}) {
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
     ...(options.memberWebhook ? { memberWebhook: true } : {}),
     householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}), ...(options.signOutTimeoutMs ? { signOutTimeoutMs: options.signOutTimeoutMs } : {}), ...(options.tvAddon ? { tvAddon: options.tvAddon } : {}) },
+    ...(options.seerrPermissions === false ? {} : { seerrPermissions: new SeerrPermissions({ seerr: admin, users: () => service.listUsers() }) }),
     ...(options.requests === false ? {} : {
       titleHolds: requests,
       adminRequests: new AdminRequests({ store, seerr: admin, jellyfin: jellyfinClient, service, requests, ...(options.now ? { now: options.now } : {}) }),
@@ -1144,6 +1191,16 @@ function readJson(request) {
       }
     });
   });
+}
+
+/** lodash's merge, as Seerr's settings use it: plain objects merged key by key, anything else replaced. */
+function deepMerge(target, source) {
+  const merged = { ...target };
+  for (const [key, value] of Object.entries(source ?? {})) {
+    const plain = (entry) => entry && typeof entry === 'object' && !Array.isArray(entry);
+    merged[key] = plain(value) && plain(target?.[key]) ? deepMerge(target[key], value) : value;
+  }
+  return merged;
 }
 
 function send(response, status, value, headers = {}) {

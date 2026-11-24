@@ -53,7 +53,66 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
   assertDefinitionsMatchReferences(notes);
 }
 
+describe('CHANGELOG.md comparison links', () => {
+  const COMPARE = 'https://github.com/nicklongmore86/jellypass/compare/';
+  const versions = [...CHANGELOG.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((match) => match[1]);
+  const links = new Map([...CHANGELOG.matchAll(/^\[([^\]]+)\]: (\S+)$/gm)].map((match) => [match[1], match[2]]));
+
+  it('has the release in package.json as its newest version section', () => {
+    const { version } = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
+    assert.equal(versions[0], version);
+  });
+
+  it('compares [Unreleased] from the newest release to HEAD', () => {
+    assert.equal(links.get('Unreleased'), `${COMPARE}v${versions[0]}...HEAD`);
+  });
+
+  it('compares every release with the one before it, in heading order', () => {
+    for (const [index, version] of versions.slice(0, -1).entries()) {
+      assert.equal(links.get(version), `${COMPARE}v${versions[index + 1]}...v${version}`, `[${version}] link`);
+    }
+    const oldest = versions.at(-1);
+    assert.equal(links.get(oldest), `https://github.com/nicklongmore86/jellypass/releases/tag/v${oldest}`);
+  });
+
+  it('lists the link definitions newest first, right after [Unreleased]', () => {
+    const order = [...CHANGELOG.matchAll(/^\[(Unreleased|\d+\.\d+\.\d+)\]: /gm)].map((match) => match[1]);
+    assert.deepEqual(order, ['Unreleased', ...versions]);
+  });
+});
+
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 4.6.0 without its heading, up to the 4.5.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '4.6.0');
+    assertSection(notes, {
+      version: '4.6.0',
+      nextVersion: '4.5.0',
+      subheadings: ['Added', 'Changed'],
+    });
+    assert.match(notes, /^This is a minor release\./);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*An existing install upgrades without any change to its configuration:\*\*/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:4\.5\.0`/);
+    assert.match(flat, /`apiVersion` 6/);
+    assert.match(flat, /schema 9/);
+    assert.match(flat, /`jellypass-tv\.3fc6defb24d3\.js`/);
+    assert.match(flat, /`jellypass-tv\.12e659e424d7\.css`, is unchanged/);
+    for (const path of ['GET /v1/seerr/permissions', 'GET /v1/seerr/permissions/defaults', 'PUT /v1/seerr/permissions/users/{jellyfinUserId}', 'PUT /v1/seerr/permissions/defaults']) {
+      assert.ok(flat.includes(`\`${path}\``), `${path} is listed`);
+    }
+    for (const heading of ['Added', 'Changed']) {
+      assert.equal(notes.split('\n').filter((line) => line === `### ${heading}`).length, 1, `one ### ${heading}`);
+    }
+    assert.doesNotMatch(notes, /### Fixed/);
+    const added = notes.indexOf('### Added');
+    for (const note of ['**The state file is unchanged**', '**Seerr permissions are kept in Seerr.**', '**No CDN purge is needed.**', '**To roll back,**', '**The iPhone, iPad and Android app ships separately.**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `${note} is summarised first`);
+    }
+    assert.doesNotMatch(notes, /download/i);
+    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|TU7000|sdb\b/i, 'no server-specific details');
+    if (privateTerms) assert.equal(privateMatchCount(notes, privateTerms), 0, 'no private deployment details');
+  });
+
   it('extracts 4.5.0 without its heading, up to the 4.4.0 section', () => {
     const notes = changelogSection(CHANGELOG, '4.5.0');
     assertSection(notes, {

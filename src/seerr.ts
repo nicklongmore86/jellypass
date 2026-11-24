@@ -107,9 +107,25 @@ export class SeerrClient {
    * errors carry only the status and the route template.
    */
   public async findUserByJellyfinId(jellyfinUserId: string): Promise<LinkedSeerrUser | undefined> {
+    const user = await this.#linkedUser(jellyfinUserId);
+    return user && { id: user.id, jellyfinUserId: user.jellyfinUserId };
+  }
+
+  /**
+   * The Seerr user linked to a Jellyfin user with its permission mask (the `permissions` of Seerr's user record), for the
+   * admin Users tab's listing; undefined when Seerr links none. A record whose mask is not a non-negative integer is
+   * `502`. Guarded like {@link findUserByJellyfinId}.
+   */
+  public async linkedUserPermissions(jellyfinUserId: string): Promise<(LinkedSeerrUser & { permissions: number }) | undefined> {
+    const user = await this.#linkedUser(jellyfinUserId);
+    if (!user) return undefined;
+    return { id: user.id, jellyfinUserId: user.jellyfinUserId, permissions: permissionMask(user.permissions, '/api/v1/user/jellyfin/:jellyfinUserId') };
+  }
+
+  async #linkedUser(jellyfinUserId: string): Promise<(LinkedSeerrUser & { permissions?: unknown }) | undefined> {
     const normalized = normalizeJellyfinUserId(jellyfinUserId);
     if (!normalized) return undefined;
-    let user: { id?: unknown; jellyfinUserId?: unknown };
+    let user: { id?: unknown; jellyfinUserId?: unknown; permissions?: unknown };
     try {
       user = await this.#guardedGet('/api/v1/user/jellyfin/:jellyfinUserId', `/api/v1/user/jellyfin/${normalized}`) as typeof user;
     } catch (error) {
@@ -121,7 +137,55 @@ export class SeerrClient {
         normalizeJellyfinUserId(user.jellyfinUserId) !== normalized) {
       return undefined;
     }
-    return { id: user.id, jellyfinUserId: normalized };
+    return { id: user.id, jellyfinUserId: normalized, permissions: user.permissions };
+  }
+
+  /**
+   * A Seerr user's permission mask (GET /api/v1/user/:id/settings/permissions with the admin key), or undefined when
+   * Seerr has no such user. Guarded like {@link findUserByJellyfinId}.
+   */
+  public async userPermissions(user: SeerrUserId): Promise<number | undefined> {
+    const route = '/api/v1/user/:id/settings/permissions';
+    let answer: unknown;
+    try {
+      answer = await this.#guardedGet(route, `/api/v1/user/${seerrUserId(user)}/settings/permissions`);
+    } catch (error) {
+      if (error instanceof SeerrError && error.status === 404) return undefined;
+      throw error;
+    }
+    return permissionMask(ownField(answer, 'permissions'), route);
+  }
+
+  /**
+   * Replaces a Seerr user's permission mask (POST /api/v1/user/:id/settings/permissions with the admin key, which Seerr
+   * runs as its owner) and answers the mask Seerr saved. Seerr replaces the whole mask, so callers read it first and
+   * change only their own bits (see seerr-permissions.ts). Seerr refuses (`403`) the owner (user 1) and, from anyone
+   * but the owner, a mask with ADMIN.
+   */
+  public async setUserPermissions(user: SeerrUserId, permissions: number): Promise<number> {
+    const route = '/api/v1/user/:id/settings/permissions';
+    const answer = await this.#guardedAdmin('POST', route, `/api/v1/user/${seerrUserId(user)}/settings/permissions`, { permissions: permissionMask(permissions, route) });
+    return permissionMask(ownField(answer, 'permissions'), route);
+  }
+
+  /**
+   * The permission mask Seerr gives users it creates or imports (`defaultPermissions` of GET /api/v1/settings/main with
+   * the admin key). The answer carries every main setting, Seerr's API key included: only this one field is read.
+   */
+  public async defaultPermissions(): Promise<number> {
+    const route = '/api/v1/settings/main';
+    return permissionMask(ownField(await this.#guardedGet(route, route), 'defaultPermissions'), route);
+  }
+
+  /**
+   * Sets Seerr's `defaultPermissions` (POST /api/v1/settings/main with the admin key) and answers the value Seerr saved.
+   * Seerr 3.5.1 deep-merges the body into its main settings (lodash `merge`), so a body of this one field changes
+   * nothing else; the answer (every main setting, the API key included) is read for this field only.
+   */
+  public async setDefaultPermissions(permissions: number): Promise<number> {
+    const route = '/api/v1/settings/main';
+    const answer = await this.#guardedAdmin('POST', route, route, { defaultPermissions: permissionMask(permissions, route) });
+    return permissionMask(ownField(answer, 'defaultPermissions'), route);
   }
 
   /**
@@ -852,6 +916,18 @@ function ownField(value: unknown, name: string): unknown {
 
 function positiveSafeInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * A Seerr permission mask: any non-negative safe integer (0 to 2^53 - 1). Seerr 3.5.1's highest bit is 2^30, but a later
+ * Seerr (or a hand-edited database) may set higher ones, and they are kept as they are: seerr-permissions.ts changes bits
+ * with BigInt, never with 32-bit operators. Anything else is `502`.
+ */
+function permissionMask(value: unknown, route: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new SeerrError(`Seerr ${route} returned an unexpected permission mask`, 502);
+  }
+  return value;
 }
 
 function optional<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
