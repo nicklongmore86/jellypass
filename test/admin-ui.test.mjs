@@ -1728,6 +1728,97 @@ describe('admin UI Users tab (Seerr request permissions)', () => {
     assert.equal(switchFor(page, 'Auto-approve for Grove').disabled, false);
   });
 
+  for (const [who, label] of [['a user', 'Can request for Grove'], ['the defaults', 'Can request for new Seerr users']]) {
+    it(`resets a pending save on a 401 and reloads after sign-in (${who})`, async () => {
+      const page = await heldUsersPage();
+      page.held.holdGets = true;
+      page.click('refresh-seerr-permissions');
+      await page.settle();
+      assert.equal(page.held.gets.length, 1);
+      page.held.holdPuts = true;
+      page.held.failPut = { status: 401, body: { error: 'unauthorized' } };
+      await flip(page, label, false);
+      assert.equal(page.held.puts.length, 1);
+      assert.equal(page.document.getElementById('refresh-seerr-permissions').disabled, true);
+      const input = switchFor(page, label);
+      const toast = page.toast();
+      page.held.puts.shift()();
+      await page.settle();
+      assert.equal(page.view().login, true);
+      assert.equal(page.view().app, false);
+      assert.equal(page.document.getElementById('refresh-seerr-permissions').disabled, false);
+      assert.equal(input.disabled, false);
+      assert.equal(switchFor(page, 'Can request for Owner').disabled, true);
+      assert.equal(page.gets(), 2);
+      // Even the read invalidated by the save cannot render after the 401.
+      page.held.gets.shift()();
+      await page.settle();
+      assert.equal(switchFor(page, label), input);
+      assert.equal(input.checked, false);
+      assert.equal(page.toast(), toast);
+      assert.equal(page.gets(), 2);
+      page.held.holdGets = false;
+      page.held.failPut = null;
+      page.document.getElementById('username').value = 'admin';
+      page.document.getElementById('password').value = 'secret';
+      page.document.getElementById('login-form').dispatchEvent(new page.window.Event('submit'));
+      await page.settle();
+      assert.equal(page.view().app, true);
+      assert.equal(page.gets(), 3);
+      assert.notEqual(switchFor(page, label), input);
+      assert.equal(switchFor(page, label).checked, true);
+      assert.equal(switchFor(page, label).disabled, false);
+      page.held.holdPuts = false;
+      await flip(page, label, false);
+      assert.equal(switchFor(page, label).checked, false);
+      assert.equal(switchFor(page, label).disabled, false);
+      assert.equal(page.toast(), `Saved in Seerr for ${who === 'a user' ? 'Grove' : 'new Seerr users'}.`);
+    });
+  }
+
+  for (const who of ['Grove', 'new Seerr users']) {
+    it(`ignores an old session's save while the new session is saving for ${who}`, async () => {
+      const page = await heldUsersPage();
+      page.held.holdPuts = true;
+      await flip(page, `Can request for ${who}`, false);
+      assert.equal(page.held.puts.length, 1);
+      page.click('logout');
+      await page.settle();
+      page.document.getElementById('username').value = 'admin';
+      page.document.getElementById('password').value = 'secret';
+      page.document.getElementById('login-form').dispatchEvent(new page.window.Event('submit'));
+      await page.settle();
+      assert.equal(page.gets(), 2);
+      await flip(page, `Auto-approve for ${who}`, true);
+      await page.accept('confirm-dialog');
+      assert.equal(page.held.puts.length, 2);
+      const input = switchFor(page, `Auto-approve for ${who}`);
+      const toast = page.toast();
+      // A refresh belongs to the new save and must remain deferred when the old one ends.
+      page.click('refresh-seerr-permissions');
+      await page.settle();
+      assert.equal(page.gets(), 2);
+      page.held.puts.shift()();
+      await page.settle();
+      assert.equal(page.held.puts.length, 1);
+      assert.equal(page.gets(), 2);
+      assert.equal(page.toast(), toast);
+      assert.equal(switchFor(page, `Auto-approve for ${who}`), input);
+      assert.equal(input.checked, true);
+      assert.equal(switchFor(page, `Can request for ${who}`).checked, true);
+      assert.equal(page.document.getElementById('refresh-seerr-permissions').disabled, true);
+      for (const control of page.document.querySelectorAll('#users-panel input[role="switch"]')) assert.equal(control.disabled, true, control.getAttribute('aria-label'));
+      page.held.puts.shift()();
+      await page.settle();
+      assert.equal(page.gets(), 3);
+      assert.equal(page.toast(), `Saved in Seerr for ${who}.`);
+      assert.equal(switchFor(page, `Auto-approve for ${who}`).checked, true);
+      assert.equal(switchFor(page, `Auto-approve for ${who}`).disabled, false);
+      assert.equal(page.document.getElementById('refresh-seerr-permissions').disabled, false);
+      assert.equal(switchFor(page, 'Can request for Owner').disabled, true);
+    });
+  }
+
   for (const [what, failure] of [['a Seerr error', { status: 502, body: { error: 'seerr_failed', message: 'Seerr could not do that (it answered 500)', seerrStatus: 500 } }], ['a network failure', new TypeError('Failed to fetch')]]) {
     it(`unlocks Refresh and the switches after a save that ends in ${what}`, async () => {
       const page = await heldUsersPage();
