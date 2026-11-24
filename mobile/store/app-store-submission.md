@@ -184,7 +184,7 @@ artifact `screenshots`, in listing order:
 |---|---|---|
 | 1 | `01-sintel.png` | A film Ready to watch, with Play |
 | 2 | `02-tears-of-steel.png` | A film page |
-| 3 | `03-request-caligari.png` | A public-domain film Available to request, with the Request button |
+| 3 | `03-request-metropolis.png` | A public-domain film Available to request, with the Request button |
 | 4 | `04-search.png` | Search |
 | 5 | `05-my-requests.png` | My requests |
 | 6 | `06-llama-drama.png` | A title page |

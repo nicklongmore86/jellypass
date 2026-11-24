@@ -34,7 +34,7 @@ shots=(
   "06-title-llama-drama:06-llama-drama"
   "07-collection-caminandes:07-caminandes-collection"
   "08-requests:05-my-requests"
-  "09-title-request:03-request-caligari"
+  "09-title-request:03-request-metropolis"
 )
 
 runtime="$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable and .platform == "iOS")] | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')"
