@@ -9,7 +9,7 @@ Nothing here is secret. The demo household's address and profile are **not** wri
 
 ## Before pressing Submit
 
-- [ ] A release with the **Request** wording (app 1.6.0) is on TestFlight. The screenshots below show it.
+- [ ] A release with the **Request** wording and **Failed** filter wording (app 1.6.1) is on TestFlight. The screenshots below show it.
 - [ ] The demo household's server is up and stays up until the app is approved, and the demo profile signs in.
 - [ ] **Request on the demo household asks for nothing real.** The reviewer will press it. The demo profile's Seerr
       user must have auto-approve off (or the demo household must not reach Seerr at all), so a reviewer's request never
@@ -17,7 +17,7 @@ Nothing here is secret. The demo household's address and profile are **not** wri
 - [ ] The demo library has only the Blender open films (Sintel, Tears of Steel, Caminandes and the rest), so the
       reviewer and the screenshots see no copyrighted posters beyond the TMDB artwork on Discover rows.
 - [ ] jellypass.app's privacy and support pages use the new wording ("Request", not "Get this").
-- [ ] Screenshots from the `Mobile screenshots` workflow (iPhone 6.9" and iPad 13", eight each) for the 1.6.0 build.
+- [ ] Screenshots from the `Mobile screenshots` workflow (iPhone 6.9" and iPad 13", nine each) for the 1.6.1 build.
 
 ## App Information
 
@@ -37,7 +37,7 @@ Nothing here is secret. The demo household's address and profile are **not** wri
 Keep "Jellyfin", "Seerr", "Plex" and other product names out of the name, subtitle and keywords (App Review
 Guideline 2.3.7 and 5.2.1). The description may say the app works with Jellyfin, as a plain statement of compatibility.
 
-## Version page (1.6.0)
+## Version page (1.6.1)
 
 ### Promotional text (170)
 
@@ -86,7 +86,7 @@ media server,self-hosted,household,family,request,movies,tv shows,watchlist,libr
 
 | Field | Value |
 |---|---|
-| Build | The 1.6.0 build from TestFlight |
+| Build | The 1.6.1 build from TestFlight |
 | Version release | **Manually release this version** (release it when the site and the household server are ready) |
 | What's New | Not shown for a first App Store version |
 
@@ -177,19 +177,20 @@ Nothing to answer: `ITSAppUsesNonExemptEncryption` is `false` (standard HTTPS on
 
 ## Screenshots
 
-From the `Mobile screenshots` workflow (Actions → Mobile screenshots → Run workflow on `main` after the 1.6.0 merge),
+From the `Mobile screenshots` workflow (Actions → Mobile screenshots → Run workflow on `main` after the 1.6.1 merge (#195)),
 artifact `screenshots`, in listing order:
 
 | # | File | Shows |
 |---|---|---|
 | 1 | `01-sintel.png` | A film Ready to watch, with Play |
 | 2 | `02-tears-of-steel.png` | A film page |
-| 3 | `03-search.png` | Search |
-| 4 | `04-my-requests.png` | My requests |
-| 5 | `05-llama-drama.png` | A title page |
-| 6 | `06-caminandes-collection.png` | A film collection |
-| 7 | `07-home.png` | Home |
-| 8 | `08-sign-in.png` | Connect to your household (check it shows no address you don't want public) |
+| 3 | `03-request-metropolis.png` | A public-domain film Available to request, with the Request button |
+| 4 | `04-search.png` | Search |
+| 5 | `05-my-requests.png` | My requests |
+| 6 | `06-llama-drama.png` | A title page |
+| 7 | `07-caminandes-collection.png` | A film collection |
+| 8 | `08-home.png` | Home. Its banner and Discover posters are TMDB artwork of copyrighted films: optional, leave it out to show only open and public-domain films |
+| 9 | `09-sign-in.png` | Connect to your household (check it shows no address you don't want public) |
 
 Upload `iphone-6.9/*` under **iPhone 6.9" Display** and `ipad-13/*` under **iPad 13" Display**. Apple scales them for
 smaller devices.

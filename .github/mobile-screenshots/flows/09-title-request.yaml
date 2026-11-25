@@ -1,0 +1,50 @@
+# A public-domain film the demo household doesn't have and hasn't asked for, so its page shows Available to request and
+# the Request button. (Caligari, The General and Sherlock Jr. are the demo's sample requests: they show Requested.)
+# Search also lists the 2001 anime of the same name, so the 1927 film is chosen by its year. Nothing is pressed: the flow only opens the
+# page. Taps are repeated until they land (03-search.yaml).
+appId: com.rtc-services.jellypass
+---
+- repeat:
+    while:
+      notVisible:
+        id: "search-field"
+    times: 5
+    commands:
+      - tapOn:
+          id: "tab-search"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- repeat:
+    while:
+      visible: "Back"
+    times: 5
+    commands:
+      - tapOn: "Back"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "search-field"
+- tapOn:
+    id: "search-field"
+# The field still holds the last search.
+- eraseText: 20
+- inputText: "Metropolis"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "Metropolis, 1927.*Available to request"
+    timeout: 30000
+- repeat:
+    while:
+      notVisible:
+        id: "detail-facts"
+    times: 5
+    commands:
+      - tapOn: "Metropolis, 1927.*Available to request"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "detail-facts"
+- assertVisible: "Available to request"
+- assertVisible: "Request: Metropolis"
+- waitForAnimationToEnd:
+    timeout: 10000
